@@ -1,0 +1,2 @@
+"""Deterministic tactical grid engine."""
+

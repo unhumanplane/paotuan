@@ -1,0 +1,17 @@
+{
+  "enabled_sessions": {
+    "description": "允许自动 TRPG DM 接管的会话 ID 列表。通常留空，仅使用 /dm 触发。",
+    "type": "list",
+    "hint": "例如：aiocqhttp:GroupMessage:123456789"
+  },
+  "trigger_prefixes": {
+    "description": "触发词。留空时默认使用 /dm。",
+    "type": "list",
+    "hint": "例如：/dm"
+  },
+  "allow_private_chat": {
+    "description": "是否允许私聊不带 /dm 也默认启用。建议关闭。",
+    "type": "bool",
+    "hint": "false"
+  }
+}

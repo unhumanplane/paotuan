@@ -1,0 +1,154 @@
+from __future__ import annotations
+
+from typing import Any, Dict, List, Optional
+
+from pydantic import BaseModel, Field
+
+from ..core.models import RuleRef, compact_rules
+from ..storage.json_repository import JsonGameRepository
+from ..rules.python_runtime import PythonRuleRuntime
+
+
+class RegisterRuleArgs(BaseModel):
+    rule_name: str = Field(..., description="规则函数名，使用简短英文或拼音，后续 execute_rule 将按此名称调用")
+    description: str = Field(..., description="这条规则解决什么判定，例如近战命中、枪械伤害、恐惧检定")
+    code_string: str = Field(
+        ...,
+        description=(
+            "Python 子集代码，必须且只能定义 calculate(**kwargs) 或具名参数的 calculate 函数。"
+            "随机数只能使用 roll('1d20')、roll(20)、roll(20, count=2, modifier=3) 或 randint(1, 20)。"
+            "可以用 kwargs.get('bonus', 0) 读取默认参数。不要 import random，不要调用 random.*，不要使用 list.append；需要列表时用列表推导式。"
+        ),
+    )
+    input_schema: Dict[str, Any] = Field(default_factory=dict, description="规则入参说明")
+    output_schema: Dict[str, Any] = Field(default_factory=dict, description="规则输出说明")
+    tags: List[str] = Field(default_factory=list, description="规则标签，如 combat、damage、dice")
+
+
+class ExecuteRuleArgs(BaseModel):
+    rule_name: str = Field(..., description="要执行的已注册规则名称")
+    args: Dict[str, Any] = Field(default_factory=dict, description="传给 calculate 的参数字典")
+    version: Optional[int] = Field(default=None, description="可选规则版本；为空则使用最新版")
+
+
+class ListRulesArgs(BaseModel):
+    detail_level: str = Field(default="summary", description="summary 或 detail；summary 返回二级摘要，detail 返回有限数量规则详情")
+    tag: str = Field(default="", description="可选标签过滤，例如 combat、damage、dice")
+    limit: int = Field(default=16, ge=1, le=64, description="detail 模式最多返回多少条")
+
+
+class RuleTools:
+    def __init__(
+        self,
+        repository: JsonGameRepository,
+        rule_runtime: PythonRuleRuntime,
+        session_id: str,
+    ):
+        self.repository = repository
+        self.rule_runtime = rule_runtime
+        self.session_id = session_id
+
+    async def register_rule(
+        self,
+        rule_name: str,
+        description: str,
+        code_string: str,
+        input_schema: Optional[Dict[str, Any]] = None,
+        output_schema: Optional[Dict[str, Any]] = None,
+        tags: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
+        """注册一条由 LLM 生成的 TRPG 纯计算规则，后续可通过 execute_rule 复用。"""
+        result = self.rule_runtime.register_rule(
+            rule_name=rule_name,
+            description=description,
+            code_string=code_string,
+            input_schema=input_schema or {},
+            output_schema=output_schema or {},
+            tags=tags or [],
+        )
+        if result.get("ok"):
+            session = self.repository.load_session(self.session_id)
+            rule_ref = self.rule_runtime.load_rule_ref(
+                result["rule_name"],
+                int(result["version"]),
+            )
+            if rule_ref:
+                session.rules[rule_ref.name] = rule_ref
+                self.repository.save_session(session)
+        self.repository.append_audit(
+            self.session_id,
+            {
+                "type": "tool",
+                "tool": "register_rule",
+                "input": {
+                    "rule_name": rule_name,
+                    "description": description,
+                    "input_schema": input_schema or {},
+                    "output_schema": output_schema or {},
+                    "tags": tags or [],
+                },
+                "result": result,
+            },
+        )
+        return result
+
+    async def execute_rule(
+        self,
+        rule_name: str,
+        args: Optional[Dict[str, Any]] = None,
+        version: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """执行已注册 TRPG 规则，用于检定、伤害、资源消耗和随机判定。"""
+        result = self.rule_runtime.execute_rule(
+            rule_name=rule_name,
+            args=args or {},
+            version=version,
+        )
+        self.repository.append_audit(
+            self.session_id,
+            {
+                "type": "tool",
+                "tool": "execute_rule",
+                "input": {"rule_name": rule_name, "args": args or {}, "version": version},
+                "result": result,
+            },
+        )
+        return result
+
+    async def list_rules(self, detail_level: str = "summary", tag: str = "", limit: int = 16) -> Dict[str, Any]:
+        """列出当前本地已经注册的规则，默认返回二级摘要以节省上下文。"""
+        raw_rules = self.rule_runtime.list_rules()
+        refs = [RuleRef.from_dict(item) for item in raw_rules]
+        if tag.strip():
+            wanted = tag.strip().lower()
+            refs = [rule for rule in refs if any(str(item).lower() == wanted for item in rule.tags)]
+        rules_by_name = {rule.name: rule for rule in refs}
+        result: Dict[str, Any] = {
+            "ok": True,
+            "rules": compact_rules(rules_by_name, detail_limit=min(limit, 16), name_limit=64),
+            "detail_level": detail_level,
+            "tag": tag,
+        }
+        if detail_level.strip().lower() == "detail":
+            result["details"] = [
+                {
+                    "name": rule.name,
+                    "version": rule.version,
+                    "description": rule.description,
+                    "tags": rule.tags,
+                    "input_schema": rule.input_schema,
+                    "output_schema": rule.output_schema,
+                    "updated_at": rule.updated_at,
+                }
+                for rule in sorted(refs, key=lambda item: (item.updated_at, item.name), reverse=True)[:limit]
+            ]
+        self.repository.append_audit(
+            self.session_id,
+            {
+                "type": "tool",
+                "tool": "list_rules",
+                "input": {"detail_level": detail_level, "tag": tag, "limit": limit},
+                "result": result,
+            },
+        )
+        return result
