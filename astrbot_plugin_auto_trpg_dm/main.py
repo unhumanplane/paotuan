@@ -1,3 +1,5 @@
+from datetime import datetime, timedelta, timezone
+import json
 from pathlib import Path
 import re
 import xml.etree.ElementTree as ET
@@ -16,6 +18,7 @@ from .core.router import IntentRouter
 from .core.security import security_precheck
 from .rules.python_runtime import PythonRuleRuntime
 from .storage.json_repository import JsonGameRepository
+from .tools.diagnostic_tools import DiagnosticTools
 from .tools.registry import ToolRegistry
 
 
@@ -23,7 +26,7 @@ from .tools.registry import ToolRegistry
     "auto_trpg_dm",
     "codex",
     "全自然语言 TRPG DM：动态规则、战棋物理验证、Tag 角色卡与自动剧本。",
-    "0.1.17",
+    "0.1.21",
 )
 class AutoTrpgDmPlugin(Star):
     DEDUP_WINDOW_SECONDS = 18.0
@@ -43,7 +46,10 @@ class AutoTrpgDmPlugin(Star):
             repository=self.repository,
             tool_registry=tool_registry,
         )
-        self.plugin_logger.info("plugin_initialized version=0.1.17 data_dir=%s", data_dir)
+        migrated = self._migrate_legacy_turn_fields()
+        if migrated:
+            self.plugin_logger.info("legacy_turn_fields_migrated saves=%s", migrated)
+        self.plugin_logger.info("plugin_initialized version=0.1.21 data_dir=%s", data_dir)
         logger.info("Auto TRPG DM plugin initialized.")
 
     @filter.command("dm")
@@ -93,6 +99,17 @@ class AutoTrpgDmPlugin(Star):
         session_id = IntentRouter.session_id_for_event(event)
         actor = self.router.actor_context_for_event(event)
         sender_id = actor.get("player_id", "")
+        fast_reply = await self._local_fast_path(session_id, actor, routed_message)
+        if fast_reply:
+            self.plugin_logger.info(
+                "dm_fast_path session=%s sender=%s text=%s",
+                session_id,
+                sender_id,
+                self._dedupe_text(routed_message)[:160],
+            )
+            yield self._quoted_result(event, fast_reply)
+            event.stop_event()
+            return
         duplicate_reply = self._duplicate_reply(session_id, sender_id, routed_message)
         if duplicate_reply:
             self.plugin_logger.info(
@@ -190,8 +207,18 @@ class AutoTrpgDmPlugin(Star):
             yield self._quoted_result(event, self._friendly_error_message(exc))
             event.stop_event()
             return
-        if completion:
-            pending_outputs = self._pop_pending_outputs(session_id)
+        pending_outputs = self._pop_pending_outputs(session_id)
+        dice_outputs = [item for item in pending_outputs if item.get("type") == "dice_check"]
+        other_outputs = [item for item in pending_outputs if item.get("type") != "dice_check"]
+        sent_any = False
+        for item in dice_outputs[:3]:
+            dice_text = self._format_dice_check(item)
+            if dice_text:
+                yield self._quoted_result(event, dice_text)
+                sent_any = True
+        if completion or other_outputs:
+            if not completion and other_outputs:
+                completion = "地图已生成，已附上。"
             self.plugin_logger.info(
                 "dm_completed session=%s sender=%s reply_chars=%s pending_outputs=%s",
                 session_id,
@@ -199,8 +226,149 @@ class AutoTrpgDmPlugin(Star):
                 len(completion),
                 len(pending_outputs),
             )
-            yield self._quoted_result(event, completion, pending_outputs=pending_outputs)
+            yield self._quoted_result(event, completion, pending_outputs=other_outputs)
+            sent_any = True
+        if sent_any:
             event.stop_event()
+
+    async def _local_fast_path(self, session_id: str, actor: dict[str, str], routed_message: str) -> str:
+        text = self._dedupe_text(routed_message)
+        normalized = text.lower()
+        session = self.repository.load_session(session_id)
+        paused = bool((session.scene or {}).get("_dm_paused", False))
+
+        if normalized in {"pause", "暂停", "暂停流程", "暂停游戏"}:
+            session.scene["_dm_paused"] = True
+            session.scene["_dm_pause_reason"] = text
+            session.scene["_dm_paused_by"] = actor
+            session.scene["_dm_paused_at"] = _utc_now_iso()
+            self.repository.save_session(session)
+            self.repository.append_audit(session_id, {"type": "local_fast_path", "action": "pause", "actor": actor})
+            return "流程已暂停。我不会推进轮次、替人行动或调用模型；需要继续时发 `/dm resume` 或 `/dm 恢复`。"
+
+        if normalized in {"resume", "unpause", "恢复", "继续流程", "解除暂停"} or (paused and normalized == "继续"):
+            if paused:
+                session.scene["_dm_paused"] = False
+                session.scene["_dm_resumed_by"] = actor
+                session.scene["_dm_resumed_at"] = _utc_now_iso()
+                self.repository.save_session(session)
+            self.repository.append_audit(session_id, {"type": "local_fast_path", "action": "resume", "actor": actor})
+            return "流程已恢复。下一句 `/dm` 会按当前存档继续裁定。"
+
+        if normalized in {"status", "状态", "当前状态"}:
+            self.repository.append_audit(session_id, {"type": "local_fast_path", "action": "status", "actor": actor})
+            return self._format_local_status(session)
+
+        if normalized in {"token", "tokens", "token消耗", "上下文", "上下文消耗"}:
+            usage = await DiagnosticTools(self.repository, session_id).estimate_token_usage("summary")
+            current = usage.get("current", {})
+            rough = usage.get("rough_token_estimate", {})
+            compression = usage.get("compression", {})
+            self.repository.append_audit(session_id, {"type": "local_fast_path", "action": "token", "actor": actor})
+            return (
+                "Token 粗算："
+                f"快照 {current.get('compact_snapshot_chars', 0)} 字，约 {rough.get('heuristic', 0)} token；"
+                f"完整存档 {current.get('full_save_chars', 0)} 字。"
+                f"距自动压缩约 {compression.get('snapshot_chars_remaining_before_compression', 0)} 字。"
+            )
+
+        if normalized in {"当前轮次", "当前回合", "轮次", "回合", "谁行动", "轮到谁"}:
+            self.repository.append_audit(session_id, {"type": "local_fast_path", "action": "turn_status", "actor": actor})
+            return self._format_turn_status(session)
+
+        if paused:
+            self.repository.append_audit(session_id, {"type": "local_fast_path", "action": "paused_block", "actor": actor})
+            return "当前流程处于暂停状态，我不会把这句送进模型。可用 `/dm status`、`/dm token`、`/dm 当前轮次` 查看信息，或 `/dm resume` 恢复。"
+
+        return ""
+
+    def _format_local_status(self, session) -> str:
+        battle = session.battle or {}
+        turn = dict(battle.get("turn") or {})
+        paused = "暂停中" if (session.scene or {}).get("_dm_paused") else "运行中"
+        if turn.get("active"):
+            turn_text = self._format_turn_status(session)
+        else:
+            turn_text = "当前没有启用轮次。"
+        return (
+            f"团名：{session.title}；模式：{session.mode.value}；流程：{paused}。\n"
+            f"玩家 {len(session.participants)}，角色 {len(session.characters)}，规则 {len(session.rules)}。\n"
+            f"{turn_text}"
+        )
+
+    def _format_turn_status(self, session) -> str:
+        battle = session.battle or {}
+        turn = dict(battle.get("turn") or {})
+        if not turn.get("active"):
+            return "当前没有启用轮次。"
+        current_id = str(turn.get("current_entity_id") or battle.get("turn_entity_id") or "")
+        entities = dict((battle.get("grid") or {}).get("entities") or {})
+        label = _entity_label(session, current_id, entities) if current_id else "未指定"
+        owner_id = _entity_owner(session, current_id, entities) if current_id else ""
+        owner_name = str((session.participants.get(owner_id) or {}).get("display_name") or owner_id or "未绑定")
+        deadline = _parse_datetime(turn.get("deadline_at"))
+        if deadline:
+            remaining = max(0, int((deadline - datetime.now(timezone.utc)).total_seconds()))
+            wait_text = f"等待剩余约 {remaining} 秒。"
+        else:
+            wait_text = "等待计时会在下一次相关 /dm 时补齐为 120 秒。"
+        return (
+            f"第 {int(turn.get('round') or 0)} 轮，阶段：{turn.get('phase', 'idle')}。\n"
+            f"当前行动：{label}（{current_id or '无'}），持有人：{owner_name}。\n"
+            f"{wait_text}"
+        )
+
+    def _migrate_legacy_turn_fields(self) -> int:
+        migrated = 0
+        now = datetime.now(timezone.utc)
+        for path in self.repository.saves_dir.glob("*.json"):
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+            except Exception as exc:
+                self.plugin_logger.warning("legacy_turn_migration_read_failed path=%s error=%s", path, exc)
+                continue
+            battle = data.get("battle")
+            if not isinstance(battle, dict):
+                continue
+            turn = battle.get("turn")
+            if not isinstance(turn, dict) or not turn.get("active"):
+                continue
+            changed = False
+            if not turn.get("timeout_seconds"):
+                turn["timeout_seconds"] = 120
+                changed = True
+            if str(turn.get("phase", "")) == "character_turn":
+                current_id = str(turn.get("current_entity_id") or battle.get("turn_entity_id") or "")
+                if current_id and not battle.get("turn_entity_id"):
+                    battle["turn_entity_id"] = current_id
+                    changed = True
+                if not turn.get("waiting_since_at"):
+                    turn["waiting_since_at"] = now.isoformat()
+                    changed = True
+                if not turn.get("deadline_at"):
+                    turn["deadline_at"] = (now + timedelta(seconds=120)).isoformat()
+                    changed = True
+                if not turn.get("wait_reset_reason"):
+                    turn["wait_reset_reason"] = "legacy_migration"
+                    changed = True
+            if not changed:
+                continue
+            path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+            migrated += 1
+            session_id = str(data.get("session_id") or path.stem)
+            try:
+                self.repository.append_audit(
+                    session_id,
+                    {
+                        "type": "legacy_turn_fields_migrated",
+                        "save": path.name,
+                        "timeout_seconds": turn.get("timeout_seconds"),
+                        "deadline_at": turn.get("deadline_at", ""),
+                    },
+                )
+            except Exception as exc:
+                self.plugin_logger.warning("legacy_turn_migration_audit_failed path=%s error=%s", path, exc)
+        return migrated
 
     async def terminate(self):
         self.plugin_logger.info("plugin_terminated")
@@ -235,10 +403,28 @@ class AutoTrpgDmPlugin(Star):
             if file_path:
                 png_path = self._ensure_png_preview(file_path, item)
                 if png_path:
-                    components.append(ImageComponent(file=png_path))
+                    components.append(ImageComponent.fromFileSystem(png_path))
+                    self.plugin_logger.info("map_preview_attached path=%s", png_path)
                 else:
                     components.append(Plain(text=f"\n地图已生成：{name}\n{file_path}"))
         return event.chain_result(components)
+
+    def _format_dice_check(self, item: dict) -> str:
+        rolls = item.get("rolls") or []
+        if not rolls:
+            return ""
+        reason = _compact_text(item.get("reason") or "本轮行动需要随机裁定", 120)
+        rule_name = _compact_text(item.get("rule_name") or "unknown_rule", 80)
+        version = item.get("version")
+        roll_text = "；".join(_format_roll_record(record) for record in rolls[:6])
+        if len(rolls) > 6:
+            roll_text += f"；另有 {len(rolls) - 6} 次掷骰"
+        if item.get("ok"):
+            result_text = _compact_result(item.get("rule_result"))
+        else:
+            result_text = _compact_text(item.get("error_reason") or item.get("error") or "规则执行失败", 160)
+        suffix = f" v{version}" if version else ""
+        return f"骰子检定：{reason}\n规则：{rule_name}{suffix}\n掷骰：{roll_text}\n结果：{result_text}"
 
     def _ensure_png_preview(self, svg_path: str, item: dict) -> str:
         path = Path(svg_path)
@@ -266,10 +452,25 @@ class AutoTrpgDmPlugin(Star):
         height = max(320, min(1600, height))
         canvas = Image.new("RGB", (width, height), "#f8fafc")
         draw = ImageDraw.Draw(canvas)
-        try:
-            font = ImageFont.truetype("DejaVuSans.ttf", 16)
-        except Exception:
-            font = ImageFont.load_default()
+        font_cache = {}
+
+        def font_for(size: int, weight: object = ""):
+            size = max(10, min(48, int(size or 16)))
+            bold = str(weight or "").lower() in {"bold", "700", "800", "900"}
+            key = (size, bold)
+            if key in font_cache:
+                return font_cache[key]
+            for candidate in _font_candidates(svg_path, bold=bold):
+                try:
+                    font_cache[key] = ImageFont.truetype(str(candidate), size)
+                    return font_cache[key]
+                except Exception:
+                    continue
+            try:
+                font_cache[key] = ImageFont.truetype("DejaVuSans.ttf", size)
+            except Exception:
+                font_cache[key] = ImageFont.load_default()
+            return font_cache[key]
 
         def color(value: object, default: str = "#111827"):
             text = str(value or "").strip()
@@ -318,8 +519,29 @@ class AutoTrpgDmPlugin(Star):
             elif tag == "text":
                 text = "".join(element.itertext()).strip()
                 if text:
+                    font = font_for(
+                        _svg_int(element.get("font-size"), 18),
+                        element.get("font-weight"),
+                    )
+                    x = _svg_float(element.get("x"))
+                    y = _svg_float(element.get("y"))
+                    try:
+                        bbox = draw.textbbox((0, 0), text[:40], font=font)
+                        text_width = bbox[2] - bbox[0]
+                        text_height = bbox[3] - bbox[1]
+                    except Exception:
+                        text_width = 0
+                        text_height = 0
+                    anchor = str(element.get("text-anchor") or "").lower()
+                    baseline = str(element.get("dominant-baseline") or "").lower()
+                    if anchor == "middle":
+                        x -= text_width / 2
+                    elif anchor == "end":
+                        x -= text_width
+                    if baseline in {"middle", "central"}:
+                        y -= text_height / 2
                     draw.text(
-                        (_svg_float(element.get("x")), _svg_float(element.get("y"))),
+                        (x, y),
                         text[:40],
                         fill=fill or stroke or "#111827",
                         font=font,
@@ -402,6 +624,77 @@ def _svg_local_name(tag: str) -> str:
     return str(tag).rsplit("}", 1)[-1] if "}" in str(tag) else str(tag)
 
 
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _parse_datetime(value: object) -> datetime | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _entity_label(session, entity_id: str, entities: dict) -> str:
+    entity = dict(entities.get(entity_id, {}))
+    if entity.get("name"):
+        return str(entity["name"])
+    character = session.characters.get(entity_id)
+    if character:
+        return character.name or character.id
+    return entity_id
+
+
+def _entity_owner(session, entity_id: str, entities: dict) -> str:
+    entity = dict(entities.get(entity_id, {}))
+    tags = dict(entity.get("tags", {}))
+    if tags.get("player_id"):
+        return str(tags["player_id"])
+    character_id = str(tags.get("character_id", "") or entity_id)
+    character = session.characters.get(character_id)
+    if character and character.player_id:
+        return str(character.player_id)
+    for player_id, bound_id in session.player_character_map.items():
+        if bound_id == character_id or bound_id == entity_id:
+            return str(player_id)
+    return ""
+
+
+def _font_candidates(svg_path: Path, bold: bool = False) -> list[Path]:
+    data_dir = svg_path.parent.parent
+    names = (
+        ["NotoSansCJKsc-Bold.otf", "NotoSansSC-Bold.otf", "SourceHanSansSC-Bold.otf"]
+        if bold
+        else ["NotoSansCJKsc-Regular.otf", "NotoSansSC-Regular.otf", "SourceHanSansSC-Regular.otf"]
+    )
+    candidates: list[Path] = []
+    for name in names:
+        candidates.append(data_dir / "fonts" / name)
+    candidates.extend(
+        [
+            Path("/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc"),
+            Path("/usr/share/fonts/opentype/noto/NotoSansCJKsc-Regular.otf"),
+            Path("/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc"),
+            Path("/usr/share/fonts/truetype/noto/NotoSansCJKsc-Regular.otf"),
+            Path("/usr/share/fonts/truetype/wqy/wqy-microhei.ttc"),
+            Path("/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc"),
+            Path("/usr/share/fonts/truetype/arphic/uming.ttc"),
+            Path("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"),
+            Path("C:/Windows/Fonts/msyh.ttc"),
+            Path("C:/Windows/Fonts/simhei.ttf"),
+        ]
+    )
+    return candidates
+
+
 def _svg_float(value: object, default: float = 0.0) -> float:
     if value is None:
         return default
@@ -421,3 +714,42 @@ def _svg_int(value: object, default: int = 0) -> int:
 def _svg_points(value: object) -> list[tuple[float, float]]:
     numbers = [float(item) for item in re.findall(r"-?\d+(?:\.\d+)?", str(value or ""))]
     return [(numbers[index], numbers[index + 1]) for index in range(0, len(numbers) - 1, 2)]
+
+
+def _format_roll_record(record: object) -> str:
+    if not isinstance(record, dict):
+        return _compact_text(record, 80)
+    expression = _compact_text(record.get("expression") or "roll", 40)
+    rolls = record.get("rolls") or []
+    modifier = int(record.get("modifier") or 0)
+    total = record.get("total")
+    roll_text = ",".join(str(item) for item in list(rolls)[:20])
+    if len(rolls) > 20:
+        roll_text += ",..."
+    if modifier > 0:
+        mod_text = f"+{modifier}"
+    elif modifier < 0:
+        mod_text = str(modifier)
+    else:
+        mod_text = ""
+    return f"{expression}=[{roll_text}]{mod_text} => {total}"
+
+
+def _compact_result(value: object) -> str:
+    if value is None:
+        return "规则执行完成"
+    if isinstance(value, dict):
+        preferred = []
+        for key in ("total", "success", "degree", "outcome", "damage", "result", "message"):
+            if key in value:
+                preferred.append(f"{key}={value[key]}")
+        if preferred:
+            return _compact_text("；".join(preferred), 180)
+    return _compact_text(json.dumps(value, ensure_ascii=False, separators=(",", ":")), 180)
+
+
+def _compact_text(value: object, limit: int) -> str:
+    text = str(value or "").strip()
+    if len(text) <= limit:
+        return text
+    return text[: max(1, limit - 1)].rstrip() + "…"

@@ -77,6 +77,7 @@ class SpatialTools:
                 "current_entity_id": "",
                 "output_limit_chars": 180,
                 "auto_policy": "defend_or_follow",
+                "timeout_seconds": 120,
                 "actions_this_round": {},
                 "turn_log": [],
             },

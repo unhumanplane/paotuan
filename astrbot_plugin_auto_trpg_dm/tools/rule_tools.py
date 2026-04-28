@@ -29,6 +29,7 @@ class ExecuteRuleArgs(BaseModel):
     rule_name: str = Field(..., description="要执行的已注册规则名称")
     args: Dict[str, Any] = Field(default_factory=dict, description="传给 calculate 的参数字典")
     version: Optional[int] = Field(default=None, description="可选规则版本；为空则使用最新版")
+    reason: str = Field(default="", description="为什么进行这次检定/掷骰；不要放进 args，避免影响规则函数入参")
 
 
 class ListRulesArgs(BaseModel):
@@ -43,10 +44,14 @@ class RuleTools:
         repository: JsonGameRepository,
         rule_runtime: PythonRuleRuntime,
         session_id: str,
+        actor: dict[str, str] | None = None,
+        message: str = "",
     ):
         self.repository = repository
         self.rule_runtime = rule_runtime
         self.session_id = session_id
+        self.actor = actor or {}
+        self.message = message
 
     async def register_rule(
         self,
@@ -97,6 +102,7 @@ class RuleTools:
         rule_name: str,
         args: Optional[Dict[str, Any]] = None,
         version: Optional[int] = None,
+        reason: str = "",
     ) -> Dict[str, Any]:
         """执行已注册 TRPG 规则，用于检定、伤害、资源消耗和随机判定。"""
         result = self.rule_runtime.execute_rule(
@@ -104,16 +110,55 @@ class RuleTools:
             args=args or {},
             version=version,
         )
+        if result.get("rolls"):
+            self._queue_dice_check(
+                rule_name=rule_name,
+                args=args or {},
+                version=version,
+                reason=reason,
+                result=result,
+            )
+            result["dice_check_note_queued"] = True
         self.repository.append_audit(
             self.session_id,
             {
                 "type": "tool",
                 "tool": "execute_rule",
-                "input": {"rule_name": rule_name, "args": args or {}, "version": version},
+                "input": {"rule_name": rule_name, "args": args or {}, "version": version, "reason": reason},
                 "result": result,
             },
         )
         return result
+
+    def _queue_dice_check(
+        self,
+        rule_name: str,
+        args: Dict[str, Any],
+        version: Optional[int],
+        reason: str,
+        result: Dict[str, Any],
+    ) -> None:
+        record = {
+            "type": "dice_check",
+            "rule_name": str(result.get("rule_name") or rule_name),
+            "version": result.get("version", version),
+            "reason": _dice_reason(reason=reason, args=args, rule_name=rule_name, message=self.message),
+            "args": _json_safe(args),
+            "ok": bool(result.get("ok")),
+            "rolls": _json_safe(result.get("rolls") or []),
+            "rule_result": _json_safe(result.get("result")),
+            "error": str(result.get("error") or ""),
+            "error_reason": str(result.get("reason") or ""),
+            "actor": self.actor,
+        }
+        try:
+            session = self.repository.load_session(self.session_id)
+            pending = list((session.scene or {}).get("_pending_outputs") or [])
+            pending.append(record)
+            session.scene["_pending_outputs"] = pending[-8:]
+            self.repository.save_session(session)
+        except Exception:
+            return
 
     async def list_rules(self, detail_level: str = "summary", tag: str = "", limit: int = 16) -> Dict[str, Any]:
         """列出当前本地已经注册的规则，默认返回二级摘要以节省上下文。"""
@@ -152,3 +197,38 @@ class RuleTools:
             },
         )
         return result
+
+
+def _dice_reason(reason: str, args: Dict[str, Any], rule_name: str, message: str) -> str:
+    for value in (
+        reason,
+        args.get("reason"),
+        args.get("check_reason"),
+        args.get("purpose"),
+        args.get("intent"),
+        args.get("action"),
+        args.get("description"),
+    ):
+        text = str(value or "").strip()
+        if text:
+            return _short_text(text, 120)
+    if message:
+        return _short_text(f"玩家行动需要随机裁定：{message}", 120)
+    return f"执行规则 {rule_name} 的随机检定"
+
+
+def _json_safe(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {str(key): _json_safe(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [_json_safe(item) for item in value]
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        return value
+    return str(value)
+
+
+def _short_text(value: Any, limit: int) -> str:
+    text = str(value or "").strip()
+    if len(text) <= limit:
+        return text
+    return text[: max(1, limit - 1)].rstrip() + "…"

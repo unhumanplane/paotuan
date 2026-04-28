@@ -128,7 +128,13 @@ class ToolRegistry:
         message: str = "",
         provider_id: str = "",
     ) -> tuple[ToolSet, list[str], LocalToolExecutor, list[dict[str, Any]]]:
-        rule_tools = RuleTools(self.repository, self.rule_runtime, session_id)
+        rule_tools = RuleTools(
+            self.repository,
+            self.rule_runtime,
+            session_id,
+            actor=actor,
+            message=message,
+        )
         memory_tools = MemoryTools(self.repository, session_id, actor=actor)
         spatial_tools = SpatialTools(self.repository, session_id, actor=actor)
         turn_tools = TurnTools(self.repository, session_id, actor=actor)

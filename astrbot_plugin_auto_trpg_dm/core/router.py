@@ -24,6 +24,17 @@ class LockedToolExecutor:
             return await self.executor.execute(tool_name, args)
 
 
+class LlmFailureResponse:
+    def __init__(self, completion_text: str):
+        self.completion_text = completion_text
+        self.tools_call_name: list[str] = []
+        self.tools_call_args: list[dict[str, Any]] = []
+        self.tool_calls: list[dict[str, Any]] = []
+
+    def __str__(self) -> str:
+        return self.completion_text
+
+
 class IntentRouter:
     def __init__(
         self,
@@ -163,7 +174,7 @@ class IntentRouter:
 
         async with lock:
             latest_session = self.repository.load_session(session_id)
-            completion = self._limit_completion(completion, latest_session)
+            completion = self._limit_completion(completion, latest_session, raw_player_message=message)
             self.repository.append_audit(
                 session_id,
                 {
@@ -378,6 +389,36 @@ class IntentRouter:
         return repaired
 
     async def _llm_generate(self, **kwargs: Any) -> Any:
+        max_attempts = 3
+        last_exc: Exception | None = None
+        for attempt in range(1, max_attempts + 1):
+            try:
+                return await self._llm_generate_once(**kwargs)
+            except Exception as exc:
+                if isinstance(exc, TypeError) or not _is_retryable_llm_error(exc):
+                    raise
+                last_exc = exc
+                if attempt >= max_attempts:
+                    break
+                delay = 1.5 * attempt
+                get_plugin_logger().warning(
+                    "llm_generate_retry attempt=%s retry_left=%s delay=%.1fs error=%s",
+                    attempt,
+                    max_attempts - attempt,
+                    delay,
+                    str(exc)[:200],
+                )
+                await asyncio.sleep(delay)
+        get_plugin_logger().error(
+            "llm_generate_failed_after_retries attempts=%s error=%s",
+            max_attempts,
+            str(last_exc)[:240] if last_exc else "",
+        )
+        return LlmFailureResponse(
+            "模型这轮连续调用失败，我不会编造结算结果；当前只保留已完成的本地状态校验。请稍后重试，或把动作压短再发一次。"
+        )
+
+    async def _llm_generate_once(self, **kwargs: Any) -> Any:
         try:
             return await self.astr_context.llm_generate(**kwargs)
         except TypeError as exc:
@@ -391,9 +432,14 @@ class IntentRouter:
                 raise exc
 
     @staticmethod
-    def _limit_completion(text: str, session: Any) -> str:
+    def _limit_completion(text: str, session: Any, raw_player_message: str = "") -> str:
         if not text:
             return text
+        if _wants_full_status_output(raw_player_message):
+            limit = 2200
+            if len(text) <= limit:
+                return text
+            return text[:limit].rstrip()
         limit = 220
         try:
             turn = ((session.battle or {}).get("turn") or {})
@@ -532,3 +578,59 @@ class IntentRouter:
             "session_id": IntentRouter.session_id_for_event(event),
             "seen_at": utc_now_iso(),
         }
+
+
+def _is_retryable_llm_error(exc: Exception) -> bool:
+    name = exc.__class__.__name__.lower()
+    text = str(exc).lower()
+    retryable_markers = (
+        "timeout",
+        "timed out",
+        "readtimeout",
+        "connecttimeout",
+        "connection",
+        "server disconnected",
+        "temporarily unavailable",
+        "rate limit",
+        "429",
+        "502",
+        "503",
+        "504",
+    )
+    return any(marker in name or marker in text for marker in retryable_markers)
+
+
+def _wants_full_status_output(message: str) -> bool:
+    text = str(message or "").strip().lower()
+    if not text:
+        return False
+    full_terms = (
+        "所有",
+        "全部",
+        "完整",
+        "详细",
+        "列表",
+        "一览",
+        "全员",
+        "敌我",
+        "all",
+        "full",
+        "list",
+    )
+    status_terms = (
+        "状态",
+        "行动顺序",
+        "顺序",
+        "队列",
+        "轮次",
+        "回合",
+        "战况",
+        "位置",
+        "角色",
+        "敌人",
+        "我方",
+        "status",
+        "initiative",
+        "turn order",
+    )
+    return any(term in text for term in full_terms) and any(term in text for term in status_terms)

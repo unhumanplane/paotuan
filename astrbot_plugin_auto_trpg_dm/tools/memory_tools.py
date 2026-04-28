@@ -76,6 +76,14 @@ class MemoryTools:
             return {"ok": False, "error": "invalid_character_id"}
         session = self.repository.load_session(self.session_id)
         owner_id = str(player_id or self.actor.get("player_id", "") or "").strip()
+        owner_guard = self._character_owner_guard(session, safe_id, owner_id)
+        if owner_guard:
+            self._audit(
+                "create_character",
+                {"character_id": character_id, "name": name, "summary": summary, "player_id": owner_id, "tags": tags or []},
+                owner_guard,
+            )
+            return owner_guard
         character = Character(
             id=safe_id,
             name=name,
@@ -127,6 +135,14 @@ class MemoryTools:
             return {"ok": False, "error": "missing_player_id"}
         session = self.repository.load_session(self.session_id)
         character = session.characters.get(safe_id)
+        owner_guard = self._character_owner_guard(session, safe_id, owner_id)
+        if owner_guard:
+            self._audit(
+                "bind_player_character",
+                {"character_id": character_id, "player_id": owner_id, "name": name, "summary": summary, "tags": tags or []},
+                owner_guard,
+            )
+            return owner_guard
         created = False
         if not character:
             character = Character(
@@ -353,6 +369,34 @@ class MemoryTools:
             }
         )
         session.participants[player_id] = participant
+
+    def _character_owner_guard(
+        self,
+        session: GameSession,
+        character_id: str,
+        requested_owner_id: str,
+    ) -> Dict[str, Any] | None:
+        existing_owner = self._character_owner_id(session, character_id)
+        if not existing_owner or not requested_owner_id or existing_owner == requested_owner_id:
+            return None
+        return {
+            "ok": False,
+            "error": "character_owner_conflict",
+            "message": "该角色已经绑定到其他玩家，不能通过昵称或自然语言声明抢占控制权。",
+            "character_id": character_id,
+            "owner_player_id": existing_owner,
+            "requester_player_id": requested_owner_id,
+        }
+
+    @staticmethod
+    def _character_owner_id(session: GameSession, character_id: str) -> str:
+        character = session.characters.get(character_id)
+        if character and character.player_id:
+            return str(character.player_id)
+        for player_id, bound_id in session.player_character_map.items():
+            if bound_id == character_id:
+                return str(player_id)
+        return ""
 
 
 def character_as_dict(character: Character) -> Dict[str, Any]:

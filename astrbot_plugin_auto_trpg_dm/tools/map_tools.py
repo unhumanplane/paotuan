@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import re
 import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
@@ -168,6 +169,36 @@ class MapTools:
     async def _llm_generate(self, **kwargs: Any) -> Any:
         if self.provider_id:
             kwargs = {"chat_provider_id": self.provider_id, **kwargs}
+        max_attempts = 3
+        last_exc: Exception | None = None
+        for attempt in range(1, max_attempts + 1):
+            try:
+                return await self._llm_generate_once(**kwargs)
+            except Exception as exc:
+                if isinstance(exc, TypeError) or not _is_retryable_llm_error(exc):
+                    raise
+                last_exc = exc
+                if attempt >= max_attempts:
+                    break
+                delay = 1.5 * attempt
+                get_plugin_logger().warning(
+                    "map_llm_retry session=%s attempt=%s retry_left=%s delay=%.1fs error=%s",
+                    self.session_id,
+                    attempt,
+                    max_attempts - attempt,
+                    delay,
+                    str(exc)[:200],
+                )
+                await asyncio.sleep(delay)
+        get_plugin_logger().error(
+            "map_llm_failed_after_retries session=%s attempts=%s error=%s",
+            self.session_id,
+            max_attempts,
+            str(last_exc)[:240] if last_exc else "",
+        )
+        return _LlmFailureResponse("地图子模型连续调用失败，未生成 SVG。")
+
+    async def _llm_generate_once(self, **kwargs: Any) -> Any:
         try:
             return await self.astr_context.llm_generate(**kwargs)
         except TypeError as exc:
@@ -211,7 +242,9 @@ MAP_SYSTEM_PROMPT = """你是 TRPG 地图绘制子 agent。你的唯一任务是
 3. 只画视觉示意，不得改变游戏事实；坐标、移动、视线、攻击范围仍以主系统 Spatial Engine 为准。
 4. 若收到战棋快照，优先按快照画网格、障碍、友方、敌方和关键位置；不要发明实体坐标。
 5. 使用清晰俯视战术图：网格、墙体/障碍、掩体、入口出口、友敌标记、简短标签、图例。
-6. 文本标签要短，避免长段说明。"""
+6. 文本标签要短，避免长段说明。
+7. 为了聊天 PNG 预览兼容，优先使用显式坐标的 rect、line、circle、ellipse、polygon、polyline、text；不要依赖 path、transform、style、filter、复杂渐变或外部字体。
+8. 中文标签必须可读：每个标签 2-8 个汉字，font-family 使用 Noto Sans CJK SC, Noto Sans SC, Microsoft YaHei, SimHei, sans-serif。"""
 
 
 def _build_map_prompt(
@@ -244,9 +277,11 @@ def _build_map_prompt(
 
 输出要求：
 - 根元素必须是 <svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}">
-- 使用 rect/line/path/circle/polygon/text 等基础元素。
+- 使用 rect/line/circle/ellipse/polygon/polyline/text 等基础元素。
 - 友方用冷色，敌方用红/橙色，障碍用深灰，掩体用棕灰，出口入口用绿色或黄色。
-- 左上角写短标题，右下角放 3-5 项图例。
+- 使用浅灰蓝背景、细网格、深色描边、少量高对比色块；不要一整张图只有单一色系。
+- 左上角写短标题，右下角放 3-5 项图例；文字 font-size 至少 18，中文标签短而清楚。
+- 为了预览稳定，尽量不要使用 path、transform、style、filter 或复杂渐变；所有元素直接写 x/y/cx/cy/points 坐标。
 - 只输出 SVG。"""
 
 
@@ -368,6 +403,8 @@ def _clean_element(element: ET.Element) -> Optional[ET.Element]:
         value = _safe_attr_value(raw_value)
         if value is not None:
             cleaned.set(key, value)
+    if tag in {"text", "tspan"} and not cleaned.get("font-family"):
+        cleaned.set("font-family", "Noto Sans CJK SC, Noto Sans SC, Microsoft YaHei, SimHei, sans-serif")
     if element.text and tag in {"title", "desc", "text", "tspan"}:
         cleaned.text = _safe_text(element.text, 120)
     for child in list(element):
@@ -442,3 +479,31 @@ def locals_without_self(values: Dict[str, Any]) -> Dict[str, Any]:
         for key, value in values.items()
         if key not in {"self", "session", "latest_session", "response", "raw_text", "svg", "result"}
     }
+
+
+class _LlmFailureResponse:
+    def __init__(self, completion_text: str):
+        self.completion_text = completion_text
+
+    def __str__(self) -> str:
+        return self.completion_text
+
+
+def _is_retryable_llm_error(exc: Exception) -> bool:
+    name = exc.__class__.__name__.lower()
+    text = str(exc).lower()
+    retryable_markers = (
+        "timeout",
+        "timed out",
+        "readtimeout",
+        "connecttimeout",
+        "connection",
+        "server disconnected",
+        "temporarily unavailable",
+        "rate limit",
+        "429",
+        "502",
+        "503",
+        "504",
+    )
+    return any(marker in name or marker in text for marker in retryable_markers)
