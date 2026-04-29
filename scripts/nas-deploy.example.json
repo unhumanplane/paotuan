@@ -3,7 +3,7 @@
   "user": "astrbot",
   "port": 22,
   "identityFile": ".deploy/astrbot_deploy_ed25519",
-  "remotePluginDir": "/volume1/docker/astrbot/data/plugins/astrbot_plugin_auto_trpg_dm",
+  "remotePluginDir": "/AstrBot/data/plugins/000_auto_trpg_dm",
   "remoteBackupDir": "/volume1/docker/astrbot/backups/astrbot_plugin_auto_trpg_dm",
   "restartCommand": "docker restart astrbot",
   "keepBackups": 10,

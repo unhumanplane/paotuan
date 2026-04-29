@@ -105,8 +105,11 @@ if (-not $userName) { Fail "Config field is required: user" }
 if (-not (Test-Path $identityFile)) { Fail "SSH identity file not found: $identityFile" }
 if (-not $remotePluginDir) { Fail "Config field is required: remotePluginDir" }
 if (-not $remoteBackupDir) { Fail "Config field is required: remoteBackupDir" }
-if (-not $remotePluginDir.EndsWith("/astrbot_plugin_auto_trpg_dm")) {
-    Fail "remotePluginDir must point at the plugin directory and end with /astrbot_plugin_auto_trpg_dm"
+if ($remotePluginDir -notmatch "^/") {
+    Fail "remotePluginDir must be an absolute Linux path on the NAS."
+}
+if ($remotePluginDir -match "/$") {
+    Fail "remotePluginDir must not end with a trailing slash."
 }
 
 $sshOptions = @()
