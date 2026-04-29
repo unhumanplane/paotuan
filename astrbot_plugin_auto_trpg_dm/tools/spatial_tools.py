@@ -8,6 +8,7 @@ from ..core.models import GameMode
 from ..spatial.engine import SpatialEngine
 from ..spatial.grid import Cell, Entity, GridState, Point
 from ..storage.json_repository import JsonGameRepository
+from .memory_tools import background_required_result
 
 
 class MoveEntityArgs(BaseModel):
@@ -57,12 +58,16 @@ class SpatialTools:
         """创建或重置当前战棋地图，并进入战棋模式。"""
         width = max(2, min(64, int(width)))
         height = max(2, min(64, int(height)))
+        session = self.repository.load_session(self.session_id)
+        gate = background_required_result(session, "create_grid")
+        if gate:
+            self._audit("create_grid", {"width": width, "height": height, "cells": cells or []}, gate)
+            return gate
         grid = GridState.empty(width, height)
         for item in cells or []:
             cell = Cell.from_dict(item)
             if grid.in_bounds(Point(cell.x, cell.y)):
                 grid.cells[(cell.x, cell.y)] = cell
-        session = self.repository.load_session(self.session_id)
         session.mode = GameMode.TACTICAL
         session.battle = {
             "active": True,
@@ -100,6 +105,11 @@ class SpatialTools:
         tags: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """在当前战棋地图上放置实体。"""
+        session = self.repository.load_session(self.session_id)
+        gate = background_required_result(session, "place_entity")
+        if gate:
+            self._audit("place_entity", locals_without_self(locals()), gate)
+            return gate
         session, grid = self._load_grid()
         engine = SpatialEngine(grid)
         result = engine.place_entity(
@@ -167,26 +177,47 @@ class SpatialTools:
             return None
         phase = str(turn.get("phase", ""))
         current = str(turn.get("current_entity_id", "") or (session.battle or {}).get("turn_entity_id", ""))
-        if phase == "character_turn" and current and entity_id != current:
-            return {
-                "ok": False,
-                "error_code": "wrong_turn_actor",
-                "message": "当前是角色回合，只能操作当前行动单位。",
-                "current_entity_id": current,
-                "requested_entity_id": entity_id,
-                "phase": phase,
-            }
-        if phase == "character_turn" and current and entity_id == current:
-            owner_id = self._owner_player_id(session, current)
+        if phase == "character_turn":
+            actions = dict(turn.get("actions_this_round") or {})
+            if entity_id in actions:
+                return {
+                    "ok": False,
+                    "error_code": "entity_already_acted_this_round",
+                    "message": "该角色本轮已经行动过；不能再次移动、攻击或选择目标。",
+                    "current_entity_id": current,
+                    "requested_entity_id": entity_id,
+                    "phase": phase,
+                }
+            order = _clean_order(list(turn.get("turn_order") or []))
+            if order and entity_id not in order:
+                return {
+                    "ok": False,
+                    "error_code": "entity_not_in_turn_order",
+                    "message": "该实体不在本轮行动列表里；不能在当前轮次操作。",
+                    "current_entity_id": current,
+                    "requested_entity_id": entity_id,
+                    "phase": phase,
+                }
+            owner_id = self._owner_player_id(session, entity_id)
             requester_id = str(self.actor.get("player_id", "") or "")
             if owner_id and requester_id != owner_id:
                 return {
                     "ok": False,
                     "error_code": "character_control_denied",
-                    "message": "当前行动角色属于其他玩家；非持有人不能替他移动、攻击或选择目标。",
+                    "message": "该角色属于其他玩家；非持有人不能替他移动、攻击或选择目标。",
                     "current_entity_id": current,
+                    "requested_entity_id": entity_id,
                     "owner_player_id": owner_id,
                     "requester_player_id": requester_id,
+                    "phase": phase,
+                }
+            if not owner_id and current and entity_id != current:
+                return {
+                    "ok": False,
+                    "error_code": "wrong_turn_actor",
+                    "message": "无持有人的单位仍按当前指针行动；不能乱序操作 NPC 或敌方单位。",
+                    "current_entity_id": current,
+                    "requested_entity_id": entity_id,
                     "phase": phase,
                 }
         return None
@@ -216,3 +247,14 @@ class SpatialTools:
 
 def locals_without_self(values: Dict[str, Any]) -> Dict[str, Any]:
     return {key: value for key, value in values.items() if key not in {"self", "session", "grid", "engine", "result"}}
+
+
+def _clean_order(order: List[str]) -> List[str]:
+    cleaned: List[str] = []
+    seen = set()
+    for item in order:
+        value = str(item).strip()
+        if value and value not in seen:
+            cleaned.append(value)
+            seen.add(value)
+    return cleaned

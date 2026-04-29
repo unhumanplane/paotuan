@@ -193,6 +193,8 @@ class GameSession:
         entities = dict(grid.get("entities", {}))
         turn = dict(battle.get("turn", {}))
         current_entity_id = str(turn.get("current_entity_id", "") or battle.get("turn_entity_id", ""))
+        order = list(turn.get("turn_order", []))[:24]
+        actions = dict(turn.get("actions_this_round", {}))
         return {
             "active": bool(battle.get("active", False)),
             "turn_entity_id": battle.get("turn_entity_id", ""),
@@ -200,7 +202,7 @@ class GameSession:
                 "active": bool(turn.get("active", False)),
                 "round": turn.get("round", 0),
                 "phase": turn.get("phase", "idle"),
-                "turn_order": list(turn.get("turn_order", []))[:24],
+                "turn_order": order,
                 "current_index": turn.get("current_index", -1),
                 "current_entity_id": current_entity_id,
                 "current_label": self._battle_entity_label(current_entity_id, entities),
@@ -209,7 +211,9 @@ class GameSession:
                 "timeout_seconds": turn.get("timeout_seconds", 120),
                 "waiting_since_at": turn.get("waiting_since_at", ""),
                 "deadline_at": turn.get("deadline_at", ""),
-                "actions_this_round": dict(turn.get("actions_this_round", {})),
+                "actions_this_round": actions,
+                "acted_entity_ids": [entity_id for entity_id in order if entity_id in actions],
+                "pending_entity_ids": [entity_id for entity_id in order if entity_id not in actions],
                 "recent_turn_log": list(turn.get("turn_log", []))[-8:],
             }
             if turn

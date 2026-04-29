@@ -19,9 +19,11 @@ from .memory_tools import (
     CreateCharacterArgs,
     MemoryTools,
     SessionControlArgs,
+    StartGameArgs,
     UpdateCharacterTagsArgs,
     UpdateSceneArgs,
     UpdateWorldTagsArgs,
+    has_campaign_background,
 )
 from .rule_tools import ExecuteRuleArgs, ListRulesArgs, RegisterRuleArgs, RuleTools
 from .spatial_tools import (
@@ -135,7 +137,7 @@ class ToolRegistry:
             actor=actor,
             message=message,
         )
-        memory_tools = MemoryTools(self.repository, session_id, actor=actor)
+        memory_tools = MemoryTools(self.repository, session_id, actor=actor, message=message)
         spatial_tools = SpatialTools(self.repository, session_id, actor=actor)
         turn_tools = TurnTools(self.repository, session_id, actor=actor)
         diagnostic_tools = DiagnosticTools(self.repository, session_id)
@@ -195,9 +197,15 @@ class ToolRegistry:
                 model=UpdateWorldTagsArgs,
                 handler=memory_tools.update_world_tags,
             ),
+            "start_game": make_tool(
+                name="start_game",
+                description="当玩家要求开始游戏、开场或进入剧情时使用。先检查背景、角色、开场介绍和跌宕剧情骨架是否足够；足够才正式开场并锁定剧情主干。开场后仍允许新玩家加入。",
+                model=StartGameArgs,
+                handler=memory_tools.start_game,
+            ),
             "session_control": make_tool(
                 name="session_control",
-                description="会话控制工具：查询状态、重开当前会话、压缩记忆、查看最近调试记录。",
+                description="会话控制工具：查询状态、备份存档、列出备份、在当前档为空时恢复上一个非空备份、重开当前会话、压缩记忆、查看最近调试记录。重开/清空存档必须先获取确认码，再用 confirm_reset 和 confirm_token 二次确认。",
                 model=SessionControlArgs,
                 handler=memory_tools.session_control,
             ),
@@ -233,7 +241,7 @@ class ToolRegistry:
             ),
             "turn_control": make_tool(
                 name="turn_control",
-                description="控制战斗轮动状态：场面结算、角色回合、行动顺序、推进下一位、120 秒超时、无人响应自动保守行动。",
+                description="控制战斗轮动状态：场面结算、角色回合、行动顺序、本轮乱序行动记录、推进下一建议行动者、120 秒超时、无人响应自动保守行动。",
                 model=TurnControlArgs,
                 handler=turn_tools.turn_control,
             ),
@@ -266,7 +274,10 @@ class ToolRegistry:
         )
         diagnostic_tools.set_tool_specs_provider(specs_for_mode)
 
-        allowed = self._with_llm_decided_tools(self._allowed_tool_names(mode, message=message))
+        session = self.repository.load_session(session_id)
+        allowed = self._with_llm_decided_tools(self._allowed_tool_names(mode, message=message), message=message)
+        if not has_campaign_background(session):
+            allowed = self._background_first_tool_names(allowed)
         selected = {name: catalog[name] for name in allowed}
         specs = [
             {
@@ -286,6 +297,7 @@ class ToolRegistry:
                 "bind_player_character",
                 "update_character_tags",
                 "update_world_tags",
+                "start_game",
                 "register_rule",
                 "execute_rule",
                 "list_rules",
@@ -395,6 +407,7 @@ class ToolRegistry:
                 "update_character_tags",
                 "bind_player_character",
                 "update_scene",
+                "start_game",
                 "list_rules",
                 "session_control",
                 "estimate_token_usage",
@@ -405,6 +418,7 @@ class ToolRegistry:
             "create_character",
             "bind_player_character",
             "update_character_tags",
+            "start_game",
             "register_rule",
             "execute_rule",
             "list_rules",
@@ -414,11 +428,28 @@ class ToolRegistry:
         return base_tools
 
     @staticmethod
-    def _with_llm_decided_tools(names: list[str]) -> list[str]:
-        """Expose lightweight visual generation to the LLM without keyword gating."""
+    def _with_llm_decided_tools(names: list[str], message: str = "") -> list[str]:
+        """Expose visual generation unless the local intent is clearly text-only."""
         if "generate_map_svg" in names:
             return names
+        if message and _looks_text_only_request(message):
+            return names
         return [*names, "generate_map_svg"]
+
+    @staticmethod
+    def _background_first_tool_names(names: list[str]) -> list[str]:
+        """Before the campaign background exists, only allow tools that can define or inspect it."""
+        allowed = []
+        for name in names:
+            if name in {"update_world_tags", "session_control", "estimate_token_usage"} and name not in allowed:
+                allowed.append(name)
+        if "update_world_tags" not in allowed:
+            allowed.insert(0, "update_world_tags")
+        if "session_control" not in allowed:
+            allowed.append("session_control")
+        if "estimate_token_usage" not in allowed:
+            allowed.append("estimate_token_usage")
+        return allowed
 
 
 DIAGNOSTIC_TERMS = ("token", "上下文", "压缩", "调试", "debug", "日志", "消耗", "预算")
@@ -492,6 +523,24 @@ COMBAT_ACTION_TERMS = (
     "掩护",
     "防御",
     "闪避",
+    "侦察",
+    "观察",
+    "查看",
+    "搜索",
+    "调查",
+    "警戒",
+    "守望",
+    "潜伏",
+    "潜行",
+    "听",
+    "盯",
+    "发现",
+    "注意",
+    "检定",
+    "判定",
+    "骰",
+    "装填",
+    "待射",
     "目标",
     "敌",
     "怪",
@@ -515,9 +564,66 @@ RULE_AUTHORING_LIKELY_TERMS = (
     "嘲讽",
 )
 
+TEXT_ONLY_TERMS = (
+    "token",
+    "上下文",
+    "压缩",
+    "调试",
+    "debug",
+    "日志",
+    "规则列表",
+    "有哪些规则",
+    "已有规则",
+    "规则详情",
+    "状态",
+    "当前状态",
+    "行动顺序",
+    "顺序",
+    "队列",
+    "轮次",
+    "回合",
+    "谁行动",
+    "轮到谁",
+    "人物卡",
+    "角色卡",
+    "属性",
+    "status",
+    "initiative",
+    "turn order",
+    "order",
+    "queue",
+    "list",
+    "rules",
+    "rule list",
+)
+
+VISUAL_REQUEST_TERMS = (
+    "画",
+    "绘制",
+    "生成地图",
+    "地图",
+    "示意图",
+    "站位图",
+    "俯视",
+    "可视化",
+    "标出来",
+    "svg",
+    "map",
+    "draw",
+)
+
 
 def _contains_any(text: str, terms: tuple[str, ...]) -> bool:
     return any(term in text for term in terms)
+
+
+def _looks_text_only_request(message: str) -> bool:
+    text = str(message or "").strip().lower()
+    if not text:
+        return False
+    if _contains_any(text, VISUAL_REQUEST_TERMS):
+        return False
+    return _contains_any(text, TEXT_ONLY_TERMS)
 
 
 def model_schema(model: type[BaseModel]) -> dict[str, Any]:

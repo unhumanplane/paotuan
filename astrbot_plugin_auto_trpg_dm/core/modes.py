@@ -13,14 +13,16 @@ class GameModeStateMachine:
 
     def detect(self, session: GameSession, message: str) -> GameMode:
         text = message.strip().lower()
-        if session.battle.get("active"):
+        battle = session.battle or {}
+        turn = battle.get("turn") if isinstance(battle.get("turn"), dict) else {}
+        if battle.get("active") or turn.get("active"):
+            return GameMode.TACTICAL
+        if any(hint in text for hint in self.BATTLE_HINTS):
             return GameMode.TACTICAL
         if session.mode == GameMode.CHARACTER_CREATION and not self._looks_finished(text):
             return GameMode.CHARACTER_CREATION
         if session.mode == GameMode.RULE_AUTHORING and not self._looks_finished(text):
             return GameMode.RULE_AUTHORING
-        if any(hint in text for hint in self.BATTLE_HINTS):
-            return GameMode.TACTICAL
         if any(hint in text for hint in self.CHARACTER_HINTS):
             return GameMode.CHARACTER_CREATION
         if any(hint in text for hint in self.RULE_HINTS):
@@ -33,4 +35,4 @@ class GameModeStateMachine:
 
     @staticmethod
     def _looks_finished(text: str) -> bool:
-        return any(token in text for token in ("完成", "就这样", "开始", "进入剧情", "开局"))
+        return any(token in text for token in ("完成", "就这样", "开始", "进入剧情", "开局", "回合结束", "结束回合", "下一位", "下一个"))

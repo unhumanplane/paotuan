@@ -22,7 +22,7 @@ class TurnControlArgs(BaseModel):
         ),
     )
     turn_order: List[str] = Field(default_factory=list, description="行动顺序里的实体/角色 ID")
-    current_entity_id: str = Field(default="", description="指定当前行动实体/角色 ID")
+    current_entity_id: str = Field(default="", description="指定要记录行动的实体/角色 ID；角色回合中可为本轮未行动且归当前发言人所有的实体")
     summary: str = Field(default="", description="场面结算、角色行动或跳过原因的简短摘要")
     reason: str = Field(default="", description="推进状态的自然语言原因")
     output_limit_chars: int = Field(default=180, ge=80, le=500, description="本阶段建议单次回复长度上限")
@@ -115,7 +115,7 @@ class TurnTools:
         elif normalized in {"start_character_turn", "character_turn", "角色回合"}:
             result = self._start_character_turn(session, turn, current_entity_id, output_limit_chars)
         elif normalized in {"record_action", "记录行动"}:
-            entity_id = current_entity_id.strip() or str(turn.get("current_entity_id", ""))
+            entity_id = current_entity_id.strip() or self._default_action_entity(session, turn)
             if not entity_id:
                 result = {"ok": False, "error": "missing_current_entity_id"}
             else:
@@ -127,7 +127,7 @@ class TurnTools:
                     if advance_after:
                         result = self._advance_turn(session, turn, output_limit_chars)
                     else:
-                        self._reset_turn_timer(turn, "current_actor_response")
+                        self._ensure_turn_timer(turn, "record_action_without_advance")
                         self.repository.save_session(session)
                         result = self._status(session)
         elif normalized in {"advance_turn", "next_turn", "下一位", "推进"}:
@@ -135,11 +135,14 @@ class TurnTools:
             if guard:
                 result = guard
             else:
+                current_id = str(turn.get("current_entity_id", "") or session.battle.get("turn_entity_id", "")).strip()
+                if current_id and current_id not in dict(turn.get("actions_this_round") or {}):
+                    self._record_action(session, turn, current_id, summary or "当前行动者声明跳过/结束本回合", "skipped", reason)
                 result = self._advance_turn(session, turn, output_limit_chars)
         elif normalized in {"auto_act_current", "auto", "无人响应", "自动行动"}:
             result = self._auto_act_current(session, turn, summary, reason, output_limit_chars, auto_policy)
         elif normalized in {"skip_current", "skip", "跳过"}:
-            entity_id = current_entity_id.strip() or str(turn.get("current_entity_id", ""))
+            entity_id = current_entity_id.strip() or self._default_action_entity(session, turn)
             if not entity_id:
                 result = {"ok": False, "error": "missing_current_entity_id"}
             else:
@@ -230,17 +233,37 @@ class TurnTools:
             return []
 
         turn["timeout_seconds"] = TURN_TIMEOUT_SECONDS
-        if actor_id == owner_id:
-            self._reset_turn_timer(turn, "current_actor_response")
+        actor_pending_id = self._pending_entity_for_actor(session, turn, actor_id)
+        if actor_pending_id and actor_pending_id != current_id and _looks_like_own_round_action(message):
             return [
                 {
-                    "type": "turn_timer_reset",
+                    "type": "turn_out_of_order_actor_allowed",
+                    "current_entity_id": current_id,
+                    "current_label": self._entity_label(session, current_id),
+                    "owner_player_id": owner_id,
+                    "actor_player_id": actor_id,
+                    "actor_entity_id": actor_pending_id,
+                    "actor_entity_label": self._entity_label(session, actor_pending_id),
+                    "deadline_at": turn.get("deadline_at", ""),
+                    "reason": "actor_has_unacted_entity_this_round",
+                }
+            ]
+
+        if actor_id == owner_id:
+            initialized = self._ensure_turn_timer(turn, "missing_turn_timer_initialized")
+            deadline = _parse_datetime(turn.get("deadline_at"))
+            remaining = max(0, int((deadline - datetime.now(timezone.utc)).total_seconds())) if deadline else 0
+            return [
+                {
+                    "type": "turn_actor_response_no_reset",
                     "current_entity_id": current_id,
                     "current_label": self._entity_label(session, current_id),
                     "owner_player_id": owner_id,
                     "actor_player_id": actor_id,
                     "deadline_at": turn.get("deadline_at", ""),
-                    "reason": "current_actor_response",
+                    "remaining_seconds": remaining,
+                    "timer_initialized": initialized,
+                    "reason": "current_actor_response_does_not_extend_deadline",
                 }
             ]
 
@@ -406,8 +429,8 @@ class TurnTools:
         if not order:
             return {"ok": False, "error": "empty_turn_order"}
         turn["turn_order"] = order
-        index = _int_or_default(turn.get("current_index"), -1) + 1
-        if index >= len(order):
+        pending = self._pending_entities(turn, order)
+        if not pending:
             turn["round"] = max(1, int(turn.get("round", 1) or 1) + 1)
             turn["phase"] = "scene_resolution"
             turn["current_index"] = -1
@@ -420,7 +443,49 @@ class TurnTools:
             session.mode = GameMode.TACTICAL
             self.repository.save_session(session)
             return self._status(session)
+        index = self._next_pending_index(turn, order, pending)
         return self._set_current_index(session, turn, index)
+
+    def _pending_entities(self, turn: Dict[str, Any], order: List[str]) -> List[str]:
+        actions = dict(turn.get("actions_this_round") or {})
+        return [entity_id for entity_id in order if entity_id not in actions]
+
+    def _next_pending_index(self, turn: Dict[str, Any], order: List[str], pending: List[str]) -> int:
+        current_id = str(turn.get("current_entity_id", "")).strip()
+        if current_id in pending:
+            return order.index(current_id)
+        current_index = _int_or_default(turn.get("current_index"), -1)
+        if current_index < 0:
+            return order.index(pending[0])
+        for offset in range(1, len(order) + 1):
+            candidate = order[(current_index + offset) % len(order)]
+            if candidate in pending:
+                return order.index(candidate)
+        return order.index(pending[0])
+
+    def _default_action_entity(self, session: GameSession, turn: Dict[str, Any]) -> str:
+        current_id = str(turn.get("current_entity_id", "") or session.battle.get("turn_entity_id", "")).strip()
+        requester_id = str(self.actor.get("player_id", "") or "").strip()
+        actions = dict(turn.get("actions_this_round") or {})
+        if current_id and current_id not in actions and self._owner_player_id(session, current_id) == requester_id:
+            return current_id
+        actor_entity = self._pending_entity_for_actor(session, turn, requester_id)
+        if actor_entity:
+            return actor_entity
+        return current_id
+
+    def _pending_entity_for_actor(self, session: GameSession, turn: Dict[str, Any], actor_id: str) -> str:
+        actor_id = str(actor_id or "").strip()
+        if not actor_id:
+            return ""
+        order = self._clean_order(list(turn.get("turn_order") or [])) or self._derive_turn_order(session)
+        actions = dict(turn.get("actions_this_round") or {})
+        for entity_id in order:
+            if entity_id in actions:
+                continue
+            if self._owner_player_id(session, entity_id) == actor_id:
+                return entity_id
+        return ""
 
     def _auto_act_current(
         self,
@@ -516,11 +581,22 @@ class TurnTools:
         if not turn.get("active") or str(turn.get("phase", "")) != "character_turn":
             return None
         current_id = str(turn.get("current_entity_id", "") or session.battle.get("turn_entity_id", "")).strip()
-        if current_id and entity_id != current_id:
+        actions = dict(turn.get("actions_this_round") or {})
+        if entity_id in actions:
             return {
                 "ok": False,
-                "error": "wrong_turn_actor",
-                "message": "当前是角色回合，只能处理当前行动单位。",
+                "error": "entity_already_acted_this_round",
+                "message": "该角色本轮已经行动过；不能在同一轮内再次结算主要动作。",
+                "current_entity_id": current_id,
+                "requested_entity_id": entity_id,
+                "phase": str(turn.get("phase", "")),
+            }
+        order = self._clean_order(list(turn.get("turn_order") or [])) or self._derive_turn_order(session)
+        if order and entity_id not in order:
+            return {
+                "ok": False,
+                "error": "entity_not_in_turn_order",
+                "message": "该角色不在本轮行动列表里；不能在当前轮次直接结算主要动作。",
                 "current_entity_id": current_id,
                 "requested_entity_id": entity_id,
                 "phase": str(turn.get("phase", "")),
@@ -536,6 +612,15 @@ class TurnTools:
                 "owner_player_id": owner_id,
                 "requester_player_id": requester_id,
                 "deadline_at": str(turn.get("deadline_at", "")),
+            }
+        if not owner_id and current_id and entity_id != current_id:
+            return {
+                "ok": False,
+                "error": "wrong_turn_actor",
+                "message": "无持有人的单位仍按当前指针行动；不能乱序操作 NPC 或敌方单位。",
+                "current_entity_id": current_id,
+                "requested_entity_id": entity_id,
+                "phase": str(turn.get("phase", "")),
             }
         return None
 
@@ -589,6 +674,13 @@ class TurnTools:
         turn["deadline_at"] = (datetime.now(timezone.utc) + timedelta(seconds=timeout_seconds)).isoformat()
         turn["wait_reset_reason"] = reason
 
+    def _ensure_turn_timer(self, turn: Dict[str, Any], reason: str) -> bool:
+        turn["timeout_seconds"] = TURN_TIMEOUT_SECONDS
+        if _parse_datetime(turn.get("deadline_at")) is not None:
+            return False
+        self._reset_turn_timer(turn, reason)
+        return True
+
     def _append_turn_log(self, session: GameSession, event_type: str, summary: str, reason: str = "") -> None:
         turn = self._ensure_turn_state(session)
         log = list(turn.get("turn_log") or [])
@@ -620,6 +712,9 @@ class TurnTools:
     def _status(self, session: GameSession) -> Dict[str, Any]:
         turn = self._ensure_turn_state(session)
         current_id = str(turn.get("current_entity_id", "") or "")
+        order = self._clean_order(list(turn.get("turn_order") or []))
+        actions = dict(turn.get("actions_this_round") or {})
+        pending = self._pending_entities(turn, order)
         result = {
             "ok": True,
             "turn": {
@@ -636,7 +731,9 @@ class TurnTools:
                 "timeout_seconds": int(turn.get("timeout_seconds") or TURN_TIMEOUT_SECONDS),
                 "waiting_since_at": str(turn.get("waiting_since_at", "")),
                 "deadline_at": str(turn.get("deadline_at", "")),
-                "actions_this_round": dict(turn.get("actions_this_round") or {}),
+                "actions_this_round": actions,
+                "acted_entity_ids": [entity_id for entity_id in order if entity_id in actions],
+                "pending_entity_ids": pending,
                 "recent_turn_log": list(turn.get("turn_log") or [])[-8:],
             },
             "llm_instruction": self._instruction_for_turn(turn),
@@ -651,7 +748,7 @@ class TurnTools:
         if phase == "scene_resolution":
             return f"当前是场面结算阶段：只处理环境、敌方、持续效果和公共后果；不要结算玩家个人行动。回复不超过 {limit} 字，然后推进到角色回合。"
         if phase == "character_turn":
-            return f"当前是角色回合：只处理 current_entity_id 的行动。当前行动者响应会刷新 120 秒等待；若其他玩家推动剧情且当前行动者超过 120 秒未响应，调用 auto_act_current。回复不超过 {limit} 字。"
+            return f"当前是角色回合：current_entity_id 是建议/超时锚点；本轮未行动且归当前发言人所有的角色可以乱序行动。记录主要动作时用该角色 ID 调用 record_action，advance_after=true。120 秒从上一位完成行动后开始计算；若没有未行动玩家响应且锚点超时，调用 auto_act_current。回复不超过 {limit} 字。"
         return f"按当前阶段裁定；回复不超过 {limit} 字。"
 
     def _grid_entity(self, session: GameSession, entity_id: str) -> Dict[str, Any]:
@@ -788,6 +885,117 @@ def _looks_like_timeout_push(text: str) -> bool:
     has_push = any(term in lowered for term in push_terms)
     has_info = any(term in lowered for term in info_terms)
     return has_push and not has_info
+
+
+def _looks_like_own_round_action(text: str) -> bool:
+    lowered = str(text or "").strip().lower()
+    if not lowered:
+        return False
+    explicit_skip_current = (
+        "跳过当前",
+        "跳过他",
+        "跳过她",
+        "跳过它",
+        "让他防御",
+        "让她防御",
+        "让它防御",
+        "当前玩家超时",
+        "当前角色超时",
+        "当前行动者超时",
+        "没人响应",
+        "无人响应",
+        "不响应",
+    )
+    if any(term in lowered for term in explicit_skip_current):
+        return False
+    action_terms = (
+        "我",
+        "我要",
+        "我想",
+        "我来",
+        "去",
+        "走",
+        "跑",
+        "冲",
+        "移动",
+        "靠近",
+        "攻击",
+        "射",
+        "砍",
+        "刺",
+        "施法",
+        "治疗",
+        "防御",
+        "掩护",
+        "侦察",
+        "侦查",
+        "观察",
+        "查看",
+        "搜索",
+        "调查",
+        "警戒",
+        "潜行",
+        "检定",
+        "判定",
+        "示警",
+        "叫醒",
+        "拿",
+        "捡",
+        "使用",
+        "点燃",
+        "装填",
+        "待机",
+    )
+    return any(term in lowered for term in action_terms)
+
+
+def _looks_like_turn_info_only(text: str) -> bool:
+    lowered = str(text or "").strip().lower()
+    if not lowered:
+        return False
+    action_terms = (
+        "我要",
+        "我想",
+        "我来",
+        "我发动",
+        "我进行",
+        "攻击",
+        "移动",
+        "冲",
+        "射",
+        "砍",
+        "防御",
+        "侦察",
+        "观察",
+        "搜索",
+        "调查",
+        "警戒",
+        "检定",
+        "判定",
+    )
+    if any(term in lowered for term in action_terms):
+        return False
+    info_terms = (
+        "行动顺序",
+        "战斗顺序",
+        "轮动顺序",
+        "当前轮次",
+        "当前回合",
+        "谁行动",
+        "轮到谁",
+        "状态",
+        "战况",
+        "剧情",
+        "汇报",
+        "地图",
+        "token",
+        "上下文",
+        "规则列表",
+        "有哪些规则",
+        "日志",
+        "debug",
+    )
+    return any(term in lowered for term in info_terms)
 
 
 def _parse_datetime(value: Any) -> datetime | None:

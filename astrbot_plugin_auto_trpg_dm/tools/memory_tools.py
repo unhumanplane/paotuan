@@ -1,12 +1,16 @@
 from __future__ import annotations
 
+import json
 import re
+import secrets
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
 from ..core.memory import MemoryCompressor
-from ..core.models import Character, GameMode, GameSession, TagValue, compact_tag_layers, infer_tag_layer
+from ..core.models import Character, GameMode, GameSession, TagValue, compact_tag_layers, infer_tag_layer, utc_now_iso
 from ..storage.json_repository import JsonGameRepository
 
 
@@ -46,9 +50,29 @@ class UpdateWorldTagsArgs(BaseModel):
     patch: Dict[str, Any] = Field(default_factory=dict, description="世界设定 Tag 补丁，例如 genre,tone,factions,mysteries")
 
 
+class StartGameArgs(BaseModel):
+    opening_intro: str = Field(
+        ...,
+        description="给玩家看的简短开场介绍，必须有氛围、当前处境和第一个压力点，建议 120-400 中文字。",
+    )
+    player_guidance: str = Field(
+        default="",
+        description="给玩家的简短行动引导，说明现在可以做什么，建议 1-3 条。",
+    )
+    campaign_outline: Dict[str, Any] = Field(
+        default_factory=dict,
+        description="开场前预备的跌宕剧情骨架，至少包含三段：导火索、升级/反转、高潮或重大抉择。",
+    )
+    scene_patch: Dict[str, Any] = Field(
+        default_factory=dict,
+        description="开场场景状态补丁，例如 summary,current_conflict,location,npcs,immediate_hooks。",
+    )
+
+
 class SessionControlArgs(BaseModel):
-    action: str = Field(..., description="会话控制动作：status, reset, compress_memory, debug_last")
+    action: str = Field(..., description="会话控制动作：status, reset, restore_latest_backup, list_backups, create_backup, compress_memory, debug_last")
     reason: str = Field(default="", description="执行该动作的自然语言原因")
+    confirm_token: str = Field(default="", description="重开/清空存档的二次确认 token；没有 token 时只会发起确认，不会删除存档")
 
 
 class MemoryTools:
@@ -57,10 +81,12 @@ class MemoryTools:
         repository: JsonGameRepository,
         session_id: str,
         actor: Optional[Dict[str, str]] = None,
+        message: str = "",
     ):
         self.repository = repository
         self.session_id = session_id
         self.actor = actor or {}
+        self.message = message
 
     async def create_character(
         self,
@@ -71,11 +97,19 @@ class MemoryTools:
         tags: Optional[List[Dict[str, Any]]] = None,
     ) -> Dict[str, Any]:
         """创建或覆盖一个 Tag 型角色卡。"""
-        safe_id = self._safe_id(character_id, prefix="pc")
-        if not safe_id:
-            return {"ok": False, "error": "invalid_character_id"}
         session = self.repository.load_session(self.session_id)
         owner_id = str(player_id or self.actor.get("player_id", "") or "").strip()
+        gate = background_required_result(session, "create_character")
+        if gate:
+            self._audit(
+                "create_character",
+                {"character_id": character_id, "name": name, "summary": summary, "player_id": owner_id, "tags": tags or []},
+                gate,
+            )
+            return gate
+        safe_id = self._resolve_write_character_id(session, character_id, owner_id)
+        if not safe_id:
+            return {"ok": False, "error": "invalid_character_id"}
         owner_guard = self._character_owner_guard(session, safe_id, owner_id)
         if owner_guard:
             self._audit(
@@ -109,6 +143,7 @@ class MemoryTools:
             "create_character",
             {
                 "character_id": character_id,
+                "resolved_character_id": safe_id,
                 "name": name,
                 "summary": summary,
                 "player_id": owner_id,
@@ -127,14 +162,23 @@ class MemoryTools:
         tags: Optional[List[Dict[str, Any]]] = None,
     ) -> Dict[str, Any]:
         """绑定当前玩家与角色。角色不存在时创建一个轻量角色卡。"""
-        safe_id = self._safe_id(character_id, prefix="pc")
-        if not safe_id:
-            return {"ok": False, "error": "invalid_character_id"}
         owner_id = str(player_id or self.actor.get("player_id", "") or "").strip()
         if not owner_id:
             return {"ok": False, "error": "missing_player_id"}
         session = self.repository.load_session(self.session_id)
+        safe_id = self._resolve_write_character_id(session, character_id, owner_id)
+        if not safe_id:
+            return {"ok": False, "error": "invalid_character_id"}
         character = session.characters.get(safe_id)
+        if not character:
+            gate = background_required_result(session, "bind_player_character")
+            if gate:
+                self._audit(
+                    "bind_player_character",
+                    {"character_id": character_id, "player_id": owner_id, "name": name, "summary": summary, "tags": tags or []},
+                    gate,
+                )
+                return gate
         owner_guard = self._character_owner_guard(session, safe_id, owner_id)
         if owner_guard:
             self._audit(
@@ -178,6 +222,7 @@ class MemoryTools:
             "bind_player_character",
             {
                 "character_id": character_id,
+                "resolved_character_id": safe_id,
                 "player_id": owner_id,
                 "name": name,
                 "summary": summary,
@@ -195,10 +240,23 @@ class MemoryTools:
     ) -> Dict[str, Any]:
         """新增或覆盖角色卡 Tag。"""
         session = self.repository.load_session(self.session_id)
-        safe_id = self._safe_id(character_id, prefix="pc")
+        gate = background_required_result(session, "update_character_tags")
+        if gate:
+            self._audit("update_character_tags", {"character_id": character_id, "tags": tags, "raw_text": raw_text}, gate)
+            return gate
+        owner_id = str(self.actor.get("player_id", "") or "").strip()
+        safe_id = self._resolve_existing_character_id(session, character_id, owner_id)
         character = session.characters.get(safe_id)
         if not character:
             return {"ok": False, "error": "character_not_found", "character_id": safe_id}
+        owner_guard = self._character_owner_guard(session, safe_id, owner_id)
+        if owner_guard:
+            self._audit(
+                "update_character_tags",
+                {"character_id": character_id, "resolved_character_id": safe_id, "tags": tags, "raw_text": raw_text},
+                owner_guard,
+            )
+            return owner_guard
         source_text = raw_text or (tags if isinstance(tags, str) else "")
         normalized_tags = normalize_tags(tags)
         inferred_from_raw_text = False
@@ -235,7 +293,7 @@ class MemoryTools:
         }
         self._audit(
             "update_character_tags",
-            {"character_id": character_id, "tags": normalized_tags, "raw_text": raw_text},
+            {"character_id": character_id, "resolved_character_id": safe_id, "tags": normalized_tags, "raw_text": raw_text},
             result,
         )
         return result
@@ -251,6 +309,14 @@ class MemoryTools:
             self._audit("update_scene", {"patch": patch}, result)
             return result
         session = self.repository.load_session(self.session_id)
+        locked = plot_locked_result(session, self.message, "update_scene")
+        if locked and patch_touches_plot_state(patch):
+            self._audit("update_scene", {"patch": patch}, locked)
+            return locked
+        gate = background_required_result(session, "update_scene")
+        if gate:
+            self._audit("update_scene", {"patch": patch}, gate)
+            return gate
         session.scene.update(patch)
         self.repository.save_session(session)
         result = {"ok": True, "scene": session.scene}
@@ -268,7 +334,13 @@ class MemoryTools:
             self._audit("update_world_tags", {"patch": patch}, result)
             return result
         session = self.repository.load_session(self.session_id)
+        locked = plot_locked_result(session, self.message, "update_world_tags")
+        if locked and patch_touches_plot_state(patch):
+            self._audit("update_world_tags", {"patch": patch}, locked)
+            return locked
         session.world_tags.update(patch)
+        if has_campaign_background(session):
+            session.world_tags["_background_ready"] = True
         if "title" in patch:
             session.title = str(patch["title"])
         self.repository.save_session(session)
@@ -276,7 +348,85 @@ class MemoryTools:
         self._audit("update_world_tags", {"patch": patch}, result)
         return result
 
-    async def session_control(self, action: str, reason: str = "") -> Dict[str, Any]:
+    async def start_game(
+        self,
+        opening_intro: str,
+        player_guidance: str = "",
+        campaign_outline: Optional[Dict[str, Any]] = None,
+        scene_patch: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """检查内容是否足够，足够时写入开场、锁定剧情主干，并正式开始游戏。"""
+        session = self.repository.load_session(self.session_id)
+        if _campaign_plot_locked(session):
+            result = {
+                "ok": False,
+                "error": "game_already_started",
+                "message": "游戏已经开场，不能重复开场或重写开场；可以继续角色行动，或让新玩家加入。",
+                "allow_late_join_after_start": True,
+            }
+            self._audit("start_game", {"opening_intro_chars": len(str(opening_intro or ""))}, result)
+            return result
+        campaign_outline = campaign_outline if isinstance(campaign_outline, dict) else {}
+        scene_patch = scene_patch if isinstance(scene_patch, dict) else {}
+        missing = campaign_start_missing_requirements(session, opening_intro, campaign_outline, scene_patch)
+        if missing:
+            result = {
+                "ok": False,
+                "error": "campaign_not_ready",
+                "missing_requirements": missing,
+                "message": "当前内容还不足以开场；请先补齐缺失项，再开始游戏。",
+                "allow_late_join_after_start": True,
+            }
+            self._audit(
+                "start_game",
+                {
+                    "opening_intro_chars": len(str(opening_intro or "")),
+                    "campaign_outline": campaign_outline,
+                    "scene_patch": scene_patch,
+                },
+                result,
+            )
+            return result
+
+        session.scene.update(scene_patch)
+        session.scene["_game_started"] = True
+        session.scene["_game_started_at"] = utc_now_iso()
+        session.scene["_plot_locked"] = True
+        session.scene["_allow_late_join"] = True
+        session.scene["_opening_intro"] = _short_tag_value(opening_intro, 700)
+        session.scene["_player_guidance"] = _short_tag_value(player_guidance, 360)
+        session.world_tags["_plot_locked"] = True
+        session.world_tags["_late_join_allowed"] = True
+        session.world_tags["campaign_outline"] = compact_campaign_outline(campaign_outline)
+        if scene_patch.get("title"):
+            session.title = str(scene_patch["title"])
+        session.mode = GameMode.NARRATIVE
+        self.repository.save_session(session)
+        opening_message = opening_intro.strip()
+        if player_guidance.strip():
+            opening_message = f"{opening_message}\n\n{player_guidance.strip()}"
+        result = {
+            "ok": True,
+            "game_started": True,
+            "plot_locked": True,
+            "allow_late_join": True,
+            "opening_message": opening_message,
+            "campaign_outline": session.world_tags["campaign_outline"],
+            "scene": session.scene,
+        }
+        self._audit(
+            "start_game",
+            {
+                "opening_intro_chars": len(str(opening_intro or "")),
+                "player_guidance_chars": len(str(player_guidance or "")),
+                "campaign_outline": campaign_outline,
+                "scene_patch": scene_patch,
+            },
+            result,
+        )
+        return result
+
+    async def session_control(self, action: str, reason: str = "", confirm_token: str = "") -> Dict[str, Any]:
         """读取状态、重开当前会话、压缩记忆或查看最近调试记录。"""
         normalized = action.strip().lower()
         if normalized in {"status", "状态"}:
@@ -300,12 +450,30 @@ class MemoryTools:
                 "snapshot": snapshot,
             }
         elif normalized in {"reset", "new", "new_game", "重开", "新团", "开新团"}:
-            self.repository.save_session(GameSession.new(self.session_id))
-            result = {
-                "ok": True,
-                "action": "reset",
-                "message": "当前会话的唯一跑团存档已重置。",
-            }
+            session = self.repository.load_session(self.session_id)
+            if _looks_like_rollback_not_reset(reason or self.message):
+                result = {
+                    "ok": False,
+                    "action": "rollback_not_supported",
+                    "error": "rollback_not_supported",
+                    "message": "当前没有安全回档/undo 工具，存档未改动。若确实要清空并开新团，请明确说“重开当前团”，系统仍会要求二次确认。",
+                }
+            else:
+                result = self._request_or_confirm_reset(session, reason=reason, confirm_token=confirm_token)
+        elif normalized in {"confirm_reset", "confirm reset", "确认重开", "确认清空", "确认重置"}:
+            session = self.repository.load_session(self.session_id)
+            result = self._request_or_confirm_reset(
+                session,
+                reason=reason,
+                confirm_token=confirm_token,
+                force_confirm=True,
+            )
+        elif normalized in {"create_backup", "backup", "备份", "备份存档", "保存备份"}:
+            result = self._create_manual_backup(reason=reason)
+        elif normalized in {"list_backups", "backup_list", "backups", "备份列表", "查看备份"}:
+            result = self._list_backups()
+        elif normalized in {"restore_latest_backup", "restore_backup", "restore", "恢复上一个存档", "恢复存档", "恢复之前的跑团"}:
+            result = self._restore_latest_backup(reason=reason)
         elif normalized in {"compress_memory", "compress", "压缩记忆", "记忆压缩"}:
             session = self.repository.load_session(self.session_id)
             compressor = MemoryCompressor()
@@ -333,14 +501,212 @@ class MemoryTools:
             result = {
                 "ok": False,
                 "error": "unsupported_session_control_action",
-                "allowed": ["status", "reset", "compress_memory", "debug_last"],
+                "allowed": [
+                    "status",
+                    "reset",
+                    "confirm_reset",
+                    "create_backup",
+                    "list_backups",
+                    "restore_latest_backup",
+                    "compress_memory",
+                    "debug_last",
+                ],
             }
         self._audit(
             "session_control",
-            {"action": action, "reason": reason},
+            {"action": action, "reason": reason, "confirm_token": _mask_token(confirm_token)},
             result,
         )
         return result
+
+    def _create_manual_backup(self, reason: str = "") -> Dict[str, Any]:
+        backup_path = self.repository.backup_session(
+            self.session_id,
+            reason=f"manual_backup:{_short_reset_text(reason or self.message, 160)}",
+        )
+        session = self.repository.load_session(self.session_id)
+        return {
+            "ok": bool(backup_path),
+            "action": "create_backup",
+            "backup_path": str(backup_path) if backup_path else "",
+            "message": "当前存档已写入备份。" if backup_path else "当前没有可备份的存档文件。",
+            "characters": len(session.characters),
+            "participants": len(session.participants),
+            "battle_active": bool((session.battle or {}).get("active")),
+        }
+
+    def _list_backups(self, limit: int = 8) -> Dict[str, Any]:
+        backups = self.repository.list_session_backups(self.session_id, limit=limit)
+        return {
+            "ok": True,
+            "action": "list_backups",
+            "count": len(backups),
+            "backups": [
+                {
+                    "name": item.get("name", ""),
+                    "size": item.get("size", 0),
+                    "mtime": item.get("mtime", ""),
+                    "reason": item.get("reason", ""),
+                }
+                for item in backups
+            ],
+            "message": "已列出最近备份。" if backups else "当前还没有自动备份。",
+        }
+
+    def _restore_latest_backup(self, reason: str = "") -> Dict[str, Any]:
+        current = self.repository.load_session(self.session_id)
+        if not _session_looks_empty_or_reset(current):
+            return {
+                "ok": False,
+                "action": "restore_latest_backup",
+                "error": "current_save_not_empty",
+                "message": "当前存档不是空档，不能直接覆盖恢复。若要重开请走二次确认；若要人工回档，请先由管理员在服务器备份目录手动选择。",
+                "current": {
+                    "characters": len(current.characters),
+                    "participants": len(current.participants),
+                    "rules": len(current.rules),
+                    "battle_active": bool((current.battle or {}).get("active")),
+                },
+            }
+        backups = self.repository.list_session_backups(self.session_id, limit=20)
+        usable = [item for item in backups if _backup_item_looks_useful(item)]
+        if not usable:
+            return {
+                "ok": False,
+                "action": "restore_latest_backup",
+                "error": "no_usable_backup",
+                "message": "没有找到可恢复的非空备份。",
+                "backups_seen": len(backups),
+            }
+        selected = usable[0]
+        before_restore = self.repository.backup_session(
+            self.session_id,
+            reason=f"before_restore_latest:{_short_reset_text(reason or self.message, 160)}",
+        )
+        self.repository.restore_session_backup(self.session_id, str(selected["path"]))
+        restored = self.repository.load_session(self.session_id)
+        if isinstance(restored.scene, dict):
+            restored.scene["_dm_paused"] = True
+            restored.scene["_dm_pause_reason"] = "已从上一个非空备份恢复；为避免心跳立即推进，请确认状态后再 /dm resume。"
+            restored.scene["_dm_paused_by"] = {"player_id": "__system__", "display_name": "restore_latest_backup"}
+            restored.scene["_dm_paused_at"] = utc_now_iso()
+            restored.scene.pop("_pending_reset_confirmation", None)
+            self.repository.save_session(restored)
+        return {
+            "ok": True,
+            "action": "restore_latest_backup",
+            "restored_backup": {
+                "name": selected.get("name", ""),
+                "size": selected.get("size", 0),
+                "mtime": selected.get("mtime", ""),
+                "reason": selected.get("reason", ""),
+            },
+            "pre_restore_backup_path": str(before_restore) if before_restore else "",
+            "message": "已恢复上一个非空备份，并已自动暂停流程。确认状态后用 /dm resume 继续。",
+            "current": {
+                "characters": len(restored.characters),
+                "participants": len(restored.participants),
+                "rules": len(restored.rules),
+                "battle_active": bool((restored.battle or {}).get("active")),
+            },
+        }
+
+    def _request_or_confirm_reset(
+        self,
+        session: GameSession,
+        reason: str = "",
+        confirm_token: str = "",
+        force_confirm: bool = False,
+    ) -> Dict[str, Any]:
+        scene = session.scene if isinstance(session.scene, dict) else {}
+        session.scene = scene
+        requester_id = str(self.actor.get("player_id", "") or "").strip()
+        requester_name = str(self.actor.get("display_name", "") or "").strip()
+        pending = dict(scene.get("_pending_reset_confirmation") or {})
+        supplied_token = str(confirm_token or "").strip().upper()
+
+        if supplied_token:
+            if _looks_like_rollback_not_reset(reason or pending.get("reason") or self.message):
+                scene.pop("_pending_reset_confirmation", None)
+                self.repository.save_session(session)
+                return {
+                    "ok": False,
+                    "action": "confirm_reset",
+                    "error": "rollback_confirmation_rejected",
+                    "message": "这是回档/undo 请求，不是明确重开当前团；确认码已作废，存档未改动。",
+                }
+            expected_token = str(pending.get("token", "") or "").strip().upper()
+            if not expected_token or supplied_token != expected_token:
+                return {
+                    "ok": False,
+                    "action": "confirm_reset",
+                    "error": "reset_confirmation_invalid",
+                    "message": "重开确认码不匹配，存档未改动。请重新发起重开请求获取新的确认码。",
+                }
+            expires_at = _parse_utc_datetime(pending.get("expires_at"))
+            if expires_at and datetime.now(timezone.utc) > expires_at:
+                scene.pop("_pending_reset_confirmation", None)
+                self.repository.save_session(session)
+                return {
+                    "ok": False,
+                    "action": "confirm_reset",
+                    "error": "reset_confirmation_expired",
+                    "message": "重开确认码已过期，存档未改动。请重新发起重开请求。",
+                }
+            pending_requester = str(pending.get("requester_player_id", "") or "").strip()
+            if pending_requester and requester_id and requester_id != pending_requester:
+                return {
+                    "ok": False,
+                    "action": "confirm_reset",
+                    "error": "reset_confirmation_wrong_actor",
+                    "message": "只有发起重开请求的人可以用该确认码清空存档；存档未改动。",
+                    "requester_player_id": pending_requester,
+                    "current_player_id": requester_id,
+                }
+            backup_path = self.repository.backup_session(
+                self.session_id,
+                reason=f"confirmed_reset:{_short_reset_text(reason or pending.get('reason', ''), 160)}",
+            )
+            self.repository.save_session(GameSession.new(self.session_id))
+            return {
+                "ok": True,
+                "action": "reset",
+                "backup_path": str(backup_path) if backup_path else "",
+                "message": "二次确认已通过，当前跑团存档已重置；旧存档已先写入备份。",
+            }
+
+        if force_confirm:
+            return {
+                "ok": False,
+                "action": "confirm_reset",
+                "error": "missing_reset_confirmation_token",
+                "message": "需要带上确认码才会重开存档；存档未改动。",
+            }
+
+        now = datetime.now(timezone.utc)
+        existing_expires = _parse_utc_datetime(pending.get("expires_at"))
+        if pending.get("token") and (not existing_expires or now <= existing_expires):
+            token = str(pending["token"])
+            expires_at = str(pending.get("expires_at") or "")
+        else:
+            token = f"RESET-{secrets.token_hex(3).upper()}"
+            expires_at = (now + timedelta(minutes=5)).isoformat()
+        scene["_pending_reset_confirmation"] = {
+            "token": token,
+            "requester_player_id": requester_id,
+            "requester_display_name": requester_name,
+            "reason": _short_reset_text(reason, 240),
+            "created_at": utc_now_iso(),
+            "expires_at": expires_at,
+        }
+        self.repository.save_session(session)
+        return {
+            "ok": False,
+            "action": "reset_confirmation_required",
+            "confirm_token": token,
+            "expires_at": expires_at,
+            "message": f"这会清空当前跑团存档。若确实要重开，请在 5 分钟内发送：/dm 确认重开 {token}",
+        }
 
     def _audit(self, tool: str, input_payload: Dict[str, Any], result: Dict[str, Any]) -> None:
         self.repository.append_audit(
@@ -357,6 +723,53 @@ class MemoryTools:
         if "_" not in safe and not safe.startswith(prefix):
             safe = f"{prefix}_{safe}"
         return safe
+
+    def _resolve_write_character_id(self, session: GameSession, character_id: str, owner_id: str) -> str:
+        safe_id = self._safe_id(character_id or "", prefix="pc")
+        if self._is_generic_character_id(safe_id):
+            bound_id = str(session.player_character_map.get(owner_id, "") or "")
+            if owner_id and bound_id and bound_id in session.characters:
+                return bound_id
+            if owner_id:
+                return self._player_default_character_id(owner_id)
+            return ""
+        return safe_id
+
+    def _resolve_existing_character_id(self, session: GameSession, character_id: str, owner_id: str) -> str:
+        safe_id = self._safe_id(character_id or "", prefix="pc")
+        bound_id = str(session.player_character_map.get(owner_id, "") or "")
+        if self._is_generic_character_id(safe_id):
+            if owner_id and bound_id and bound_id in session.characters:
+                return bound_id
+            return safe_id
+        if safe_id in session.characters:
+            return safe_id
+        if owner_id and bound_id and bound_id in session.characters:
+            return bound_id
+        return safe_id
+
+    @staticmethod
+    def _is_generic_character_id(character_id: str) -> bool:
+        normalized = str(character_id or "").strip().lower()
+        return normalized in {
+            "",
+            "pc",
+            "player",
+            "character",
+            "hero",
+            "role",
+            "user",
+            "pc_player",
+            "pc_character",
+            "pc_hero",
+            "pc_role",
+            "pc_user",
+        }
+
+    @staticmethod
+    def _player_default_character_id(player_id: str) -> str:
+        safe_player_id = re.sub(r"[^a-zA-Z0-9_.-]+", "_", str(player_id or "").strip()).strip("._-")
+        return f"pc_{safe_player_id}" if safe_player_id else ""
 
     def _touch_participant(self, session: GameSession, player_id: str) -> None:
         participant = dict(session.participants.get(player_id, {}))
@@ -397,6 +810,104 @@ class MemoryTools:
             if bound_id == character_id:
                 return str(player_id)
         return ""
+
+
+def _parse_utc_datetime(value: Any) -> datetime | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _mask_token(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    if len(text) <= 4:
+        return "***"
+    return f"{text[:2]}***{text[-2:]}"
+
+
+def _short_reset_text(value: Any, limit: int) -> str:
+    text = " ".join(str(value or "").split())
+    if len(text) <= limit:
+        return text
+    return text[: max(1, limit - 3)] + "..."
+
+
+def _looks_like_rollback_not_reset(text: Any) -> bool:
+    normalized = str(text or "").strip().lower()
+    if not normalized:
+        return False
+    rollback_terms = (
+        "undo",
+        "rollback",
+        "roll back",
+        "回档",
+        "回退",
+        "退回",
+        "撤销",
+        "上一回合",
+        "上个回合",
+        "上一轮",
+        "上个轮次",
+        "重试一次",
+        "重新判",
+    )
+    explicit_reset_terms = (
+        "清空存档",
+        "删除存档",
+        "重开当前团",
+        "重开跑团",
+        "重置存档",
+        "开新团",
+        "reset save",
+        "reset campaign",
+        "new campaign",
+    )
+    return any(term in normalized for term in rollback_terms) and not any(term in normalized for term in explicit_reset_terms)
+
+
+def _session_looks_empty_or_reset(session: GameSession) -> bool:
+    if session.characters or session.player_character_map or session.rules:
+        return False
+    if bool((session.battle or {}).get("active")):
+        return False
+    world_tags = dict(session.world_tags or {})
+    if any(not str(key).startswith("_") for key in world_tags.keys()):
+        return False
+    participants = dict(session.participants or {})
+    if len(participants) > 3:
+        return False
+    scene = dict(session.scene or {})
+    summary = str(scene.get("summary", "") or "")
+    reset_like = (
+        "尚未开局" in summary
+        or "等待玩家" in summary
+        or not summary.strip()
+        or summary.startswith("灏氭湭寮€灞")
+    )
+    return reset_like
+
+
+def _backup_item_looks_useful(item: Dict[str, Any]) -> bool:
+    path = Path(str(item.get("path") or ""))
+    if not path.exists():
+        return False
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        session = GameSession.from_dict(data)
+    except Exception:
+        return False
+    return not _session_looks_empty_or_reset(session)
 
 
 def character_as_dict(character: Character) -> Dict[str, Any]:
@@ -469,6 +980,269 @@ def normalize_tags(tags: Any) -> List[Dict[str, Any]]:
                     }
                 )
     return normalized
+
+
+BACKGROUND_KEYS = {
+    "background",
+    "campaign_background",
+    "setting",
+    "world",
+    "world_premise",
+    "premise",
+    "starting_premise",
+    "genre",
+    "tone",
+    "era",
+    "location",
+    "factions",
+    "conflict",
+    "theme",
+    "ruleset",
+}
+
+
+def has_campaign_background(session: GameSession) -> bool:
+    if bool((session.battle or {}).get("active")):
+        return True
+    world_tags = dict(session.world_tags or {})
+    if world_tags.get("_background_ready") is True:
+        return True
+    matched: list[str] = []
+    text_chars = 0
+    for key, value in world_tags.items():
+        key_text = str(key)
+        key_lower = key_text.lower()
+        if key_lower.startswith("_"):
+            continue
+        if key_lower in BACKGROUND_KEYS or key_text in {"背景", "世界观", "时代", "地点", "势力", "主题", "开场前提"}:
+            value_text = str(value).strip()
+            if value_text and value_text not in {"{}", "[]", "None"}:
+                matched.append(key_lower)
+                text_chars += len(value_text)
+    if len(set(matched)) >= 2 and text_chars >= 12:
+        return True
+    if text_chars >= 40 and matched:
+        return True
+    contract = world_tags.get("campaign_contract")
+    if isinstance(contract, dict):
+        required = ("genre", "premise", "tone")
+        if sum(1 for key in required if str(contract.get(key, "")).strip()) >= 2:
+            return True
+    return False
+
+
+def background_required_result(session: GameSession, tool_name: str) -> Dict[str, Any] | None:
+    if has_campaign_background(session):
+        return None
+    return {
+        "ok": False,
+        "error": "background_required",
+        "tool": tool_name,
+        "message": (
+            "当前团还没有明确背景设定，不能先写入剧本、战场或角色卡。"
+            "请先用 update_world_tags 写入至少两项背景要素，例如 genre/tone/starting_premise/location/factions/ruleset；"
+            "如果玩家授权，也可以由 DM 主动生成或补全这些背景要素。"
+        ),
+        "required_before": ["script", "character_sheet", "battle_grid"],
+        "suggested_patch": {
+            "genre": "例如：废土科幻 / 黑暗奇幻 / 现代悬疑",
+            "tone": "例如：严肃求生 / 轻松荒诞 / 调查恐怖",
+            "starting_premise": "一句话说明玩家为什么聚在这里、第一幕要面对什么",
+        },
+    }
+
+
+PLOT_LOCKED_KEYS = {
+    "background",
+    "campaign_background",
+    "campaign_contract",
+    "campaign_outline",
+    "central_conflict",
+    "conflict",
+    "current_conflict",
+    "era",
+    "factions",
+    "genre",
+    "location",
+    "main_plot",
+    "mystery",
+    "npcs",
+    "opening",
+    "plot",
+    "premise",
+    "ruleset",
+    "scene",
+    "setting",
+    "starting_premise",
+    "summary",
+    "theme",
+    "title",
+    "tone",
+    "world",
+    "world_premise",
+    "背景",
+    "世界观",
+    "剧情",
+    "剧本",
+    "主线",
+    "题材",
+    "设定",
+}
+
+
+def campaign_start_missing_requirements(
+    session: GameSession,
+    opening_intro: str,
+    campaign_outline: Dict[str, Any],
+    scene_patch: Dict[str, Any],
+) -> List[str]:
+    missing: List[str] = []
+    if not has_campaign_background(session):
+        missing.append("background: 先写入背景设定，至少包含题材/基调/开场前提/地点/势力/规则中的两类。")
+    if not _bound_player_characters(session):
+        missing.append("characters: 至少需要 1 名已绑定玩家角色；开场后仍允许新玩家加入。")
+    intro_text = " ".join(str(opening_intro or "").split())
+    if len(intro_text) < 40:
+        missing.append("opening_intro: 需要一段简短开场介绍，包含氛围、当前处境和第一个压力点。")
+    if not _outline_has_dramatic_structure(campaign_outline):
+        missing.append("campaign_outline: 需要预备跌宕剧情骨架，至少有导火索、升级/反转、高潮或重大抉择三段。")
+    scene_text = _flatten_text([scene_patch, session.scene])
+    if not any(token in scene_text for token in ("冲突", "危机", "目标", "任务", "压力", "敌", "抉择", "hook", "conflict")):
+        missing.append("initial_hook: 开场场景需要明确眼前目标、危机或第一个可行动钩子。")
+    return missing
+
+
+def compact_campaign_outline(outline: Dict[str, Any]) -> Dict[str, Any]:
+    compacted = _compact_structured(outline, depth=3)
+    if isinstance(compacted, dict):
+        compacted.setdefault("_locked_after_opening", True)
+        compacted.setdefault("_dynamic_adjustment_policy", "只允许 DM 根据玩家行动结果微调推进；不接受玩家开场后直接改背景、题材或主线。")
+        return compacted
+    return {
+        "outline": _short_tag_value(str(compacted), 500),
+        "_locked_after_opening": True,
+        "_dynamic_adjustment_policy": "只允许 DM 根据玩家行动结果微调推进；不接受玩家开场后直接改背景、题材或主线。",
+    }
+
+
+def plot_locked_result(session: GameSession, player_message: str, tool_name: str) -> Dict[str, Any] | None:
+    if not _campaign_plot_locked(session):
+        return None
+    if not looks_like_player_plot_rewrite_request(player_message):
+        return None
+    return {
+        "ok": False,
+        "error": "plot_locked_after_start",
+        "tool": tool_name,
+        "message": "游戏已经开场，背景、题材、主线和核心剧本已锁定；玩家不能在开场后直接改剧情。可以声明角色行动，或作为新玩家加入。",
+        "allowed_after_start": ["角色行动", "调查与选择", "战斗行动", "新玩家加入", "角色卡补充"],
+    }
+
+
+def patch_touches_plot_state(patch: Dict[str, Any]) -> bool:
+    for key in patch.keys():
+        key_text = str(key)
+        key_lower = key_text.lower()
+        if key_lower in PLOT_LOCKED_KEYS or key_text in PLOT_LOCKED_KEYS:
+            return True
+    return False
+
+
+def looks_like_player_plot_rewrite_request(text: str) -> bool:
+    normalized = str(text or "").strip().lower()
+    if not normalized:
+        return False
+    if any(token in normalized for token in ("加入", "建卡", "角色", "我的名字", "我是")) and not any(
+        token in normalized for token in ("剧情", "剧本", "背景", "主线", "世界观")
+    ):
+        return False
+    plot_terms = ("剧情", "剧本", "背景", "世界观", "题材", "类型", "风格", "主线", "设定", "幕后黑手", "真相", "结局")
+    rewrite_terms = ("改成", "换成", "变成", "调整", "修改", "重写", "换一个", "改一下", "不能", "可不可以", "能不能")
+    direct_rewrite = any(term in normalized for term in plot_terms) and any(term in normalized for term in rewrite_terms)
+    fact_injection = any(term in normalized for term in ("其实", "真相是", "原来", "幕后黑手是", "结局是")) and any(
+        term in normalized for term in plot_terms
+    )
+    return direct_rewrite or fact_injection
+
+
+def _campaign_plot_locked(session: GameSession) -> bool:
+    scene = session.scene or {}
+    world_tags = session.world_tags or {}
+    return bool(
+        (scene.get("_game_started") and scene.get("_plot_locked", True))
+        or world_tags.get("_plot_locked") is True
+    )
+
+
+def _bound_player_characters(session: GameSession) -> List[Character]:
+    characters: List[Character] = []
+    for player_id, character_id in (session.player_character_map or {}).items():
+        if not str(player_id).strip():
+            continue
+        character = session.characters.get(str(character_id))
+        if character and character.player_id:
+            characters.append(character)
+    return characters
+
+
+def _outline_has_dramatic_structure(outline: Dict[str, Any]) -> bool:
+    if not isinstance(outline, dict) or not outline:
+        return False
+    acts = outline.get("acts") or outline.get("beats") or outline.get("chapters") or outline.get("stages")
+    if isinstance(acts, list) and len([item for item in acts if str(item).strip()]) >= 3:
+        return True
+    meaningful_keys = {
+        "inciting_incident",
+        "hook",
+        "act1",
+        "act2",
+        "act3",
+        "escalation",
+        "complication",
+        "twist",
+        "turning_point",
+        "climax",
+        "final_choice",
+        "stakes",
+        "导火索",
+        "升级",
+        "反转",
+        "高潮",
+        "抉择",
+    }
+    count = 0
+    for key, value in outline.items():
+        if (str(key) in meaningful_keys or str(key).lower() in meaningful_keys) and str(value).strip():
+            count += 1
+    if count >= 3:
+        return True
+    text = _flatten_text(outline)
+    return len(text) >= 120 and sum(1 for token in ("导火索", "升级", "反转", "高潮", "抉择", "危机") if token in text) >= 2
+
+
+def _flatten_text(value: Any) -> str:
+    try:
+        return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+    except Exception:
+        return str(value)
+
+
+def _compact_structured(value: Any, depth: int = 3) -> Any:
+    if depth <= 0:
+        return _short_tag_value(value, 260)
+    if isinstance(value, dict):
+        compacted: Dict[str, Any] = {}
+        for index, (key, item) in enumerate(value.items()):
+            if index >= 16:
+                compacted["_truncated"] = True
+                break
+            compacted[str(key)[:80]] = _compact_structured(item, depth - 1)
+        return compacted
+    if isinstance(value, list):
+        return [_compact_structured(item, depth - 1) for item in value[:10]]
+    if isinstance(value, str):
+        return _short_tag_value(value, 360)
+    return value
 
 
 TAG_KEYS = (
