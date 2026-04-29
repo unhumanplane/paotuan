@@ -19,9 +19,13 @@ class GameModeStateMachine:
             return GameMode.TACTICAL
         if any(hint in text for hint in self.BATTLE_HINTS):
             return GameMode.TACTICAL
+        if self._looks_like_character_request(text):
+            return GameMode.CHARACTER_CREATION
+        if self._looks_like_start_request(text) and not battle.get("active"):
+            return GameMode.NARRATIVE
         if session.mode == GameMode.CHARACTER_CREATION and not self._looks_finished(text):
             return GameMode.CHARACTER_CREATION
-        if session.mode == GameMode.RULE_AUTHORING and not self._looks_finished(text):
+        if session.mode == GameMode.RULE_AUTHORING and not self._looks_finished(text) and not self._has_background_ready(session):
             return GameMode.RULE_AUTHORING
         if any(hint in text for hint in self.CHARACTER_HINTS):
             return GameMode.CHARACTER_CREATION
@@ -36,3 +40,31 @@ class GameModeStateMachine:
     @staticmethod
     def _looks_finished(text: str) -> bool:
         return any(token in text for token in ("完成", "就这样", "开始", "进入剧情", "开局", "回合结束", "结束回合", "下一位", "下一个"))
+
+    @staticmethod
+    def _looks_like_character_request(text: str) -> bool:
+        if not text:
+            return False
+        if any(token in text for token in ("角色", "人物卡", "角色卡", "车卡", "建卡", "创建人物", "绑定角色")):
+            return True
+        if any(token in text for token in ("我是", "我想扮演", "我扮演", "职业", "身份")) and not any(
+            token in text for token in ("背景=", "世界观", "题材", "剧本")
+        ):
+            return True
+        return False
+
+    @staticmethod
+    def _looks_like_start_request(text: str) -> bool:
+        return any(token in text for token in ("开始游戏", "正式开始", "开场", "开局", "进入剧情", "进入正片"))
+
+    @staticmethod
+    def _has_background_ready(session: GameSession) -> bool:
+        world_tags = dict(session.world_tags or {})
+        if world_tags.get("_background_ready") is True:
+            return True
+        meaningful = [
+            value
+            for key, value in world_tags.items()
+            if not str(key).startswith("_") and str(value).strip() not in {"", "{}", "[]", "None"}
+        ]
+        return len(meaningful) >= 2

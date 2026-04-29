@@ -1099,8 +1099,6 @@ def campaign_start_missing_requirements(
     missing: List[str] = []
     if not has_campaign_background(session):
         missing.append("background: 先写入背景设定，至少包含题材/基调/开场前提/地点/势力/规则中的两类。")
-    if not _bound_player_characters(session):
-        missing.append("characters: 至少需要 1 名已绑定玩家角色；开场后仍允许新玩家加入。")
     intro_text = " ".join(str(opening_intro or "").split())
     if len(intro_text) < 40:
         missing.append("opening_intro: 需要一段简短开场介绍，包含氛围、当前处境和第一个压力点。")

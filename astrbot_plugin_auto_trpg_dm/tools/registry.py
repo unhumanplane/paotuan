@@ -277,7 +277,7 @@ class ToolRegistry:
         session = self.repository.load_session(session_id)
         allowed = self._with_llm_decided_tools(self._allowed_tool_names(mode, message=message), message=message)
         if not has_campaign_background(session):
-            allowed = self._background_first_tool_names(allowed)
+            allowed = self._background_first_tool_names(allowed, message=message)
         selected = {name: catalog[name] for name in allowed}
         specs = [
             {
@@ -361,6 +361,7 @@ class ToolRegistry:
                     "get_battle_snapshot",
                     "turn_control",
                     "bind_player_character",
+                    "update_character_tags",
                     "session_control",
                     "estimate_token_usage",
                 ]
@@ -387,6 +388,7 @@ class ToolRegistry:
                     "check_attack_vector",
                     "execute_rule",
                     "update_scene",
+                    "update_character_tags",
                     "session_control",
                     "estimate_token_usage",
                 ]
@@ -437,14 +439,24 @@ class ToolRegistry:
         return [*names, "generate_map_svg"]
 
     @staticmethod
-    def _background_first_tool_names(names: list[str]) -> list[str]:
-        """Before the campaign background exists, only allow tools that can define or inspect it."""
+    def _background_first_tool_names(names: list[str], message: str = "") -> list[str]:
+        """Before the campaign background exists, expose only setup-safe tools."""
         allowed = []
+        opening_seed = _looks_like_delegated_opening_seed(message)
         for name in names:
             if name in {"update_world_tags", "session_control", "estimate_token_usage"} and name not in allowed:
                 allowed.append(name)
+            if opening_seed and name in {"create_character", "bind_player_character", "start_game"} and name not in allowed:
+                allowed.append(name)
         if "update_world_tags" not in allowed:
             allowed.insert(0, "update_world_tags")
+        elif allowed[0] != "update_world_tags":
+            allowed.remove("update_world_tags")
+            allowed.insert(0, "update_world_tags")
+        if opening_seed:
+            for name in ("bind_player_character", "create_character", "start_game"):
+                if name in names and name not in allowed:
+                    allowed.append(name)
         if "session_control" not in allowed:
             allowed.append("session_control")
         if "estimate_token_usage" not in allowed:
@@ -466,6 +478,11 @@ CHARACTER_PROFILE_TERMS = (
     "补充",
     "默认战斗行为",
     "战斗习惯",
+    "默认攻击",
+    "默认行动",
+    "行动策略",
+    "战斗策略",
+    "请记住",
     "主武器",
     "常用法术",
     "次要法术",
@@ -624,6 +641,42 @@ def _looks_text_only_request(message: str) -> bool:
     if _contains_any(text, VISUAL_REQUEST_TERMS):
         return False
     return _contains_any(text, TEXT_ONLY_TERMS)
+
+
+def _looks_like_delegated_opening_seed(message: str) -> bool:
+    text = str(message or "").strip().lower()
+    if not text:
+        return False
+    setup_terms = (
+        "开始游戏",
+        "正式开始",
+        "开局",
+        "开场",
+        "进入剧情",
+        "进入正片",
+        "补完后开始",
+        "补全后开始",
+        "智能补完",
+        "不用多问",
+        "直接开始",
+        "故事",
+        "剧本",
+        "副本",
+    )
+    if not any(term in text for term in setup_terms):
+        return False
+    buckets = 0
+    if any(term in text for term in ("异界", "异世界", "穿越", "重生", "末世", "废土", "核战", "修仙", "仙侠", "文明", "文明重建", "科幻", "奇幻", "玄幻", "现代", "赛博", "克苏鲁", "悬疑", "武侠", "中世纪", "历史", "dnd", "coc", "d20")):
+        buckets += 1
+    if any(term in text for term in ("经营", "种田", "后宫", "宫斗", "调查", "求生", "冒险", "恐怖", "轻松", "日常", "荒诞", "宏大", "悲剧", "失败", "黑暗", "热血", "温馨")):
+        buckets += 1
+    if any(term in text for term in ("我是", "我们是", "扮演", "担任", "店长", "队长", "领主", "学生", "调查员", "佣兵", "冒险者")):
+        buckets += 1
+    if any(term in text for term in ("咖啡馆", "店", "酒馆", "城市", "村庄", "王国", "宫廷", "学院", "宗门", "地下城", "空间站", "港口", "领地")):
+        buckets += 1
+    if any(term in text for term in ("店员", "猫娘", "贵族", "敌人", "怪物", "组织", "势力", "公司", "教团", "军团", "帮派", "派系")):
+        buckets += 1
+    return buckets >= 2 or len(text) >= 30
 
 
 def model_schema(model: type[BaseModel]) -> dict[str, Any]:

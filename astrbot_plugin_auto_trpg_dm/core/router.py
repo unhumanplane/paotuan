@@ -586,6 +586,26 @@ class IntentRouter:
             elif _looks_like_background_generation_request(raw_player_message):
                 repaired["patch"] = _default_generated_background_patch(raw_player_message)
             return repaired
+        if tool_name == "start_game":
+            if "opening_intro" not in repaired and repaired.get("intro"):
+                repaired["opening_intro"] = repaired.pop("intro")
+            if "opening_intro" not in repaired and repaired.get("opening"):
+                repaired["opening_intro"] = repaired.pop("opening")
+            if "player_guidance" not in repaired and repaired.get("guidance"):
+                repaired["player_guidance"] = repaired.pop("guidance")
+            if "campaign_outline" not in repaired:
+                for alias in ("plot_skeleton", "plot_outline", "outline", "story_outline"):
+                    if repaired.get(alias):
+                        repaired["campaign_outline"] = _coerce_campaign_outline(repaired.pop(alias))
+                        break
+            if "scene_patch" not in repaired:
+                for alias in ("initial_scene", "scene", "current_scene"):
+                    if repaired.get(alias):
+                        scene_value = repaired.pop(alias)
+                        repaired["scene_patch"] = scene_value if isinstance(scene_value, dict) else {"summary": str(scene_value)}
+                        break
+            allowed = {"opening_intro", "player_guidance", "campaign_outline", "scene_patch"}
+            return {key: value for key, value in repaired.items() if key in allowed}
         return repaired
 
     async def _llm_generate(self, **kwargs: Any) -> Any:
@@ -789,6 +809,12 @@ def _is_retryable_llm_error(exc: Exception) -> bool:
     name = exc.__class__.__name__.lower()
     text = str(exc).lower()
     retryable_markers = (
+        "candidate.content.parts",
+        "content.parts",
+        "parts 为空",
+        "parts为空",
+        "empty response",
+        "empty candidate",
         "timeout",
         "timed out",
         "readtimeout",
@@ -891,6 +917,15 @@ def _infer_world_tags_from_text(message: str) -> dict[str, Any]:
             "无魔",
             "纯剑",
             "海战",
+            "异界",
+            "异世界",
+            "穿越",
+            "重生",
+            "核战",
+            "修仙",
+            "仙侠",
+            "文明",
+            "文明重建",
         ),
     )
     if genre_terms:
@@ -898,7 +933,7 @@ def _infer_world_tags_from_text(message: str) -> dict[str, Any]:
 
     tone_terms = _matched_terms(
         lowered,
-        ("严肃", "荒诞", "危险", "恐怖", "轻松", "黑暗", "求生", "调查", "热血", "压抑", "幽默", "写实"),
+        ("严肃", "荒诞", "宏大", "悲剧", "失败", "危险", "恐怖", "轻松", "黑暗", "求生", "调查", "热血", "压抑", "幽默", "写实", "日常", "经营", "种田", "后宫", "宫斗", "温馨"),
     )
     if tone_terms:
         patch["tone"] = "、".join(tone_terms)
@@ -909,7 +944,7 @@ def _infer_world_tags_from_text(message: str) -> dict[str, Any]:
 
     location_terms = _matched_terms(
         lowered,
-        ("欧洲", "类似地球", "地球", "海上", "港口", "王国", "城市", "村庄", "荒野", "废墟", "船上", "游艇", "空间站", "中继站", "地下城", "酒馆"),
+        ("欧洲", "类似地球", "地球", "海上", "港口", "王国", "城市", "村庄", "荒野", "废墟", "船上", "游艇", "空间站", "中继站", "地下城", "酒馆", "咖啡馆", "店", "宫廷", "学院", "宗门", "领地"),
     )
     if location_terms:
         patch["location"] = "、".join(location_terms)
@@ -921,10 +956,16 @@ def _infer_world_tags_from_text(message: str) -> dict[str, Any]:
     if ruleset_terms:
         patch["ruleset"] = "、".join(ruleset_terms)
 
-    if any(token in lowered for token in ("势力", "组织", "公司", "教团", "军团", "帮派", "派系")):
+    if any(token in lowered for token in ("势力", "组织", "公司", "教团", "军团", "帮派", "派系", "店员", "猫娘", "贵族", "朝廷")):
         patch["factions"] = _short_inferred_text(text, 160)
-    if any(token in lowered for token in ("开场", "开局", "第一幕", "任务", "求救", "聚集", "来到", "醒来", "退休", "导入")):
+    if any(token in lowered for token in ("开始游戏", "开场", "开局", "第一幕", "故事", "剧本", "副本", "任务", "求救", "聚集", "来到", "醒来", "退休", "导入", "我是", "我们是", "扮演", "担任")):
         patch["starting_premise"] = _short_inferred_text(text, 240)
+
+    if any(token in lowered for token in ("我是", "我们是", "扮演", "担任", "店长", "领主", "队长", "调查员", "学生", "佣兵", "冒险者")):
+        patch.setdefault("player_role_premise", _short_inferred_text(text, 160))
+    if any(token in lowered for token in ("补全", "补完", "智能补完", "不用多问", "直接开始", "开始游戏", "开场", "开局")) and len(patch) >= 1:
+        patch.setdefault("tone", "由 DM 补全细节，保持可裁定、可推进、不过度追问")
+        patch.setdefault("ruleset", "以 d20 检定为基础；概率、风险和对抗行动必须投骰。")
 
     if len(patch) >= 2 or ("genre" in patch and len(str(patch["genre"])) >= 8):
         patch.setdefault("campaign_background", _short_inferred_text(text, 280))
@@ -958,7 +999,23 @@ def _looks_like_background_generation_request(message: str) -> bool:
         "给我",
         "供选择",
     )
-    delegation_terms = ("你来定", "你定吧", "你决定", "随便定", "随机一个", "随机几个", "直接定", "自动生成")
+    delegation_terms = (
+        "你来定",
+        "你定吧",
+        "你决定",
+        "随便定",
+        "随机一个",
+        "随机几个",
+        "直接定",
+        "自动生成",
+        "智能补完",
+        "不用多问",
+        "补完后开始",
+        "补全后开始",
+        "故事",
+        "剧本",
+        "副本",
+    )
     return any(term in text for term in delegation_terms) or (
         any(term in text for term in subject_terms) and any(term in text for term in author_terms)
     )
@@ -991,6 +1048,24 @@ def _default_generated_background_patch(message: str) -> dict[str, Any]:
         ),
         "background_source": source or "dm_generated_fallback",
     }
+
+
+def _coerce_campaign_outline(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, list):
+        return {"acts": [str(item) for item in value if str(item).strip()]}
+    text = str(value or "").strip()
+    if not text:
+        return {}
+    parts = [
+        part.strip(" \n\t-0123456789.、:：")
+        for part in re.split(r"[\n；;]+", text)
+        if part.strip(" \n\t-0123456789.、:：")
+    ]
+    if len(parts) >= 3:
+        return {"acts": parts[:6], "outline": _short_inferred_text(text, 500)}
+    return {"outline": _short_inferred_text(text, 500)}
 
 
 def _ensure_legacy_live_scene_state(session: Any) -> bool:

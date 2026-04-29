@@ -31,7 +31,7 @@ from .tools.turn_tools import TurnTools
     "auto_trpg_dm",
     "codex",
     "全自然语言 TRPG DM：动态规则、战棋物理验证、Tag 角色卡与自动剧本。",
-    "0.1.39",
+    "0.1.42",
 )
 class AutoTrpgDmPlugin(Star):
     DEDUP_WINDOW_SECONDS = 18.0
@@ -65,7 +65,7 @@ class AutoTrpgDmPlugin(Star):
             self.plugin_logger.info("legacy_live_scene_state_migrated saves=%s", live_scene_migrations)
         self._heartbeat_task: asyncio.Task | None = None
         self._start_heartbeat_task()
-        self.plugin_logger.info("plugin_initialized version=0.1.39 data_dir=%s", data_dir)
+        self.plugin_logger.info("plugin_initialized version=0.1.42 data_dir=%s", data_dir)
         logger.info("Auto TRPG DM plugin initialized.")
 
     @filter.command("dm")
@@ -356,6 +356,24 @@ class AutoTrpgDmPlugin(Star):
                 result.get("action"),
             )
             return str(result.get("message") or "重开需要二次确认，存档暂未改动。")
+
+        if _looks_like_new_campaign_seed_request(text) and _session_has_meaningful_campaign_content(session):
+            result = await MemoryTools(self.repository, session_id, actor=actor, message=text).session_control(
+                "reset",
+                reason=f"开新团前清空旧团：{text}",
+            )
+            self.repository.append_audit(
+                session_id,
+                {
+                    "type": "local_fast_path",
+                    "action": "new_campaign_requires_reset",
+                    "actor": actor,
+                    "text": text[:240],
+                    "result": result,
+                },
+            )
+            message = str(result.get("message") or "重开需要二次确认，存档暂未改动。")
+            return "当前群已有一场跑团存档；同群只能同时保留一场。若要把这句作为新团开场，需先清空旧团。\n" + message
 
         if normalized in {"status", "状态", "当前状态"}:
             self.repository.append_audit(session_id, {"type": "local_fast_path", "action": "status", "actor": actor})
@@ -2244,19 +2262,20 @@ def _looks_like_enough_background_seed(text: str) -> bool:
         return False
     explicit = any(token in lowered for token in ("背景", "世界观", "设定", "题材", "类型", "风格", "环境", "premise", "setting"))
     buckets = 0
-    if any(token in lowered for token in ("末世", "废土", "科幻", "奇幻", "玄幻", "现代", "赛博", "克苏鲁", "悬疑", "武侠", "太空", "蒸汽", "欧洲", "中世纪", "历史", "低魔", "无魔", "纯剑", "dnd", "coc", "d20")):
+    if any(token in lowered for token in ("末世", "废土", "核战", "修仙", "仙侠", "文明", "文明重建", "科幻", "奇幻", "玄幻", "异界", "异世界", "穿越", "重生", "现代", "赛博", "克苏鲁", "悬疑", "武侠", "太空", "蒸汽", "欧洲", "中世纪", "历史", "低魔", "无魔", "纯剑", "dnd", "coc", "d20")):
         buckets += 1
-    if any(token in lowered for token in ("严肃", "荒诞", "危险", "恐怖", "轻松", "黑暗", "求生", "调查", "热血", "压抑", "幽默")):
+    if any(token in lowered for token in ("严肃", "荒诞", "宏大", "悲剧", "失败", "危险", "恐怖", "轻松", "日常", "经营", "种田", "后宫", "宫斗", "黑暗", "求生", "调查", "热血", "压抑", "幽默", "温馨")):
         buckets += 1
-    if any(token in lowered for token in ("开场", "开局", "第一幕", "因为", "为了", "任务", "求救", "聚集", "来到", "醒来", "退休")):
+    if any(token in lowered for token in ("开始游戏", "正式开始", "开场", "开局", "第一幕", "故事", "剧本", "副本", "因为", "为了", "想要", "最终", "任务", "求救", "聚集", "来到", "醒来", "退休", "我是", "我们是", "担任", "扮演")):
         buckets += 1
-    if any(token in lowered for token in ("地点", "城市", "村庄", "荒野", "废墟", "船上", "游艇", "空间站", "中继站", "塔", "地下城", "酒馆", "地球", "海上", "海战", "港口", "王国")):
+    if any(token in lowered for token in ("地点", "城市", "村庄", "荒野", "废墟", "船上", "游艇", "空间站", "中继站", "塔", "地下城", "酒馆", "咖啡馆", "店", "学院", "宗门", "宫廷", "领地", "地球", "海上", "海战", "港口", "王国")):
         buckets += 1
-    if any(token in lowered for token in ("势力", "组织", "公司", "教团", "军团", "帮派", "敌人", "怪物", "派系")):
+    if any(token in lowered for token in ("势力", "组织", "公司", "教团", "军团", "帮派", "敌人", "怪物", "派系", "店员", "猫娘", "贵族", "朝廷")):
         buckets += 1
     if any(token in lowered for token in ("规则", "系统", "检定", "骰", "属性", "等级", "没有魔", "没有魔法", "不存在超自然", "无超自然", "超自然力量")):
         buckets += 1
-    return buckets >= 2 and (explicit or buckets >= 3 or len(lowered) >= 28)
+    delegated_start = any(token in lowered for token in ("补全", "补完", "智能补完", "不用多问", "直接开始", "开始游戏", "开局", "开场"))
+    return buckets >= 2 and (explicit or delegated_start or buckets >= 3 or len(lowered) >= 28)
 
 
 def _looks_like_background_authoring_request(text: str) -> bool:
@@ -2315,9 +2334,55 @@ def _looks_like_background_authoring_request(text: str) -> bool:
         "替我定",
         "直接定",
         "自动生成",
+        "智能补完",
+        "不用多问",
     )
     if any(token in lowered for token in delegation_terms):
+        return True
+    if any(token in lowered for token in ("补全", "补完", "完善", "扩写", "开始游戏", "开局", "开场")) and _looks_like_enough_background_seed(text):
         return True
     if not any(token in lowered for token in subject_terms):
         return False
     return any(token in lowered for token in authoring_terms) or len(lowered) >= 10
+
+
+def _looks_like_new_campaign_seed_request(text: str) -> bool:
+    lowered = str(text or "").strip().lower()
+    if not lowered:
+        return False
+    if _looks_like_reset_request(text):
+        return True
+    start_or_delegate = any(
+        token in lowered
+        for token in (
+            "开始游戏",
+            "正式开始",
+            "开局",
+            "开场",
+            "进入剧情",
+            "补完后开始",
+            "补全后开始",
+            "智能补完",
+            "不用多问",
+            "故事",
+            "剧本",
+            "副本",
+        )
+    )
+    return start_or_delegate and _looks_like_enough_background_seed(text)
+
+
+def _session_has_meaningful_campaign_content(session) -> bool:
+    if session.characters or session.player_character_map or session.rules:
+        return True
+    if has_campaign_background(session):
+        return True
+    if bool((session.battle or {}).get("active")):
+        return True
+    scene = dict(session.scene or {})
+    if scene.get("_game_started") or scene.get("_plot_locked") or scene.get("_legacy_live_campaign"):
+        return True
+    summary = str(scene.get("summary", "") or "").strip()
+    if summary and not any(token in summary for token in ("尚未开局", "等待玩家", "未开始")):
+        return True
+    return False
