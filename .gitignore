@@ -15,6 +15,12 @@ data/
 *.sqlite3
 *.log
 
+# Local debug/recovery artifacts
+.recovery/
+latest_*.svg
+latest_*.png
+map_*_remote.png
+
 # Python cache and test artifacts
 __pycache__/
 *.py[cod]
