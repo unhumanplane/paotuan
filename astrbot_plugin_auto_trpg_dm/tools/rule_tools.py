@@ -210,6 +210,12 @@ class RuleTools:
 
 def _normalize_execute_rule_args(rule_name: str, args: Dict[str, Any]) -> Dict[str, Any]:
     normalized = dict(args or {})
+    if "threshold" not in normalized:
+        for key in ("dc", "target_dc", "difficulty", "target_number", "target"):
+            value = _number_or_none(normalized.get(key))
+            if value is not None:
+                normalized["threshold"] = int(value) if float(value).is_integer() else value
+                break
     if not _is_d20_like_rule(rule_name):
         return normalized
     bonus_terms = (

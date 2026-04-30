@@ -223,6 +223,15 @@ def _execute_rule_direct(code: str, args: dict[str, Any]) -> dict[str, Any]:
         if not callable(calculate):
             return {"ok": False, "error": "missing_calculate"}
         call_args = _filter_calculate_args(calculate, args)
+        if call_args.get("missing"):
+            missing = ", ".join(call_args["missing"])
+            return {
+                "ok": False,
+                "error": "invalid_rule_arguments",
+                "reason": f"missing required rule arguments: {missing}",
+                "missing_arguments": call_args["missing"],
+                "rolls": roller.dump(),
+            }
         result = calculate(**call_args["args"])
         payload: dict[str, Any] = {"ok": True, "result": result, "rolls": roller.dump()}
         if call_args["ignored"]:
@@ -238,14 +247,21 @@ def _filter_calculate_args(calculate: Any, args: dict[str, Any]) -> dict[str, An
     except (TypeError, ValueError):
         return {"args": dict(args), "ignored": []}
     if any(param.kind == inspect.Parameter.VAR_KEYWORD for param in signature.parameters.values()):
-        return {"args": dict(args), "ignored": []}
+        return {"args": dict(args), "ignored": [], "missing": []}
     accepted = {
         name
         for name, param in signature.parameters.items()
         if param.kind in (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)
     }
     if not accepted:
-        return {"args": {}, "ignored": sorted(str(key) for key in args)}
+        return {"args": {}, "ignored": sorted(str(key) for key in args), "missing": []}
     filtered = {key: value for key, value in args.items() if key in accepted}
     ignored = sorted(str(key) for key in args if key not in accepted)
-    return {"args": filtered, "ignored": ignored}
+    missing = sorted(
+        name
+        for name, param in signature.parameters.items()
+        if name in accepted
+        and name not in filtered
+        and param.default is inspect.Parameter.empty
+    )
+    return {"args": filtered, "ignored": ignored, "missing": missing}

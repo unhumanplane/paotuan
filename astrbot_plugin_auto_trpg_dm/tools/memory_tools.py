@@ -135,6 +135,20 @@ class MemoryTools:
                 validation,
             )
             return validation
+        balance = validate_character_card_party_balance(
+            session,
+            safe_id,
+            name=name,
+            summary=summary,
+            tags=normalized_tags,
+        )
+        if balance:
+            self._audit(
+                "create_character",
+                {"character_id": character_id, "resolved_character_id": safe_id, "name": name, "summary": summary, "player_id": owner_id, "tags": tags or []},
+                balance,
+            )
+            return balance
         character = Character(
             id=safe_id,
             name=name,
@@ -213,6 +227,20 @@ class MemoryTools:
                     validation,
                 )
                 return validation
+            balance = validate_character_card_party_balance(
+                session,
+                safe_id,
+                name=name or safe_id,
+                summary=summary,
+                tags=normalized_tags,
+            )
+            if balance:
+                self._audit(
+                    "bind_player_character",
+                    {"character_id": character_id, "resolved_character_id": safe_id, "player_id": owner_id, "name": name, "summary": summary, "tags": tags or []},
+                    balance,
+                )
+                return balance
         elif _campaign_game_started(session):
             bound_id = str(session.player_character_map.get(owner_id, "") or "")
             same_binding = bool(owner_id and (bound_id == safe_id or character.player_id == owner_id))
@@ -243,6 +271,20 @@ class MemoryTools:
                     validation,
                 )
                 return validation
+            balance = validate_character_card_party_balance(
+                session,
+                safe_id,
+                name=name or character.name,
+                summary=summary or character.summary,
+                tags=_merged_character_tags(character, normalized_tags),
+            )
+            if balance:
+                self._audit(
+                    "bind_player_character",
+                    {"character_id": character_id, "resolved_character_id": safe_id, "player_id": owner_id, "name": name, "summary": summary, "tags": tags or []},
+                    balance,
+                )
+                return balance
         owner_guard = self._character_owner_guard(session, safe_id, owner_id)
         if owner_guard:
             self._audit(
@@ -380,6 +422,20 @@ class MemoryTools:
                     validation,
                 )
                 return validation
+            balance = validate_character_card_party_balance(
+                session,
+                safe_id,
+                name=character.name,
+                summary=character.summary,
+                tags=_merged_character_tags(character, normalized_tags),
+            )
+            if balance:
+                self._audit(
+                    "update_character_tags",
+                    {"character_id": character_id, "resolved_character_id": safe_id, "tags": normalized_tags, "raw_text": raw_text},
+                    balance,
+                )
+                return balance
         character.upsert_tags(normalized_tags)
         self.repository.save_session(session)
         result = {
@@ -1427,6 +1483,12 @@ def validate_character_card_payload(
         reasons.append("角色卡包含系统/工具越权或跳过规则的话术。")
     if any(term.lower() in combined for term in CARD_OVERPOWERED_TERMS):
         reasons.append("角色卡包含自动成功、无敌、无限资源或秒杀类主张。")
+    if _looks_like_strategic_asset_claim(combined):
+        reasons.append("角色卡不能直接携带、调用或控制核弹、战略导弹、轨道炮、舰队/军团等战略级资源；这类资源只能作为剧情目标或由 DM 在场内授予。")
+    if _looks_like_force_multiplier_claim(combined):
+        reasons.append("角色卡不能直接自带或指挥军团、舰队、亲卫队、重型载具编队等队伍外战力；这类资源需要场内获得、消耗或由 DM 授予。")
+    if _looks_like_mythic_power_claim(combined):
+        reasons.append("角色卡不能直接写成半神、神格、创世神、全知全能或传奇权能；高阶身份和超凡权能必须先符合队伍层级并由 DM 裁定。")
     if _looks_like_late_join_power_bundle(combined):
         reasons.append("开场后新角色不能自带军队、传奇随从、跨作品神级身份或路过式解决当前冲突。")
     if _looks_like_world_law_rewrite(combined):
@@ -1446,6 +1508,381 @@ def validate_character_card_payload(
         "reasons": list(dict.fromkeys(reasons))[:8],
         "suggestion": "请改成有边界的能力、装备、弱点和资源消耗；强效果需要规则、检定或开场后场内获得。",
     }
+
+
+BALANCE_STRATEGIC_ASSET_TERMS = (
+    "核弹",
+    "核武",
+    "核武器",
+    "原子弹",
+    "氢弹",
+    "战术核",
+    "战略导弹",
+    "洲际导弹",
+    "导弹发射井",
+    "轨道炮",
+    "卫星炮",
+    "天基武器",
+    "反物质炸弹",
+    "歼星",
+    "灭星",
+    "行星毁灭",
+    "nuke",
+    "nuclear",
+    "icbm",
+    "orbital cannon",
+)
+
+BALANCE_STRATEGIC_CONTROL_TERMS = (
+    "拥有",
+    "携带",
+    "自带",
+    "带着",
+    "装备",
+    "背包",
+    "库存",
+    "仓库",
+    "掏出",
+    "发射",
+    "部署",
+    "调用",
+    "调动",
+    "持有",
+    "使用",
+    "能用",
+    "可用",
+    "有",
+    "控制",
+    "掌控",
+    "指挥",
+    "按钮",
+    "遥控",
+    "发射器",
+    "发射井",
+    "armed with",
+    "carry",
+    "carries",
+    "has a",
+    "owns",
+)
+
+BALANCE_FORCE_MULTIPLIER_TERMS = (
+    "军团长",
+    "舰队司令",
+    "禁军统领",
+    "亲卫队",
+    "禁军",
+    "私人军队",
+    "雇佣兵团",
+    "机器人军团",
+    "舰队",
+    "军团",
+    "军队",
+    "武装部队",
+    "战舰",
+    "航母",
+    "坦克连",
+    "机甲部队",
+    "army",
+    "fleet",
+    "legion",
+    "battleship",
+)
+
+BALANCE_FORCE_CONTROL_TERMS = (
+    "拥有",
+    "自带",
+    "带着",
+    "有",
+    "率领",
+    "统领",
+    "指挥",
+    "控制",
+    "调动",
+    "掌握",
+    "召唤",
+    "随叫随到",
+    "听命于我",
+    "听我命令",
+    "under my command",
+    "command",
+    "controls",
+)
+
+BALANCE_MYTHIC_TERMS = (
+    "半神",
+    "神格",
+    "神明",
+    "神皇",
+    "帝皇",
+    "原体",
+    "创世神",
+    "造物主",
+    "世界意志",
+    "全知",
+    "全能",
+    "不死不灭",
+    "demigod",
+    "godlike",
+)
+
+BALANCE_LEGENDARY_POWER_TERMS = (
+    "传奇权能",
+    "传奇赐福",
+    "传奇动作",
+    "传奇抗性",
+    "史诗权能",
+    "神话权能",
+    "神话赐福",
+    "legendary action",
+    "legendary resistance",
+    "mythic power",
+    "mythic trait",
+)
+
+BALANCE_HIGH_TECH_TERMS = (
+    "动力甲",
+    "机甲",
+    "高达",
+    "高斯步枪",
+    "激光炮",
+    "等离子炮",
+    "火箭筒",
+    "反坦克",
+    "装甲车",
+    "战斗无人机",
+    "power armor",
+    "mecha",
+    "railgun",
+    "plasma cannon",
+    "rocket launcher",
+)
+
+
+def validate_character_card_party_balance(
+    session: GameSession,
+    character_id: str,
+    *,
+    name: str = "",
+    summary: str = "",
+    tags: Optional[List[Dict[str, Any]]] = None,
+) -> Dict[str, Any] | None:
+    existing_profiles: List[Dict[str, Any]] = []
+    for existing_id, character in (session.characters or {}).items():
+        if str(existing_id) == str(character_id):
+            continue
+        if not character:
+            continue
+        if not str(character.name or character.summary or character.tags).strip():
+            continue
+        existing_profiles.append(
+            _character_power_profile(
+                name=character.name,
+                summary=character.summary,
+                tags=_character_tags_as_dicts(character),
+            )
+        )
+    if not existing_profiles:
+        return None
+
+    candidate = _character_power_profile(name=name, summary=summary, tags=tags or [])
+    baseline_scores = [int(profile.get("score", 0)) for profile in existing_profiles]
+    baseline_max_score = max(baseline_scores, default=0)
+    baseline_avg_score = sum(baseline_scores) / max(1, len(baseline_scores))
+    baseline_levels = [int(profile.get("level", 0)) for profile in existing_profiles if int(profile.get("level", 0)) > 0]
+    baseline_max_level = max(baseline_levels, default=0)
+    baseline_min_level = min(baseline_levels, default=0)
+    candidate_level = int(candidate.get("level", 0))
+
+    reasons: List[str] = []
+    if candidate_level and baseline_levels and candidate_level > baseline_max_level + 2:
+        reasons.append(f"新角色等级 {candidate_level} 明显高于现有角色最高等级 {baseline_max_level}；请控制在同级或最多高 1-2 级。")
+    if candidate_level and baseline_levels and baseline_min_level and candidate_level < baseline_min_level - 5:
+        reasons.append(f"新角色等级 {candidate_level} 明显低于现有角色最低等级 {baseline_min_level}；请与队伍等级接近，避免战力差异过大。")
+    if candidate_level >= 8 and not baseline_levels and baseline_max_score < 6:
+        reasons.append("现有角色卡没有中高等级基准；新角色不能直接写成 8 级以上或高阶角色。")
+
+    if candidate.get("strategic_terms") and not any(profile.get("strategic_terms") for profile in existing_profiles):
+        terms = "、".join(candidate.get("strategic_terms", [])[:4])
+        reasons.append(f"新角色携带或控制了战略级资源（{terms}），但现有角色没有同级资源。")
+    if candidate.get("force_terms") and not any(profile.get("force_terms") for profile in existing_profiles):
+        terms = "、".join(candidate.get("force_terms", [])[:4])
+        reasons.append(f"新角色自带的随从/军团/载具资源（{terms}）明显高于队伍基准。")
+    if candidate.get("mythic_terms") and not any(profile.get("mythic_terms") for profile in existing_profiles):
+        terms = "、".join(candidate.get("mythic_terms", [])[:4])
+        reasons.append(f"新角色包含神话/传奇级身份或权能（{terms}），但现有角色不是同一层级。")
+    if candidate.get("high_tech_terms") and not any(profile.get("high_tech_terms") for profile in existing_profiles) and baseline_max_score < 5:
+        terms = "、".join(candidate.get("high_tech_terms", [])[:4])
+        reasons.append(f"新角色装备科技/火力层级（{terms}）明显高于现有角色卡。")
+
+    candidate_score = int(candidate.get("score", 0))
+    score_ceiling = max(baseline_max_score + 6, int(baseline_avg_score + 8), 8)
+    if candidate_score >= 8 and candidate_score > score_ceiling:
+        reasons.append(f"新角色综合战力评分 {candidate_score} 明显超过队伍基准上限 {score_ceiling}；请削弱身份、装备、随从或特殊能力。")
+
+    if not reasons:
+        return None
+    return {
+        "ok": False,
+        "error": "character_card_power_mismatch",
+        "message": "角色卡强度与同团既有角色差异过大；为了维护游戏平衡，新角色必须和现有角色保持同一级别水平。",
+        "reasons": list(dict.fromkeys(reasons))[:8],
+        "party_baseline": {
+            "existing_character_count": len(existing_profiles),
+            "max_level": baseline_max_level,
+            "max_power_score": baseline_max_score,
+            "avg_power_score": round(baseline_avg_score, 1),
+        },
+        "candidate_profile": {
+            "level": candidate_level,
+            "power_score": candidate_score,
+            "matched_terms": candidate.get("matched_terms", [])[:8],
+        },
+        "suggestion": "请把新角色改成和队伍同级：保留概念和弱点，移除核弹/军团/神格/超规格装备，把强力资源改成需要场内寻找、检定、消耗或 DM 授予。",
+    }
+
+
+def _character_power_profile(*, name: str, summary: str, tags: List[Dict[str, Any]]) -> Dict[str, Any]:
+    text = _flatten_text([name, summary, tags]).lower()
+    levels = _extract_character_levels(text)
+    level = max(levels, default=0)
+    strategic_terms = _matched_terms(text, BALANCE_STRATEGIC_ASSET_TERMS) if _looks_like_strategic_asset_claim(text) else []
+    force_candidates = _matched_terms(text, BALANCE_FORCE_MULTIPLIER_TERMS)
+    force_terms = force_candidates if force_candidates and _contains_any_text(text, BALANCE_FORCE_CONTROL_TERMS) else []
+    mythic_terms = list(
+        dict.fromkeys(
+            [
+                *_matched_terms(text, BALANCE_MYTHIC_TERMS),
+                *_matched_terms(text, BALANCE_LEGENDARY_POWER_TERMS),
+            ]
+        )
+    )
+    high_tech_terms = _matched_terms(text, BALANCE_HIGH_TECH_TERMS)
+    absurd_numeric = _has_extreme_card_number(text)
+
+    score = 0
+    if level:
+        score += max(1, min(level, 20) // 2)
+        if level >= 15:
+            score += 6
+        elif level >= 10:
+            score += 3
+        elif level >= 5:
+            score += 1
+    score += 12 if strategic_terms else 0
+    score += 8 if force_terms else 0
+    score += 9 if mythic_terms else 0
+    score += 4 if high_tech_terms else 0
+    score += 5 if absurd_numeric else 0
+    matched_terms = list(dict.fromkeys([*strategic_terms, *force_terms, *mythic_terms, *high_tech_terms]))
+    return {
+        "level": level,
+        "score": score,
+        "strategic_terms": strategic_terms,
+        "force_terms": force_terms,
+        "mythic_terms": mythic_terms,
+        "high_tech_terms": high_tech_terms,
+        "matched_terms": matched_terms,
+        "absurd_numeric": absurd_numeric,
+    }
+
+
+def _extract_character_levels(text: str) -> List[int]:
+    levels: List[int] = []
+    patterns = (
+        re.compile(r"(?:level|lvl|lv\.?|等级|角色等级)\s*[:：]?\s*(\d{1,2})", re.IGNORECASE),
+        re.compile(r"(\d{1,2})\s*级"),
+    )
+    for pattern in patterns:
+        for match in pattern.finditer(text):
+            value = int(match.group(1))
+            if 1 <= value <= 30:
+                levels.append(value)
+    return levels
+
+
+def _looks_like_strategic_asset_claim(text: str) -> bool:
+    lowered = str(text or "").lower()
+    return _contains_any_text(lowered, BALANCE_STRATEGIC_ASSET_TERMS) and _contains_any_text(lowered, BALANCE_STRATEGIC_CONTROL_TERMS)
+
+
+def _looks_like_force_multiplier_claim(text: str) -> bool:
+    lowered = str(text or "").lower()
+    leadership_terms = ("军团长", "舰队司令", "禁军统领")
+    if _contains_any_text(lowered, leadership_terms):
+        return True
+    return _contains_any_text(lowered, BALANCE_FORCE_MULTIPLIER_TERMS) and _contains_any_text(lowered, BALANCE_FORCE_CONTROL_TERMS)
+
+
+def _looks_like_mythic_power_claim(text: str) -> bool:
+    lowered = str(text or "").lower()
+    if _contains_any_text(lowered, BALANCE_LEGENDARY_POWER_TERMS):
+        return True
+    strong_terms = (
+        "半神",
+        "神格",
+        "神皇",
+        "帝皇",
+        "原体",
+        "创世神",
+        "造物主",
+        "世界意志",
+        "全知",
+        "全能",
+        "不死不灭",
+        "demigod",
+        "godlike",
+    )
+    if _contains_any_text(lowered, strong_terms):
+        return True
+    return _contains_any_text(lowered, ("神明", "mythic", "legendary")) and _contains_any_text(
+        lowered,
+        ("我是", "身为", "作为", "成为", "拥有", "持有", "掌握", "权能", "赐福", "神力", "神性", "神级"),
+    )
+
+
+def _matched_terms(text: str, terms: tuple[str, ...]) -> List[str]:
+    lowered = str(text or "").lower()
+    return list(dict.fromkeys(term for term in terms if str(term).lower() in lowered))
+
+
+def _has_extreme_card_number(text: str) -> bool:
+    return bool(
+        re.search(r"(?:dc|难度|豁免)\D{0,8}(?:3[0-9]|[4-9]\d)", text, flags=re.IGNORECASE)
+        or re.search(r"\+(?:1[0-9]|[2-9]\d)\D{0,8}(?:加值|修正|bonus|攻击|豁免|检定)", text, flags=re.IGNORECASE)
+    )
+
+
+def _character_tags_as_dicts(character: Character) -> List[Dict[str, Any]]:
+    return [
+        {
+            "key": tag.key,
+            "value": tag.value,
+            "type": tag.type,
+            "source": tag.source,
+            "layer": tag.layer or infer_tag_layer(tag.key),
+        }
+        for tag in (character.tags or [])
+    ]
+
+
+def _merged_character_tags(character: Character, new_tags: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    merged: Dict[tuple[str, str], Dict[str, Any]] = {}
+    for item in _character_tags_as_dicts(character):
+        key = str(item.get("key", ""))
+        layer = str(item.get("layer") or infer_tag_layer(key))
+        merged[(layer, key)] = dict(item)
+    for item in new_tags or []:
+        if not isinstance(item, dict):
+            continue
+        key = str(item.get("key", "")).strip()
+        if not key:
+            continue
+        layer = str(item.get("layer") or infer_tag_layer(key))
+        normalized = dict(item)
+        normalized["layer"] = layer
+        merged[(layer, key)] = normalized
+    return list(merged.values())
 
 
 def filter_runtime_character_tags_after_start(tags: List[Dict[str, Any]]) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
