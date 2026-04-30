@@ -89,20 +89,20 @@ IntentRouter.handle_message()  [DM Agent only]
   |-- mount DM tools per mode
   |-- _run_llm_tool_loop()  [DM Agent multi-hop]
   |-- tool execution + capture tool trace
-  |-- persist narrative trace  [NEW: also append to cycle_buffer if is_action]
+  |-- persist narrative trace  [NEW: also append to audit_buffer + ra_cycle_input if is_action]
   |-- [NEW] detect_cycle_end() — DM signals or framework detects
   |-- return completion
   |
 Player sees DM response immediately
   |
-[NEW] if action: append to Cycle Buffer (session.cycle_buffer)
+[NEW] if action: append to audit_buffer + generate ra_cycle_input projection
   |
 [NEW] if cycle_end signal:
   |
   CycleStateMachine.transition(CYCLE_ACTIVE -> CYCLE_RESOLVING)
   |
   RecorderAgent.run()  [ONE LLM call]
-    |-- read: cycle_buffer, tool_traces, previous master state, BASE_RULES
+    |-- read: ra_cycle_input projection, previous master state (authority snapshot), BASE_RULES
     |-- generate: structured JSON (cycle summary, character_status, enemy_status, world_changes)
     |-- save to session.environment_summaries, characters, scene
   |
@@ -121,7 +121,7 @@ Player sees DM response immediately
 |-----------|------|---------------|
 | **Recorder Agent** | `core/environment_agent.py` | NEW. Runs once per cycle. LLM-based structured state normalizer. No tool access. |
 | **Cycle State Machine** | `core/cycle_state_machine.py` | NEW. Manages CYCLE_ACTIVE/RESOLVING/TRANSITION. Hooked into main.py and router. |
-| **Cycle Buffer** | `core/models.py` fields | NEW. In-session action accumulation structure. |
+| **Audit Buffer + RA Input** | `core/models.py` fields | NEW. audit_buffer (full, audit-only) + ra_cycle_input (filtered, RA-consumable) |
 | **BASE_RULES** | `core/prompts.py` | NEW. Shared constant injected into both DM and RA system prompts. |
 | **RA Prompt Builder** | `core/prompts.py` | NEW. `build_ra_system_prompt()` + `build_ra_cycle_prompt()`. |
 
@@ -134,10 +134,11 @@ Player sees DM response immediately
 | Gap | Current | Target | Change |
 |-----|---------|--------|--------|
 | **G1: Missing Cycle State** | `GameMode` only | Need `CycleState` enum | Add `CycleState` with `CYCLE_ACTIVE`, `CYCLE_RESOLVING`, `CYCLE_TRANSITION` |
-| **G2: Missing Cycle Buffer** | None | `cycle_buffer: CycleBuffer` | Add `CycleBuffer` dataclass with `cycle_id`, `actions[]`, `started_at`, `ended_at` |
+| **G2: Missing Audit Buffer** | None | `audit_buffer: AuditBuffer` | Add `AuditBuffer` dataclass with full action traces (incl. `player_message`); for audit/debug only |
+| **G2b: Missing RA Input Projection** | None | `ra_cycle_input: RACycleInput` | Filtered projection from audit_buffer; RA allowlist excludes `player_message`, PII, diagnostics |
 | **G3: Missing RA Output Storage** | None | `environment_summaries: list[dict]` | Add field to store RA cycle summary JSONs |
 | **G4: Missing Cycle ID** | None | `current_cycle_id: int` | Add counter for cycle numbering |
-| **G5: Missing Action Trace** | `_recent_narrative_events` is free-text | Need structured `CycleAction` with `dm_narrative`, `tools_called`, `player_id`, `character_id` | Replace/extend narrative trace format |
+| **G5: Missing Action Trace** | `_recent_narrative_events` is free-text | Need structured `CycleAction` with `dm_narrative`, `tools_called`, `player_id`, `character_id` | Replace/extend narrative trace format; split into audit vs. RA-consumable projections |
 | **G6: Missing BASE_RULES Storage** | `world_tags` has ad-hoc rules | `rule_sets: dict` for structured campaign rules | Add field for DM-defined, RA-structured rules |
 
 **Impact:** Medium. All additive fields; backward-compatible if defaults are provided.
@@ -148,7 +149,7 @@ Player sees DM response immediately
 |-----|---------|--------|--------|
 | **G7: Single Agent** | `IntentRouter` = DM only | DM + RA orchestration | Split or extend router: DM loop stays, add RA trigger post-DM |
 | **G8: No Cycle End Detection** | Per-message processing | DM signals cycle end or framework detects | Add cycle-end signal detection in `_handle_message_once()` or via tool |
-| **G9: No Tool Trace Capture** | Tool results logged to audit only | Tool results must feed into Cycle Buffer | Capture tool call + result in `CycleAction.tools_called` |
+| **G9: No Tool Trace Capture** | Tool results logged to audit only | Tool results must feed into audit_buffer and ra_cycle_input | Capture tool call + result in `CycleAction.tools_called` |
 | **G10: No RA Invocation** | None | Trigger RA after cycle end | Add `RecorderAgent` call after DM detects cycle completion |
 | **G11: No Cycle Start Prompt** | None | RA generates prompt for next cycle DM | Feed RA output back into DM system prompt on next turn |
 
@@ -224,14 +225,14 @@ Player sees DM response immediately
 
 | File | Lines (est.) | Description |
 |------|-------------|-------------|
-| `core/environment_agent.py` | ~150 | RecorderAgent class: `run_cycle_resolution(session, cycle_buffer) -> RASummary` |
+| `core/environment_agent.py` | ~150 | RecorderAgent class: `run_cycle_resolution(session, ra_cycle_input) -> RASummary` |
 | `core/cycle_state_machine.py` | ~80 | `CycleStateMachine`: state transitions, validation, cycle_start_prompt generation |
 
 ### 4.2 Files to Modify
 
 | File | Changes |
 |------|---------|
-| `core/models.py` | Add `CycleState`, `CycleBuffer`, `CycleAction`, fields to `GameSession` |
+| `core/models.py` | Add `CycleState`, `AuditBuffer`, `RACycleInput`, `CycleAction`, fields to `GameSession` |
 | `core/router.py` | Add cycle buffer append, cycle end detection, RA trigger hook |
 | `core/prompts.py` | Add `BASE_RULES`, `build_ra_system_prompt()`, `build_cycle_start_prompt()`, modify `build_system_prompt()` |
 | `main.py` | Add cycle state gate in `_handle_dm_event()` |
@@ -274,13 +275,14 @@ Player sees DM response immediately
 Per design doc: "RA failures must not block the game. Invalid JSON → skip and continue."
 
 Implementation: Wrap RA run in try/except. On failure:
-1. Log error to audit
-2. Increment `session._ra_failure_count`
-3. Skip state update
-4. Transition `CYCLE_RESOLVING → CYCLE_ACTIVE` directly (skip CYCLE_TRANSITION)
-5. DM continues with existing state
+1. Log error to audit; increment `session._ra_failure_count`
+2. **Preserve unconsumed `audit_buffer`** -- do NOT clear it
+3. Log recoverable error to `session._ra_recovery_log`
+4. Generate **minimal state patch** from last known authoritative tool state (update only fields confirmed by tool traces)
+5. Transition `CYCLE_RESOLVING → CYCLE_ACTIVE` directly (skip CYCLE_TRANSITION)
+6. DM continues with patched state; next successful RA must process the preserved buffer
 
-### D4: Where does the Cycle Buffer live?
+### D4: Where does the Audit Buffer live?
 
 Must be in `GameSession` (in-memory + persisted), not a separate global buffer.
 Reason: Sessions can be reloaded from disk; cycle must survive plugin restart.
@@ -296,11 +298,14 @@ After implementation, the following must hold:
 - [ ] After cycle end, RA runs exactly once
 - [ ] RA output is valid JSON matching the cycle summary schema
 - [ ] RA output is saved to session state
-- [ ] DM's next system prompt includes the RA summary
-- [ ] If RA fails, game continues without blocking
+- [ ] DM's next system prompt includes the RA summary + any non-empty `discrepancies`
+- [ ] DM Agent handles `discrepancies` through plausible in-narrative reconciliation in the next cycle
+- [ ] If RA fails, game continues without blocking; `audit_buffer` is preserved for retry
+- [ ] Failed RA generates minimal state patch from last known authoritative tool state
 - [ ] Turn system (combat rounds) continues to work independently
 - [ ] Local fast paths (pause, status, token) work during any cycle state
 - [ ] Audit log contains both DM tool steps and RA execution records
+- [ ] RA input allowlist enforced: no `player_message`, PII, or diagnostic fields leaked to RA
 - [ ] MemoryCompressor still functions (if not replaced by RA)
 
 ---
@@ -310,7 +315,7 @@ After implementation, the following must hold:
 | Phase | Scope | Est. Time |
 |-------|-------|-----------|
 | Phase 1: Data Model + Cycle State Machine | `models.py`, `cycle_state_machine.py`, `prompts.py` BASE_RULES | 1 day |
-| Phase 2: Router Integration + Cycle Buffer | `router.py` cycle append/detection, `main.py` gate | 1 day |
+| Phase 2: Router Integration + Audit Buffer | `router.py` cycle append/detection, `main.py` gate | 1 day |
 | Phase 3: Recorder Agent | `environment_agent.py`, RA prompts, RA LLM integration | 1-2 days |
 | Phase 4: Cycle End Tool + Testing | `tools/registry.py` cycle_control, pytest coverage | 1 day |
 | Phase 5: End-to-End Integration | Full pipeline test, edge cases (RA failure, cycle during combat) | 1-2 days |

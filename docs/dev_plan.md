@@ -29,17 +29,19 @@
 | 文件 | 操作 | 说明 |
 |------|------|------|
 | `core/cycle_state_machine.py` | 新建 | `CycleStateMachine` 类 |
-| `core/models.py` | 修改 | 新增 `CycleState`、`CycleBuffer`、`CycleAction`；`GameSession` 扩展字段 |
+| `core/models.py` | 修改 | 新增 `CycleState`、`AuditBuffer`、`RACycleInput`、`CycleAction`；`GameSession` 扩展字段 |
 | `tests/test_models.py` 或新建 `tests/test_cycle_state_machine.py` | 新建/修改 | 序列化 + 状态转换测试 |
 
 ### 核心变更
 
 - 新增 `CycleState` 枚举：`CYCLE_ACTIVE`、`CYCLE_RESOLVING`、`CYCLE_TRANSITION`
-- 新增 `CycleBuffer` dataclass：`cycle_id`、`actions`、`started_at`、`ended_at`
+- 新增 `AuditBuffer` dataclass（完整审计数据，含 `player_message`）：`cycle_id`、`actions`、`started_at`、`ended_at`
+- 新增 `RACycleInput` dataclass（RA 专用过滤投影，不含 `player_message`）：`cycle_id`、`actions`（仅 `dm_narrative` + `tools_called`）
 - 新增 `CycleAction` dataclass：`player_id`、`character_id`、`player_message`、`dm_narrative`、`tools_called`、`timestamp`
 - `GameSession` 新增字段（全部带默认值，向后兼容）：
   - `cycle_state: CycleState = CycleState.CYCLE_ACTIVE`
-  - `cycle_buffer: CycleBuffer = field(default_factory=CycleBuffer)`
+  - `audit_buffer: AuditBuffer = field(default_factory=AuditBuffer)`
+  - `ra_cycle_input: RACycleInput = field(default_factory=RACycleInput)`
   - `current_cycle_id: int = 0`
   - `environment_summaries: list[dict] = field(default_factory=list)`
   - `rule_sets: dict[str, Any] = field(default_factory=dict)`
@@ -92,22 +94,22 @@
 
 ---
 
-## PR 3：DM 侧周期集成 — Cycle Buffer + Cycle Control
+## PR 3：DM 侧周期集成 — Audit Buffer + Cycle Control
 
-**目标**：让 DM 能积累行动到 Cycle Buffer，能显式结束周期。RA 暂不运行（feature flag 关闭），确保主干可用。
+**目标**：让 DM 能积累行动到 Audit Buffer（完整数据）和 RA 输入投影（过滤数据），能显式结束周期。RA 暂不运行（feature flag 关闭），确保主干可用。
 
 ### 涉及文件
 
 | 文件 | 操作 | 说明 |
 |------|------|------|
-| `core/router.py` | 修改 | 每次行动后追加 `cycle_buffer`；检测周期结束信号 |
+| `core/router.py` | 修改 | 每次行动后追加 `audit_buffer` 和 `ra_cycle_input`；检测周期结束信号 |
 | `tools/registry.py` | 修改 | 新增 `cycle_control` 工具 |
 | `main.py` | 修改 | `_handle_dm_event()` 增加 `cycle_state` 门控 |
 | `tests/` | 新建/修改 | Cycle buffer 累积测试、周期结束检测测试 |
 
 ### 核心变更
 
-- **Cycle Buffer 累积**：`IntentRouter._handle_message_once()` 中，DM 工具循环结束后，若判定为"行动"（非查询），将 `dm_narrative` + `tools_called` 追加到 `session.cycle_buffer.actions`
+- **Audit Buffer 累积**：`IntentRouter._handle_message_once()` 中，DM 工具循环结束后，若判定为"行动"（非查询），将完整数据追加到 `session.audit_buffer.actions`，同时生成过滤后的 `session.ra_cycle_input`（不含 `player_message`）
 - **Cycle Control 工具**：`cycle_control(action="end_cycle" / "start_cycle")`，仅 DM 可调用
 - **周期结束检测**：DM 显式调用 `cycle_control(action="end_cycle")` → `cycle_state` 变为 `CYCLE_RESOLVING`
 - **门控**：`main.py` 在 `cycle_state != CYCLE_ACTIVE` 时，向玩家返回"当前正在结算周期，请稍候"
@@ -115,7 +117,7 @@
 
 ### 验收标准
 
-- [ ] 玩家声明行动后，`session.cycle_buffer.actions` 正确追加一条记录
+- [ ] 玩家声明行动后，`session.audit_buffer.actions` 和 `session.ra_cycle_input.actions` 正确追加记录
 - [ ] 玩家查询状态（如 `/dm status`）不写入 cycle buffer
 - [ ] DM 调用 `cycle_control(action="end_cycle")` 后，`cycle_state` 变为 `CYCLE_RESOLVING`
 - [ ] 周期结算期间，新 `/dm` 消息收到等待提示，不进入 LLM
@@ -148,7 +150,7 @@
 
 - **RecorderAgent**：
   - `run_cycle_resolution(session: GameSession) -> dict`
-  - 读取：`cycle_buffer`、`BASE_RULES`、`session` 快照
+  - 读取：`ra_cycle_input`（过滤投影）、`BASE_RULES`、`session` 快照（权威字段）
   - 调用：`astr_context.llm_generate()` 一次
   - 输出：解析 JSON，返回 cycle summary
   - RA **无工具访问权限**，纯文本输入 → JSON 输出
@@ -156,7 +158,7 @@
   - `cycle_state == CYCLE_RESOLVING` 时，调用 `RecorderAgent.run_cycle_resolution()`
   - 保存 RA 输出到 `session.environment_summaries`、更新 `session.characters` / `session.scene`
   - 生成 `cycle_start_prompt`，推进到 `CYCLE_TRANSITION`
-  - 清空 `cycle_buffer`，`current_cycle_id += 1`
+  - 清空 `audit_buffer` 和 `ra_cycle_input`，`current_cycle_id += 1`
   - 推进到 `CYCLE_ACTIVE`
 - **DM Prompt 接入**：`build_system_prompt()` 的 `{ra_summary}` 插槽正式填入 `session.environment_summaries[-1]`
 
@@ -165,15 +167,16 @@
 - [ ] 周期结束后，RA 只运行 **一次** LLM 调用
 - [ ] RA 输出是有效 JSON，包含：`cycle_id`、`summary`、`character_status`、`enemy_status`、`world_changes`、`rules_triggered`、`dm_narrative_aligned`、`discrepancies`
 - [ ] RA 输出保存到 `session.environment_summaries`
-- [ ] 下一周期 DM 的 System Prompt 包含 RA summary
-- [ ] RA 失败（超时、无效 JSON、异常）时不阻塞游戏：记录错误、跳过状态更新、直接回到 `CYCLE_ACTIVE`
+- [ ] 下一周期 DM 的 System Prompt 包含 RA summary + `discrepancies`
+- [ ] DM Agent 在 `discrepancies` 非空时，用合理的场内解释圆回叙事冲突
+- [ ] RA 失败（超时、无效 JSON、异常）时不阻塞游戏：保留未消费 `audit_buffer`、记录 recoverable error、从 tool trace 生成最小状态补丁、直接回到 `CYCLE_ACTIVE`
 - [ ] 战斗回合（turn_control）与周期边界互不干扰
 
 ### 风险
 
 | 风险 | 等级 | 缓解措施 |
 |------|------|----------|
-| RA JSON 输出不稳定 | 高 | 要求 LLM 输出 JSON mode；增加 retry + fallback；无效 JSON 时 skip |
+| RA JSON 输出不稳定 | 高 | 要求 LLM 输出 JSON mode；增加 retry + fallback；无效 JSON 时保留 buffer、生成最小补丁、记录 recovery log |
 | RA 运行时间导致玩家等待 | 中 | RA 是同步阻塞的，但只在周期结束运行一次；未来可优化为后台异步 |
 | Token 成本超预期 | 中 | MVP 使用同一模型；后续 PR 可切换便宜模型 |
 
@@ -235,7 +238,7 @@ PR 1 (模型+状态机)
 **建议合入顺序**：`PR 1 → PR 2 → PR 3 → PR 4 → PR 5`
 
 - PR 1 和 PR 2 互不依赖，可并行开发，但建议按顺序合入减少认知负担。
-- PR 3 依赖 PR 1（需要 CycleState 和 CycleBuffer）。
+- PR 3 依赖 PR 1（需要 CycleState 和 AuditBuffer）。
 - PR 4 依赖 PR 1 + PR 2 + PR 3。
 - PR 5 依赖 PR 4。
 
@@ -267,7 +270,7 @@ main (保持稳定，可发布)
 2. **RA 返回必须是 JSON**。如果模型不支持 JSON mode，在 prompt 中强制要求 `"output must be valid JSON only"`，并在代码层做 `try/except json.loads`。
 3. **新字段必须有默认值**。`GameSession` 是核心数据模型，任何字段变更必须向后兼容旧存档。
 4. **工具返回格式不变**。保持 `{"ok": bool, ...}`，RA 不调用工具，但读取工具执行结果。
-5. **Cycle Buffer 不清除历史**。周期结束后清空当前 buffer，但 `environment_summaries` 保留所有周期摘要（用于游戏结束统计和 debug）。
+5. **Audit Buffer 不清除历史**。周期结束后清空当前 buffer，但 `environment_summaries` 保留所有周期摘要（用于游戏结束统计和 debug）。失败的 RA 运行不得清空 `audit_buffer`。
 
 ---
 
@@ -278,4 +281,4 @@ main (保持稳定，可发布)
 1. [ ] **D1: 周期结束信号方式** — 确认使用 `cycle_control` 工具（显式调用），而非文本匹配或框架启发式
 2. [ ] **D2: RA 模型选择** — MVP 使用同一 provider；是否预留独立模型配置字段？
 3. [ ] **D3: MemoryCompressor 与 RA 的关系** — RA 摘要是否替代 `memory_summary`，还是并存？
-4. [ ] **D4: Cycle Buffer 上限** — 单周期最多保留多少条 action？建议 50 条，超限时最早记录移入 `environment_summaries`
+4. [ ] **D4: Audit Buffer 上限** — 单周期最多保留多少条 action？建议 50 条，超限时最早记录移入 `environment_summaries`

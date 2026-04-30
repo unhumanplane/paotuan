@@ -15,13 +15,18 @@
 
 ### RA — Recorder Agent（状态规范化器）
 - **可见**：仅 DM Agent 输出 + 工具调用轨迹 + BASE_RULES + 当前会话快照
-- **不可见**：玩家原始输入、DM 隐藏备注、System Prompt
+  - **RA 输入 allowlist**（明确允许）：`dm_narrative`、`tools_called` 结果、`character_status` 权威字段、`scene` 公共字段、`world_tags`、`rule_sets`、`BASE_RULES`
+  - **RA 输入 blocklist**（默认不传）：`player_message`、玩家原始输入、DM 隐藏备注、System Prompt、诊断字段（token 消耗、debug 日志）、PII（display name 等可识别信息）
 - **负责**：结构化数据生成、数值规范化、一致性记录、周期摘要
 - **行为**：读取 DM 输出和工具结果，生成结构化 JSON，保存到会话状态
 - **输出**：机器可读的结构化 JSON（从不直接发给玩家）
 - **不做**：创意决策、叙事生成、工具调用、推翻 DM 叙事
 
-**黄金法则**：RA 严格遵循 DM 叙事。如果 DM 说"地精倒下"但工具轨迹显示还剩 4 HP，RA 记录 DM 叙事的内容，可标注差异，但绝不推翻。
+**黄金法则**：RA 区分"叙事字段"与"权威结构化字段"。
+- **叙事字段**（场景描述、氛围、NPC 反应、对话内容）—— 跟随 DM 叙事，DM 拥有最终解释权。
+- **权威结构化字段**（HP、MP、alive、position、inventory、conditions、quest state、资源数量等）—— **必须以 tool trace、validator 结果和状态迁移结果为准**。如果 DM 说"地精倒下"但 `execute_rule` 返回还剩 4 HP，则 `hp=4, alive=true`，同时在 `discrepancies` 中记录冲突：`"DM 叙事描述敌人倒下，但工具结算显示 hp=4"`。
+- RA **不覆盖** tool trace 给出的权威数值，但**保留** DM 叙事文本作为场景描述。
+- **叙事圆回责任**：DM Agent 在下一周期发现 `discrepancies` 非空时，必须在叙事中用合理的场内解释圆回冲突。例如把"倒下"解释为踉跄、被击退、失衡或装死；若无法合理化，应简短更正上一段叙事，确保玩家可见叙事与权威结构化状态最终一致。
 
 ## 共享常量
 
@@ -89,7 +94,9 @@ DM Agent → 调用工具（check_attack_vector, execute_rule, turn_control）
   |
 DM Agent → 向玩家叙述结果
   |
-行动结果 + 工具轨迹 → 追加到周期缓冲区（Cycle Buffer）
+行动结果 + 工具轨迹 → 追加到审计缓冲区（audit_buffer，完整数据）
+  |
+过滤生成 RA 输入投影（ra_cycle_input，不含 player_message）
   |
 [尚未调用 RA LLM —— 仅数据积累]
 ```
@@ -106,9 +113,9 @@ DM Agent 发出信号："周期完成"
 框架触发 RA（仅一次 LLM 调用）
   |
 RA 读取：
-  - 周期缓冲区（本周期所有行动结果）
-  - 工具轨迹
-  - 上一个主状态
+  - `ra_cycle_input` 投影（本周期过滤后的行动结果：dm_narrative + tools_called）
+  - 上一个主状态（权威字段快照）
+  - BASE_RULES
   |
 RA 产出：
   - 更新的主结构化状态
@@ -186,8 +193,8 @@ CYCLE_ACTIVE（下一周期）
 
 ## 数据结构
 
-### 周期缓冲区（Cycle Buffer）
-保存在会话状态中，周期开始时清空，每次行动时追加，周期结束时由 RA 消费：
+### 审计缓冲区（audit_buffer）
+保存在会话状态中，周期开始时清空，每次行动时追加，用于审计和调试：
 
 ```json
 {
@@ -209,7 +216,24 @@ CYCLE_ACTIVE（下一周期）
 }
 ```
 
-**重要**：RA **不直接看到** `player_message`。DM Agent 的叙事（`dm_narrative`）和 `tools_called` 才是 RA 的输入。`player_message` 仅用于审计/调试目的存储。
+### RA 输入投影（ra_cycle_input）
+框架从 `audit_buffer` 过滤生成的 RA 专用输入，**不包含** `player_message`：
+
+```json
+{
+  "cycle_id": 1,
+  "actions": [
+    {
+      "dm_narrative": "John 发起冲锋……",
+      "tools_called": [
+        {"name": "execute_rule", "args": {...}, "result": {...}}
+      ]
+    }
+  ]
+}
+```
+
+**Allowlist 规则**：RA 输入仅包含 `dm_narrative`、`tools_called`、上一个周期的 `character_status` / `enemy_status` 权威字段、`world_tags`、`rule_sets`、`BASE_RULES`。任何 PII、诊断字段、原始玩家输入均不得传入 RA。
 
 ### RA 输出 —— 周期摘要
 
@@ -258,7 +282,7 @@ DM Agent 运行（多跳工具循环）
   |
 DM 响应发送给玩家（玩家立即看到）
   |
-行动结果 + 工具轨迹 → 周期缓冲区（如果是行动）
+行动结果 + 工具轨迹 → audit_buffer（完整）→ 生成 ra_cycle_input（过滤后）
   |
 [单个行动尚不调用 RA]
   |
@@ -266,7 +290,7 @@ DM 响应发送给玩家（玩家立即看到）
   |
 DM 发出周期结束信号
   |
-RA 运行一次（读取周期缓冲区 + 状态）
+RA 运行一次（读取 ra_cycle_input + 主状态）
   |
 RA 保存结构化输出
   |
@@ -284,15 +308,19 @@ DM Agent 接收下一周期的 Cycle Start Prompt
 | 周期是叙事概念，不是战斗概念 | 现有的 `turn_control` 处理战斗回合；周期处理故事节拍 |
 | BASE_RULES 作为共享常量 | 两个 Agent 在元机制上达成一致；DM 定义每个战役的细则 |
 | RA 输出保存到会话状态 | DM Agent 在下一周期通过 System Prompt 读取 |
-| RA 绝不推翻 DM | DM 是创意权威；RA 是书记员 |
-| 周期缓冲区存储行动数据 | RA 需要完整周期上下文以生成准确摘要 |
+| RA 不覆盖权威结构化字段 | 叙事字段跟随 DM，HP/position/alive 等权威字段以 tool trace 为准；冲突写入 discrepancies |
+| audit_buffer 存储完整行动数据，ra_cycle_input 为过滤投影 | RA 需要周期上下文但不得接触 player_message / PII / 诊断字段 |
 
 ## 待办事项（设计之后）
 
 1. **投票工具**：未来工作，不在初始范围内。
 2. **MemoryCompressor 集成**：可将 RA 摘要作为更高保真度的压缩输入。
 3. **RA 使用更便宜的 LLM**：初期使用同一服务商；未来可配置独立模型。
-4. **错误处理**：RA 故障不得阻塞游戏。无效 JSON → 跳过并继续。
+4. **错误处理**：RA 故障不得阻塞游戏，但不得静默丢失结算状态。
+   - 无效 JSON / 超时 / 异常：保留未消费 `audit_buffer`，记录 recoverable error 到 `session._ra_recovery_log`
+   - 使用 last known authoritative tool state 生成最小状态补丁（仅更新 tool trace 已确认的字段）
+   - `cycle_state` 直接回到 `CYCLE_ACTIVE`（跳过 `CYCLE_TRANSITION`）
+   - 下次成功 RA 运行前，不得清空当前周期的 `audit_buffer`
 
 ## 涉及文件
 
@@ -300,7 +328,7 @@ DM Agent 接收下一周期的 Cycle Start Prompt
 |------|------|
 | `astrbot_plugin_auto_trpg_dm/main.py` | 插件入口、消息路由、周期状态机钩子 |
 | `astrbot_plugin_auto_trpg_dm/core/router.py` | DM Agent 编排、工具循环 |
-| `astrbot_plugin_auto_trpg_dm/core/models.py` | GameSession、周期缓冲区、RA 输出字段 |
+| `astrbot_plugin_auto_trpg_dm/core/models.py` | GameSession、audit_buffer、ra_cycle_input、RA 输出字段 |
 | `astrbot_plugin_auto_trpg_dm/core/prompts.py` | DM System Prompt、RA System Prompt、BASE_RULES |
 | `astrbot_plugin_auto_trpg_dm/core/environment_agent.py` | RA 实现（新建） |
 | `astrbot_plugin_auto_trpg_dm/tools/registry.py` | 工具白名单（仅 DM；RA 无工具访问权限） |
