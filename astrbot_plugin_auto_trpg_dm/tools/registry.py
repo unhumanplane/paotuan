@@ -827,28 +827,88 @@ def _post_game_tool_scope(session: Any, message: str) -> bool:
 def _post_game_tool_names(message: str) -> list[str]:
     text = str(message or "").strip().lower()
     names = ["query_core_rules", "session_control", "estimate_token_usage"]
-    if any(
+    scene_or_rest_terms = (
+        "背景",
+        "间幕",
+        "休息",
+        "休整",
+        "沉睡",
+        "休眠",
+        "后日谈",
+        "尾声",
+        "结局",
+        "下一段冒险",
+        "下一次冒险",
+        "下次冒险",
+        "下个冒险",
+        "下回冒险",
+        "直到下次",
+    )
+    reset_terms = (
+        "结束游戏",
+        "重开",
+        "清空",
+        "reset",
+        "confirm_reset",
+    )
+    post_game_action_terms = (
+        "行动",
+        "检定",
+        "判定",
+        "裁定",
+        "摧毁",
+        "破坏",
+        "清理",
+        "整理",
+        "采集",
+        "收集",
+        "种植",
+        "育苗",
+        "帮忙",
+        "辅助",
+        "托管",
+        "挂机",
+        "默认",
+        "预设",
+        "跟随",
+        "扫射",
+        "开火",
+        "挥剑",
+        "挥动",
+        "注入",
+        "蛊惑",
+        "说服",
+        "保护费",
+        "恢复",
+        "疗伤",
+        "短休",
+        "长休",
+    )
+    if any(term in text for term in scene_or_rest_terms):
+        names.insert(0, "update_scene")
+    if any(term in text for term in reset_terms):
+        return list(dict.fromkeys(names))
+    if (
+        _contains_any(text, COMBAT_ACTION_TERMS)
+        or _contains_any(text, RULE_QUERY_TERMS)
+        or any(term in text for term in post_game_action_terms)
+    ):
+        for name in ("execute_rule", "update_scene", "update_character_tags"):
+            if name not in names:
+                names.insert(0, name)
+    elif any(
         term in text
         for term in (
-            "背景",
-            "间幕",
-            "休息",
-            "休整",
-            "沉睡",
-            "休眠",
-            "后日谈",
-            "尾声",
-            "结局",
-            "结束游戏",
-            "下一段冒险",
-            "下一次冒险",
-            "下次冒险",
-            "下个冒险",
-            "下回冒险",
-            "直到下次",
+            "状态",
+            "负面",
+            "buff",
+            "debuff",
+            "资源",
+            "生命",
+            "背包",
         )
     ):
-        names.insert(0, "update_scene")
+        names.insert(0, "update_character_tags")
     return list(dict.fromkeys(names))
 
 

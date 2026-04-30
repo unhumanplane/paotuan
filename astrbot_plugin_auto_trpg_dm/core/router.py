@@ -666,6 +666,16 @@ class IntentRouter:
             nested_args = repaired.get("args")
             if not isinstance(nested_args, dict):
                 nested_args = {}
+            for alias in ("name", "rule", "rule_id", "ruleName"):
+                if not str(repaired.get("rule_name") or "").strip() and str(repaired.get(alias) or "").strip():
+                    repaired["rule_name"] = repaired.pop(alias)
+            for alias in ("name", "rule", "rule_id", "ruleName"):
+                if not str(repaired.get("rule_name") or "").strip() and str(nested_args.get(alias) or "").strip():
+                    repaired["rule_name"] = nested_args.pop(alias)
+            if not repaired.get("version") and nested_args.get("version"):
+                repaired["version"] = nested_args.pop("version")
+            if not repaired.get("reason") and nested_args.get("reason"):
+                repaired["reason"] = nested_args.pop("reason")
             inner_args = nested_args.get("args")
             if isinstance(inner_args, dict) and (
                 "rule_name" in nested_args or "version" in nested_args or "reason" in nested_args
@@ -753,6 +763,11 @@ class IntentRouter:
                         repaired["scene_patch"] = scene_value if isinstance(scene_value, dict) else {"summary": str(scene_value)}
                         break
             allowed = {"opening_intro", "player_guidance", "campaign_outline", "scene_patch"}
+            return {key: value for key, value in repaired.items() if key in allowed}
+        if tool_name == "session_control":
+            if not str(repaired.get("action") or "").strip():
+                repaired["action"] = "status"
+            allowed = {"action", "reason", "confirm_token"}
             return {key: value for key, value in repaired.items() if key in allowed}
         return repaired
 

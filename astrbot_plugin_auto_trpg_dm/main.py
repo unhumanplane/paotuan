@@ -32,7 +32,7 @@ from .tools.turn_tools import TurnTools
     "auto_trpg_dm",
     "codex",
     "全自然语言 TRPG DM：动态规则、战棋物理验证、Tag 角色卡与自动剧本。",
-        "0.1.66",
+    "0.1.68",
 )
 class AutoTrpgDmPlugin(Star):
     DEDUP_WINDOW_SECONDS = 18.0
@@ -66,7 +66,7 @@ class AutoTrpgDmPlugin(Star):
             self.plugin_logger.info("legacy_live_scene_state_migrated saves=%s", live_scene_migrations)
         self._heartbeat_task: asyncio.Task | None = None
         self._start_heartbeat_task()
-        self.plugin_logger.info("plugin_initialized version=0.1.66 data_dir=%s", data_dir)
+        self.plugin_logger.info("plugin_initialized version=0.1.68 data_dir=%s", data_dir)
         logger.info("Auto TRPG DM plugin initialized.")
 
     @filter.command("dm")
