@@ -16,6 +16,7 @@ from astrbot.core.message.components import Image as ImageComponent, Plain, Repl
 from astrbot.core.message.message_event_result import MessageChain
 from astrbot.core.utils.astrbot_path import get_astrbot_data_path
 
+from .core.external_memory import HonchoExternalMemory, HonchoMemoryConfig
 from .core.plugin_log import configure_plugin_logging
 from .core.router import IntentRouter
 from .core.security import security_precheck
@@ -50,10 +51,24 @@ class AutoTrpgDmPlugin(Star):
         self.plugin_logger = configure_plugin_logging(self.repository.plugin_log_path())
         rule_runtime = PythonRuleRuntime(data_dir / "rules")
         tool_registry = ToolRegistry(repository=self.repository, rule_runtime=rule_runtime, astr_context=context)
+        honcho_config = HonchoMemoryConfig(
+            enabled=self._config_bool("honcho_enabled", False),
+            workspace_id=self._config_str("honcho_workspace_id", ""),
+            api_key_env=self._config_str("honcho_api_key_env", "HONCHO_API_KEY"),
+            base_url=self._config_str("honcho_base_url", ""),
+            environment=self._config_str("honcho_environment", "production"),
+            timeout_seconds=self._config_int("honcho_timeout_seconds", 8),
+            max_context_chars=self._config_int("honcho_max_context_chars", 1600),
+            write_enabled=self._config_bool("honcho_write_enabled", True),
+            read_enabled=self._config_bool("honcho_read_enabled", True),
+            assistant_peer_id=self._config_str("honcho_assistant_peer_id", "paotuan_dm"),
+        )
+        external_memory = HonchoExternalMemory(honcho_config)
         self.router = IntentRouter(
             astr_context=context,
             repository=self.repository,
             tool_registry=tool_registry,
+            external_memory=external_memory,
         )
         migrated = self._migrate_legacy_turn_fields()
         if migrated:
@@ -66,7 +81,12 @@ class AutoTrpgDmPlugin(Star):
             self.plugin_logger.info("legacy_live_scene_state_migrated saves=%s", live_scene_migrations)
         self._heartbeat_task: asyncio.Task | None = None
         self._start_heartbeat_task()
-        self.plugin_logger.info("plugin_initialized version=0.1.70 data_dir=%s", data_dir)
+        self.plugin_logger.info(
+            "plugin_initialized version=0.1.70 data_dir=%s honcho_enabled=%s honcho_workspace=%s",
+            data_dir,
+            honcho_config.enabled,
+            bool(honcho_config.workspace_id),
+        )
         logger.info("Auto TRPG DM plugin initialized.")
 
     @filter.command("dm")
@@ -1748,7 +1768,36 @@ class AutoTrpgDmPlugin(Star):
             value = self.config.get(key, default)
         except AttributeError:
             value = getattr(self.config, key, default)
+        if isinstance(value, str):
+            normalized = value.strip().lower()
+            if normalized in {"false", "0", "no", "off", "否", "关闭"}:
+                return False
+            if normalized in {"true", "1", "yes", "on", "是", "开启"}:
+                return True
         return bool(value)
+
+    def _config_str(self, key: str, default: str = "") -> str:
+        if not self.config:
+            return default
+        try:
+            value = self.config.get(key, default)
+        except AttributeError:
+            value = getattr(self.config, key, default)
+        if value is None:
+            return default
+        return str(value).strip()
+
+    def _config_int(self, key: str, default: int) -> int:
+        if not self.config:
+            return default
+        try:
+            value = self.config.get(key, default)
+        except AttributeError:
+            value = getattr(self.config, key, default)
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return default
 
 
 def _svg_local_name(tag: str) -> str:

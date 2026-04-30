@@ -13,5 +13,55 @@
     "description": "是否允许私聊不带 /dm 也默认启用。建议关闭。",
     "type": "bool",
     "hint": "false"
+  },
+  "honcho_enabled": {
+    "description": "是否启用 Honcho 外置记忆增强。默认关闭；未安装 honcho-ai 或未配置 API key 时会自动降级为本地记忆。",
+    "type": "bool",
+    "hint": "false"
+  },
+  "honcho_workspace_id": {
+    "description": "Honcho workspace ID。建议一个机器人环境一个 workspace，例如 paotuan-prod 或 paotuan-dev。",
+    "type": "string",
+    "hint": "paotuan-prod"
+  },
+  "honcho_api_key_env": {
+    "description": "保存 Honcho API key 的环境变量名。不要把真实 key 写进插件配置。",
+    "type": "string",
+    "hint": "HONCHO_API_KEY"
+  },
+  "honcho_base_url": {
+    "description": "Honcho 自托管服务地址；使用 Honcho Cloud 时留空。",
+    "type": "string",
+    "hint": ""
+  },
+  "honcho_environment": {
+    "description": "传给 Honcho SDK 的 environment。",
+    "type": "string",
+    "hint": "production"
+  },
+  "honcho_timeout_seconds": {
+    "description": "Honcho 读写超时时间。超时只会禁用本轮外置记忆，不影响本地跑团。",
+    "type": "int",
+    "hint": "8"
+  },
+  "honcho_max_context_chars": {
+    "description": "每轮注入 prompt 的 Honcho context 最大字符数。",
+    "type": "int",
+    "hint": "1600"
+  },
+  "honcho_write_enabled": {
+    "description": "是否把受控摘要、关键事件、玩家/角色偏好写入 Honcho。",
+    "type": "bool",
+    "hint": "true"
+  },
+  "honcho_read_enabled": {
+    "description": "是否在 prompt 前读取 Honcho context。",
+    "type": "bool",
+    "hint": "true"
+  },
+  "honcho_assistant_peer_id": {
+    "description": "Honcho 中代表 paotuan DM/系统的 peer ID。",
+    "type": "string",
+    "hint": "paotuan_dm"
   }
 }
