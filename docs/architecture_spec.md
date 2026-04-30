@@ -89,7 +89,7 @@ IntentRouter.handle_message()  [DM Agent only]
   |-- mount DM tools per mode
   |-- _run_llm_tool_loop()  [DM Agent multi-hop]
   |-- tool execution + capture tool trace
-  |-- persist narrative trace  [NEW: also append to audit_buffer + ra_cycle_input (redacted) if is_action]
+  |-- persist narrative trace  [NEW: append full action to audit_buffer; generate filtered ra_cycle_input projection if is_action]
   |-- [NEW] detect_cycle_end() — DM signals or framework detects
   |-- return completion
   |
@@ -286,6 +286,17 @@ Implementation: Wrap RA run in try/except. On failure:
 
 Must be in `GameSession` (in-memory + persisted), not a separate global buffer.
 Reason: Sessions can be reloaded from disk; cycle must survive plugin restart.
+
+### D5: How does RA reconcile DM narrative with tool trace?
+
+**Golden Rule**: RA distinguishes "narrative fields" from "authority structured fields".
+
+- **Narrative fields** (scene description, atmosphere, NPC dialogue) -- RA follows DM narration. DM has final interpretive authority.
+- **Authority structured fields** (HP, MP, alive, position, inventory, conditions, etc.) -- RA MUST base these on tool trace, validator results, and state transition outcomes. If DM says "goblin falls" but `execute_rule` returns 4 HP remaining, RA records `hp=4, alive=true` and logs the conflict to `discrepancies`.
+
+**DM narrative reconciliation**: When the DM Agent finds non-empty `discrepancies` in the next cycle, it MUST reconcile the conflict through plausible in-narrative explanations (e.g., "stumbling", "knocked back", "playing dead"). If the discrepancy cannot be rationalized, the DM should briefly correct the previous narrative so that player-visible narrative ultimately aligns with the authoritative structured state.
+
+This contract is the core boundary between the two agents. Violating it (RA overriding DM narration, or DM ignoring tool-based state) breaks the architecture.
 
 ---
 

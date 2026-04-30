@@ -280,7 +280,7 @@ main (保持稳定，可发布)
 
 开发开始前，请确认以下事项：
 
-1. [ ] **D1: 周期结束信号方式** — 确认使用 `cycle_control` 工具（显式调用），而非文本匹配或框架启发式
-2. [ ] **D2: RA 模型选择** — MVP 使用同一 provider；是否预留独立模型配置字段？
-3. [ ] **D3: MemoryCompressor 与 RA 的关系** — RA 摘要是否替代 `memory_summary`，还是并存？
-4. [ ] **D4: Audit Buffer 上限** — 单周期最多保留多少条 action？建议 50 条，超限时最早记录移入 `environment_summaries`
+1. [x] **D1: 周期结束信号方式** — **确认使用 `cycle_control` 工具（显式调用）**。DM Agent 通过调用 `cycle_control(action="end_cycle")` 显式结束周期。不采用文本匹配或框架启发式。
+2. [x] **D2: RA 模型选择** — **MVP 使用同一 provider（Option A）**，`ra_model_provider` 默认 `"default"` 即与 DM 同模型。后续 PR 可切换至 cheaper model（Option B），`astr_context.llm_generate()` 已支持 provider-agnostic 调用。
+3. [x] **D3: MemoryCompressor 与 RA 的关系** — **Option B: 并存，RA 摘要作为 MemoryCompressor 的更高保真输入**。RA 的 `environment_summaries` 提供结构化周期摘要，MemoryCompressor 在压缩时优先读取这些结构化数据，而非仅依赖自由文本叙事。`memory_summary` 继续存在，作为 DM 的叙事上下文。PR 4 或后续优化中接入。
+4. [x] **D4: Audit Buffer 上限** — **单周期最多保留 50 条 action**。超限时最早记录移入 `environment_summaries` 的 `overflow_actions` 字段，确保 RA 输入不会超限。
