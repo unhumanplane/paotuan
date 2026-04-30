@@ -14,9 +14,13 @@ This document defines the architecture for splitting the current monolithic TRPG
 - **Does NOT do**: Structured bookkeeping, stat computation, machine-readable state diffs
 
 ### RA -- Recorder Agent (State Normalizer)
-- **Sees**: DM Agent output ONLY + tool trace + BASE_RULES + current session snapshot
-  - **RA input allowlist**: `dm_narrative`, `tools_called` results, `character_status` authority fields, `scene` public fields, `world_tags`, `rule_sets`, `BASE_RULES`
-  - **RA input blocklist** (default excluded): `player_message`, raw player input, hidden DM notes, system prompt, diagnostic fields (token usage, debug logs), PII (display names, etc.)
+- **Sees**: DM Agent output ONLY + redacted tool trace + BASE_RULES + current session snapshot
+  - **RA input allowlist**: `dm_narrative`, redacted `tools_called` results, `character_status` authority fields, `scene` public fields, `world_tags`, `rule_sets`, `BASE_RULES`
+  - **RA input blocklist** (default excluded): `player_message`, raw player input, hidden DM notes, system prompt, diagnostic fields (token usage, debug logs), PII (display names, real `player_id`, platform IDs, etc.)
+  - **Redaction rules**:
+    - Necessary IDs use in-session pseudonyms (e.g. `pc_001`, `npc_orc_b`) instead of real `player_id` or platform accounts
+    - `tools_called` undergoes field-level redaction: only tool name and state-change fields (hp/position/alive/etc.) are retained; args containing PII, tokens, cookies, or diagnostic parameters are hidden
+    - Full tool results are only passed through if the field belongs to `character_status`, `enemy_status`, or `world_changes`; all other parameter results are redacted
 - **Owns**: Structured data generation, stat normalization, consistency recording, cycle summaries
 - **Acts**: Reads DM output and tool results, produces structured JSON, saves to session state
 - **Output**: Machine-readable structured JSON (never sent directly to players)

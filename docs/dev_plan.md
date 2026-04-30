@@ -36,8 +36,10 @@
 
 - 新增 `CycleState` 枚举：`CYCLE_ACTIVE`、`CYCLE_RESOLVING`、`CYCLE_TRANSITION`
 - 新增 `AuditBuffer` dataclass（完整审计数据，含 `player_message`）：`cycle_id`、`actions`、`started_at`、`ended_at`
-- 新增 `RACycleInput` dataclass（RA 专用过滤投影，不含 `player_message`）：`cycle_id`、`actions`（仅 `dm_narrative` + `tools_called`）
-- 新增 `CycleAction` dataclass：`player_id`、`character_id`、`player_message`、`dm_narrative`、`tools_called`、`timestamp`
+- 新增 `RACycleInput` dataclass（RA 专用过滤投影，不含 `player_message`）：`cycle_id`、`actions`（仅 `dm_narrative` + redacted `tools_called`）
+  - `tools_called` redaction：仅保留工具名和状态变更字段（hp/position/alive 等），args 中 PII/诊断参数脱敏
+  - 必要 ID 使用会话内 pseudonym（`pc_001`、`npc_orc_b`）代替真实 player_id
+- 新增 `CycleAction` dataclass：`player_id`（audit 用真实 ID，`ra_cycle_input` 中替换为 pseudonym）、`character_id`、`player_message`、`dm_narrative`、`tools_called`（完整，redaction 由框架在生成 projection 时处理）、`timestamp`
 - `GameSession` 新增字段（全部带默认值，向后兼容）：
   - `cycle_state: CycleState = CycleState.CYCLE_ACTIVE`
   - `audit_buffer: AuditBuffer = field(default_factory=AuditBuffer)`

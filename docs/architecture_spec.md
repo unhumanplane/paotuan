@@ -89,7 +89,7 @@ IntentRouter.handle_message()  [DM Agent only]
   |-- mount DM tools per mode
   |-- _run_llm_tool_loop()  [DM Agent multi-hop]
   |-- tool execution + capture tool trace
-  |-- persist narrative trace  [NEW: also append to audit_buffer + ra_cycle_input if is_action]
+  |-- persist narrative trace  [NEW: also append to audit_buffer + ra_cycle_input (redacted) if is_action]
   |-- [NEW] detect_cycle_end() — DM signals or framework detects
   |-- return completion
   |
@@ -135,7 +135,7 @@ Player sees DM response immediately
 |-----|---------|--------|--------|
 | **G1: Missing Cycle State** | `GameMode` only | Need `CycleState` enum | Add `CycleState` with `CYCLE_ACTIVE`, `CYCLE_RESOLVING`, `CYCLE_TRANSITION` |
 | **G2: Missing Audit Buffer** | None | `audit_buffer: AuditBuffer` | Add `AuditBuffer` dataclass with full action traces (incl. `player_message`); for audit/debug only |
-| **G2b: Missing RA Input Projection** | None | `ra_cycle_input: RACycleInput` | Filtered projection from audit_buffer; RA allowlist excludes `player_message`, PII, diagnostics |
+| **G2b: Missing RA Input Projection** | None | `ra_cycle_input: RACycleInput` | Filtered projection from audit_buffer; RA allowlist excludes `player_message`, PII, diagnostics; IDs use pseudonyms; tool trace fields are redacted |
 | **G3: Missing RA Output Storage** | None | `environment_summaries: list[dict]` | Add field to store RA cycle summary JSONs |
 | **G4: Missing Cycle ID** | None | `current_cycle_id: int` | Add counter for cycle numbering |
 | **G5: Missing Action Trace** | `_recent_narrative_events` is free-text | Need structured `CycleAction` with `dm_narrative`, `tools_called`, `player_id`, `character_id` | Replace/extend narrative trace format; split into audit vs. RA-consumable projections |

@@ -15,8 +15,12 @@
 
 ### RA — Recorder Agent（状态规范化器）
 - **可见**：仅 DM Agent 输出 + 工具调用轨迹 + BASE_RULES + 当前会话快照
-  - **RA 输入 allowlist**（明确允许）：`dm_narrative`、`tools_called` 结果、`character_status` 权威字段、`scene` 公共字段、`world_tags`、`rule_sets`、`BASE_RULES`
-  - **RA 输入 blocklist**（默认不传）：`player_message`、玩家原始输入、DM 隐藏备注、System Prompt、诊断字段（token 消耗、debug 日志）、PII（display name 等可识别信息）
+  - **RA 输入 allowlist**（明确允许）：`dm_narrative`、脱敏后的 `tools_called` 结果、`character_status` 权威字段、`scene` 公共字段、`world_tags`、`rule_sets`、`BASE_RULES`
+  - **RA 输入 blocklist**（默认不传）：`player_message`、玩家原始输入、DM 隐藏备注、System Prompt、诊断字段（token 消耗、debug 日志）、PII（display name、真实 `player_id`、平台 ID 等）
+  - **脱敏规则**：
+    - 必要 ID 使用会话内 pseudonym（如 `pc_001`、`npc_orc_b`）代替真实 `player_id` 或平台账号
+    - `tools_called` 做字段级 redaction：仅保留工具名、状态变更字段（hp/position/alive 等），隐藏 args 中可能包含的 PII、token、cookie、诊断参数
+    - 仅当工具结果中某字段属于 `character_status`、`enemy_status`、`world_changes` 时才完整透传，其余参数结果脱敏
 - **负责**：结构化数据生成、数值规范化、一致性记录、周期摘要
 - **行为**：读取 DM 输出和工具结果，生成结构化 JSON，保存到会话状态
 - **输出**：机器可读的结构化 JSON（从不直接发给玩家）
