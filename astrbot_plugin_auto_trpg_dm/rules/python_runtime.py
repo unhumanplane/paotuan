@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import inspect
 import json
 import multiprocessing as mp
 import re
@@ -221,7 +222,30 @@ def _execute_rule_direct(code: str, args: dict[str, Any]) -> dict[str, Any]:
         calculate = locals_dict.get("calculate")
         if not callable(calculate):
             return {"ok": False, "error": "missing_calculate"}
-        result = calculate(**args)
-        return {"ok": True, "result": result, "rolls": roller.dump()}
+        call_args = _filter_calculate_args(calculate, args)
+        result = calculate(**call_args["args"])
+        payload: dict[str, Any] = {"ok": True, "result": result, "rolls": roller.dump()}
+        if call_args["ignored"]:
+            payload["ignored_args"] = call_args["ignored"]
+        return payload
     except Exception as exc:
         return {"ok": False, "error": "rule_exception", "reason": str(exc), "rolls": roller.dump()}
+
+
+def _filter_calculate_args(calculate: Any, args: dict[str, Any]) -> dict[str, Any]:
+    try:
+        signature = inspect.signature(calculate)
+    except (TypeError, ValueError):
+        return {"args": dict(args), "ignored": []}
+    if any(param.kind == inspect.Parameter.VAR_KEYWORD for param in signature.parameters.values()):
+        return {"args": dict(args), "ignored": []}
+    accepted = {
+        name
+        for name, param in signature.parameters.items()
+        if param.kind in (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)
+    }
+    if not accepted:
+        return {"args": {}, "ignored": sorted(str(key) for key in args)}
+    filtered = {key: value for key, value in args.items() if key in accepted}
+    ignored = sorted(str(key) for key in args if key not in accepted)
+    return {"args": filtered, "ignored": ignored}

@@ -10,6 +10,7 @@ from ..storage.json_repository import JsonGameRepository
 
 
 TURN_TIMEOUT_SECONDS = 120
+DEFAULT_TURN_OUTPUT_LIMIT_CHARS = 1440
 
 
 class TurnControlArgs(BaseModel):
@@ -25,7 +26,7 @@ class TurnControlArgs(BaseModel):
     current_entity_id: str = Field(default="", description="指定要记录行动的实体/角色 ID；角色回合中可为本轮未行动且归当前发言人所有的实体")
     summary: str = Field(default="", description="场面结算、角色行动或跳过原因的简短摘要")
     reason: str = Field(default="", description="推进状态的自然语言原因")
-    output_limit_chars: int = Field(default=180, ge=80, le=500, description="本阶段建议单次回复长度上限")
+    output_limit_chars: int = Field(default=DEFAULT_TURN_OUTPUT_LIMIT_CHARS, ge=80, le=2000, description="本阶段建议单次回复长度上限")
     auto_policy: str = Field(default="defend_or_follow", description="无人响应时的自动行为策略")
     advance_after: bool = Field(default=True, description="record_action/auto_act_current 后是否自动推进到下一阶段")
 
@@ -48,14 +49,17 @@ class TurnTools:
         current_entity_id: str = "",
         summary: str = "",
         reason: str = "",
-        output_limit_chars: int = 180,
+        output_limit_chars: int = DEFAULT_TURN_OUTPUT_LIMIT_CHARS,
         auto_policy: str = "defend_or_follow",
         advance_after: bool = True,
     ) -> Dict[str, Any]:
         session = self.repository.load_session(self.session_id)
         turn = self._ensure_turn_state(session)
         normalized = action.strip().lower()
-        output_limit_chars = max(80, min(500, int(output_limit_chars or 180)))
+        output_limit_chars = max(
+            DEFAULT_TURN_OUTPUT_LIMIT_CHARS,
+            min(2000, int(output_limit_chars or DEFAULT_TURN_OUTPUT_LIMIT_CHARS)),
+        )
 
         if normalized in {"status", "状态"}:
             result = self._status(session)
@@ -153,16 +157,29 @@ class TurnTools:
                     self._record_action(session, turn, entity_id, summary or "玩家声明跳过本回合", "skipped", reason)
                     result = self._advance_turn(session, turn, output_limit_chars)
         elif normalized in {"end_encounter", "end", "结束战斗", "结束遭遇"}:
-            turn["active"] = False
-            turn["phase"] = "ended"
-            turn["current_entity_id"] = ""
-            session.battle["turn_entity_id"] = ""
-            session.battle["active"] = False
-            session.mode = GameMode.NARRATIVE
-            if summary:
-                self._append_turn_log(session, "encounter_end", summary, reason)
-            self.repository.save_session(session)
-            result = self._status(session)
+            if (
+                turn.get("active")
+                and str(turn.get("phase", "")) == "character_turn"
+                and not _looks_like_terminal_encounter_end(summary, reason, session)
+            ):
+                result = {
+                    "ok": False,
+                    "error": "end_encounter_requires_scene_resolution",
+                    "message": "不能在角色回合中直接结束遭遇；请先完成当前轮次，进入场面结算后再根据敌方士气、撤退、增援或环境压力裁定是否结束。",
+                    "phase": str(turn.get("phase", "")),
+                    "current_entity_id": str(turn.get("current_entity_id", "")),
+                }
+            else:
+                turn["active"] = False
+                turn["phase"] = "ended"
+                turn["current_entity_id"] = ""
+                session.battle["turn_entity_id"] = ""
+                session.battle["active"] = False
+                session.mode = GameMode.NARRATIVE
+                if summary:
+                    self._append_turn_log(session, "encounter_end", summary, reason)
+                self.repository.save_session(session)
+                result = self._status(session)
         else:
             result = {
                 "ok": False,
@@ -211,7 +228,9 @@ class TurnTools:
         turn.setdefault("turn_order", [])
         turn.setdefault("current_index", -1)
         turn.setdefault("current_entity_id", session.battle.get("turn_entity_id", ""))
-        turn.setdefault("output_limit_chars", 180)
+        turn.setdefault("output_limit_chars", DEFAULT_TURN_OUTPUT_LIMIT_CHARS)
+        if int(turn.get("output_limit_chars") or 0) < DEFAULT_TURN_OUTPUT_LIMIT_CHARS:
+            turn["output_limit_chars"] = DEFAULT_TURN_OUTPUT_LIMIT_CHARS
         turn.setdefault("auto_policy", "defend_or_follow")
         turn.setdefault("timeout_seconds", TURN_TIMEOUT_SECONDS)
         turn.setdefault("actions_this_round", {})
@@ -314,7 +333,7 @@ class TurnTools:
         result = self._advance_turn(
             session,
             turn,
-            int(turn.get("output_limit_chars") or 180),
+            int(turn.get("output_limit_chars") or DEFAULT_TURN_OUTPUT_LIMIT_CHARS),
         )
         return [
             {
@@ -726,7 +745,7 @@ class TurnTools:
                 "current_entity_id": current_id,
                 "current_label": self._entity_label(session, current_id) if current_id else "",
                 "current_owner_player_id": self._owner_player_id(session, current_id) if current_id else "",
-                "output_limit_chars": int(turn.get("output_limit_chars", 180) or 180),
+                "output_limit_chars": int(turn.get("output_limit_chars", DEFAULT_TURN_OUTPUT_LIMIT_CHARS) or DEFAULT_TURN_OUTPUT_LIMIT_CHARS),
                 "auto_policy": str(turn.get("auto_policy", "defend_or_follow")),
                 "timeout_seconds": int(turn.get("timeout_seconds") or TURN_TIMEOUT_SECONDS),
                 "waiting_since_at": str(turn.get("waiting_since_at", "")),
@@ -744,9 +763,13 @@ class TurnTools:
         if not turn.get("active"):
             return "没有启用回合轮动；如进入冲突，先调用 turn_control start_round。"
         phase = turn.get("phase")
-        limit = int(turn.get("output_limit_chars", 180) or 180)
+        limit = int(turn.get("output_limit_chars", DEFAULT_TURN_OUTPUT_LIMIT_CHARS) or DEFAULT_TURN_OUTPUT_LIMIT_CHARS)
         if phase == "scene_resolution":
-            return f"当前是场面结算阶段：只处理环境、敌方、持续效果和公共后果；不要结算玩家个人行动。回复不超过 {limit} 字，然后推进到角色回合。"
+            return (
+                f"当前是场面结算阶段：必须主动推进敌方、环境、持续效果或士气/增援压力，"
+                f"不能只宣布玩家获胜或战场安静；若敌人确实溃退/撤离，也要说明原因、代价和残余威胁。"
+                f"不要结算玩家个人行动。回复不超过 {limit} 字，然后推进到角色回合。"
+            )
         if phase == "character_turn":
             return f"当前是角色回合：current_entity_id 是建议/超时锚点；本轮未行动且归当前发言人所有的角色可以乱序行动。记录主要动作时用该角色 ID 调用 record_action，advance_after=true。120 秒从上一位完成行动后开始计算；若没有未行动玩家响应且锚点超时，调用 auto_act_current。回复不超过 {limit} 字。"
         return f"按当前阶段裁定；回复不超过 {limit} 字。"
@@ -996,6 +1019,28 @@ def _looks_like_turn_info_only(text: str) -> bool:
         "debug",
     )
     return any(term in lowered for term in info_terms)
+
+
+def _looks_like_terminal_encounter_end(summary: str, reason: str, session: GameSession) -> bool:
+    text = f"{summary}\n{reason}\n{(session.scene or {}).get('summary', '')}\n{(session.scene or {}).get('current_conflict', '')}"
+    lowered = str(text or "").lower()
+    terminal_terms = (
+        "战斗已实质结束",
+        "遭遇已结束",
+        "危机已正式解除",
+        "危机已落下帷幕",
+        "最终结局",
+        "全局结算",
+        "圆满落幕",
+        "圆满结束",
+        "正式落幕",
+        "进入间幕",
+        "休息一会",
+        "休整",
+        "重建",
+        "暂无冲突",
+    )
+    return any(term in lowered for term in terminal_terms)
 
 
 def _parse_datetime(value: Any) -> datetime | None:

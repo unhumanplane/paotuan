@@ -21,6 +21,9 @@ latest_*.svg
 latest_*.png
 map_*_remote.png
 
+# Local source material for optional rulebook builds
+dnd2024_core_rules/
+
 # Python cache and test artifacts
 __pycache__/
 *.py[cod]

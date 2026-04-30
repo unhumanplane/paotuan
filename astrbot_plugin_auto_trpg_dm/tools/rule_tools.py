@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field
@@ -105,15 +106,17 @@ class RuleTools:
         reason: str = "",
     ) -> Dict[str, Any]:
         """执行已注册 TRPG 规则，用于检定、伤害、资源消耗和随机判定。"""
+        normalized_args = _normalize_execute_rule_args(rule_name, args or {})
         result = self.rule_runtime.execute_rule(
             rule_name=rule_name,
-            args=args or {},
+            args=normalized_args,
             version=version,
         )
+        _augment_check_result(rule_name=rule_name, args=normalized_args, result=result)
         if result.get("rolls"):
             self._queue_dice_check(
                 rule_name=rule_name,
-                args=args or {},
+                args=normalized_args,
                 version=version,
                 reason=reason,
                 result=result,
@@ -124,7 +127,13 @@ class RuleTools:
             {
                 "type": "tool",
                 "tool": "execute_rule",
-                "input": {"rule_name": rule_name, "args": args or {}, "version": version, "reason": reason},
+                "input": {
+                    "rule_name": rule_name,
+                    "args": normalized_args,
+                    "version": version,
+                    "reason": reason,
+                    "raw_args": args or {},
+                },
                 "result": result,
             },
         )
@@ -197,6 +206,135 @@ class RuleTools:
             },
         )
         return result
+
+
+def _normalize_execute_rule_args(rule_name: str, args: Dict[str, Any]) -> Dict[str, Any]:
+    normalized = dict(args or {})
+    if not _is_d20_like_rule(rule_name):
+        return normalized
+    bonus_terms = (
+        "bonus",
+        "skill_bonus",
+        "ability_bonus",
+        "ability_modifier",
+        "proficiency_bonus",
+        "situational_bonus",
+        "situational",
+        "item_bonus",
+        "temporary_bonus",
+        "temp_bonus",
+        "long_term_bonus",
+        "longterm_bonus",
+    )
+    modifier = _number_or_none(normalized.get("modifier"))
+    modifier_was_missing = modifier is None
+    if modifier is None:
+        modifier = 0
+    for key in bonus_terms:
+        value = _number_or_none(normalized.get(key))
+        if value is not None:
+            modifier += value
+    penalty = _number_or_none(normalized.get("penalty"))
+    if penalty is not None:
+        modifier -= abs(penalty)
+    if modifier or modifier_was_missing:
+        normalized["modifier"] = int(modifier) if float(modifier).is_integer() else modifier
+    return normalized
+
+
+def _augment_check_result(rule_name: str, args: Dict[str, Any], result: Dict[str, Any]) -> None:
+    if not result.get("ok"):
+        return
+    payload = result.get("result")
+    if not isinstance(payload, dict):
+        return
+    total = _first_numeric(payload, ("total", "result", "check_total"))
+    if total is None:
+        total = _roll_total_from_records(result.get("rolls"))
+    dc = _first_numeric(args, ("dc", "target_dc", "difficulty", "target_number", "threshold", "ac", "armor_class"))
+    if dc is None:
+        dc = _first_numeric(payload, ("dc", "target_dc", "difficulty", "target_number", "threshold", "ac", "armor_class"))
+    if total is None:
+        return
+    roll = _first_numeric(payload, ("roll", "d20", "die", "die_roll"))
+    if roll is None:
+        roll = _roll_value_from_records(result.get("rolls"))
+    modifier = _first_numeric(payload, ("modifier", "bonus", "total_bonus"))
+    if modifier is None and roll is not None:
+        modifier = total - roll
+    payload.setdefault("total", int(total) if float(total).is_integer() else total)
+    if roll is not None:
+        payload.setdefault("roll", int(roll) if float(roll).is_integer() else roll)
+    if modifier is not None:
+        payload["modifier"] = int(modifier) if float(modifier).is_integer() else modifier
+    if dc is None:
+        return
+    payload["dc"] = int(dc) if float(dc).is_integer() else dc
+    success = total >= dc
+    if "success" not in payload and "is_success" not in payload:
+        payload["success"] = success
+    payload["margin"] = int(total - dc) if float(total - dc).is_integer() else total - dc
+    result["check"] = {
+        "rule_name": _canonical_rule_name(rule_name),
+        "total": payload["total"],
+        "dc": payload["dc"],
+        "success": bool(payload.get("success", payload.get("is_success", success))),
+        "margin": payload["margin"],
+    }
+
+
+def _is_d20_like_rule(rule_name: str) -> bool:
+    name = _canonical_rule_name(rule_name)
+    return name in {"d20_check", "roll_d20_safe", "roll_d20_test"} or ("d20" in name and "check" in name)
+
+
+def _canonical_rule_name(rule_name: str) -> str:
+    name = str(rule_name or "").strip().lower()
+    name = name.split("@", 1)[0]
+    return re.sub(r"_v\d+$", "", name)
+
+
+def _first_numeric(mapping: Dict[str, Any], keys: tuple[str, ...]) -> float | None:
+    for key in keys:
+        value = _number_or_none(mapping.get(key))
+        if value is not None:
+            return value
+    return None
+
+
+def _number_or_none(value: Any) -> float | None:
+    if isinstance(value, bool) or value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        return float(text)
+    except ValueError:
+        return None
+
+
+def _roll_value_from_records(records: Any) -> float | None:
+    if not isinstance(records, list) or not records:
+        return None
+    first = records[0]
+    if not isinstance(first, dict):
+        return None
+    rolls = first.get("rolls")
+    if isinstance(rolls, list) and len(rolls) == 1:
+        return _number_or_none(rolls[0])
+    return None
+
+
+def _roll_total_from_records(records: Any) -> float | None:
+    if not isinstance(records, list) or not records:
+        return None
+    first = records[0]
+    if not isinstance(first, dict):
+        return None
+    return _number_or_none(first.get("total"))
 
 
 def _dice_reason(reason: str, args: Dict[str, Any], rule_name: str, message: str) -> str:

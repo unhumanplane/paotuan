@@ -80,7 +80,7 @@ class SpatialTools:
                 "turn_order": [],
                 "current_index": -1,
                 "current_entity_id": "",
-                "output_limit_chars": 180,
+                "output_limit_chars": 720,
                 "auto_policy": "defend_or_follow",
                 "timeout_seconds": 120,
                 "actions_this_round": {},

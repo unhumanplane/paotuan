@@ -26,6 +26,7 @@ from .memory_tools import (
     has_campaign_background,
 )
 from .rule_tools import ExecuteRuleArgs, ListRulesArgs, RegisterRuleArgs, RuleTools
+from .rulebook_tools import QueryCoreRulesArgs, RulebookTools
 from .spatial_tools import (
     CheckAttackVectorArgs,
     CreateGridArgs,
@@ -141,6 +142,7 @@ class ToolRegistry:
         spatial_tools = SpatialTools(self.repository, session_id, actor=actor)
         turn_tools = TurnTools(self.repository, session_id, actor=actor)
         diagnostic_tools = DiagnosticTools(self.repository, session_id)
+        rulebook_tools = RulebookTools(self.repository, session_id)
         map_tools = MapTools(
             repository=self.repository,
             session_id=session_id,
@@ -166,6 +168,12 @@ class ToolRegistry:
                 description="列出当前已经注册的规则。默认返回二级摘要；只有需要入参/出参详情时才用 detail。",
                 model=ListRulesArgs,
                 handler=rule_tools.list_rules,
+            ),
+            "query_core_rules": make_tool(
+                name="query_core_rules",
+                description="查询 DND 2024 核心规则和 DM 指引摘要；用于动作经济、战斗、状态、伤害治疗、通用施法、通用装备、共同故事、桌面边界、即兴答复、后果和 DM 裁定。只返回少量只读规则卡，不写入跑团状态；数值、骰子和随机结果仍需 execute_rule。",
+                model=QueryCoreRulesArgs,
+                handler=rulebook_tools.query_core_rules,
             ),
             "create_character": make_tool(
                 name="create_character",
@@ -276,6 +284,8 @@ class ToolRegistry:
 
         session = self.repository.load_session(session_id)
         allowed = self._with_llm_decided_tools(self._allowed_tool_names(mode, message=message), message=message)
+        if _post_game_tool_scope(session, message):
+            allowed = self._with_llm_decided_tools(_post_game_tool_names(message), message=message)
         if not has_campaign_background(session):
             allowed = self._background_first_tool_names(allowed, message=message)
         selected = {name: catalog[name] for name in allowed}
@@ -292,7 +302,8 @@ class ToolRegistry:
     @staticmethod
     def _allowed_tool_names(mode: GameMode, message: str = "") -> list[str]:
         if mode == GameMode.CHARACTER_CREATION:
-            return [
+            text = (message or "").strip().lower()
+            tools = [
                 "create_character",
                 "bind_player_character",
                 "update_character_tags",
@@ -301,14 +312,23 @@ class ToolRegistry:
                 "register_rule",
                 "execute_rule",
                 "list_rules",
+                "query_core_rules",
                 "session_control",
                 "estimate_token_usage",
             ]
+            if (
+                _contains_any(text, COMBAT_ACTION_TERMS)
+                or _contains_any(text, BATTLE_RESOLUTION_TERMS)
+                or _contains_any(text, TURN_FLOW_TERMS)
+            ):
+                tools.extend(["update_scene", "turn_control", "get_battle_snapshot"])
+            return list(dict.fromkeys(tools))
         if mode == GameMode.RULE_AUTHORING:
             return [
                 "register_rule",
                 "execute_rule",
                 "list_rules",
+                "query_core_rules",
                 "session_control",
                 "estimate_token_usage",
             ]
@@ -348,14 +368,42 @@ class ToolRegistry:
                     "session_control",
                     "estimate_token_usage",
                 ]
+            if _contains_any(text, BATTLE_RESOLUTION_TERMS):
+                return [
+                    "get_battle_snapshot",
+                    "turn_control",
+                    "query_core_rules",
+                    "execute_rule",
+                    "update_scene",
+                    "update_character_tags",
+                    "session_control",
+                    "estimate_token_usage",
+                ]
             if _contains_any(text, CHARACTER_PROFILE_TERMS):
                 return [
                     "create_character",
                     "bind_player_character",
                     "update_character_tags",
+                    "query_core_rules",
                     "session_control",
                     "estimate_token_usage",
                 ]
+            if _contains_any(text, COMBAT_ACTION_TERMS):
+                tools = [
+                    "get_battle_snapshot",
+                    "turn_control",
+                    "query_core_rules",
+                    "move_entity",
+                    "check_attack_vector",
+                    "execute_rule",
+                    "update_scene",
+                    "update_character_tags",
+                    "session_control",
+                    "estimate_token_usage",
+                ]
+                if _contains_any(text, RULE_AUTHORING_LIKELY_TERMS):
+                    tools.insert(6, "register_rule")
+                return tools
             if _contains_any(text, TURN_FLOW_TERMS):
                 return [
                     "get_battle_snapshot",
@@ -374,36 +422,33 @@ class ToolRegistry:
             if _contains_any(text, RULE_QUERY_TERMS):
                 return [
                     "get_battle_snapshot",
+                    "query_core_rules",
                     "execute_rule",
                     "register_rule",
                     "list_rules",
                     "session_control",
                     "estimate_token_usage",
                 ]
-            if _contains_any(text, COMBAT_ACTION_TERMS):
-                tools = [
+            if _contains_any(text, DM_GUIDANCE_TERMS):
+                return [
                     "get_battle_snapshot",
-                    "turn_control",
-                    "move_entity",
-                    "check_attack_vector",
-                    "execute_rule",
-                    "update_scene",
-                    "update_character_tags",
+                    "query_core_rules",
                     "session_control",
                     "estimate_token_usage",
                 ]
-                if _contains_any(text, RULE_AUTHORING_LIKELY_TERMS):
-                    tools.insert(6, "register_rule")
-                return tools
             return [
                 "get_battle_snapshot",
                 "turn_control",
+                "execute_rule",
+                "update_scene",
+                "update_character_tags",
                 "session_control",
                 "estimate_token_usage",
             ]
         if mode == GameMode.RESOLUTION:
             return [
                 "turn_control",
+                "query_core_rules",
                 "execute_rule",
                 "register_rule",
                 "update_character_tags",
@@ -427,6 +472,13 @@ class ToolRegistry:
             "session_control",
             "estimate_token_usage",
         ]
+        text = (message or "").strip().lower()
+        if (
+            _contains_any(text, RULE_QUERY_TERMS)
+            or _contains_any(text, COMBAT_ACTION_TERMS)
+            or _contains_any(text, DM_GUIDANCE_TERMS)
+        ):
+            base_tools.insert(8, "query_core_rules")
         return base_tools
 
     @staticmethod
@@ -444,7 +496,7 @@ class ToolRegistry:
         allowed = []
         opening_seed = _looks_like_delegated_opening_seed(message)
         for name in names:
-            if name in {"update_world_tags", "session_control", "estimate_token_usage"} and name not in allowed:
+            if name in {"update_world_tags", "query_core_rules", "session_control", "estimate_token_usage"} and name not in allowed:
                 allowed.append(name)
             if opening_seed and name in {"create_character", "bind_player_character", "start_game"} and name not in allowed:
                 allowed.append(name)
@@ -469,6 +521,12 @@ MAP_SETUP_TERMS = ("创建地图", "重置地图", "生成地图", "放置", "�
 CHARACTER_PROFILE_TERMS = (
     "人物卡",
     "角色卡",
+    "建立角色",
+    "创建角色",
+    "建角色",
+    "新角色",
+    "加入一个角色",
+    "帮我建立角色",
     "职业",
     "种族",
     "专长",
@@ -488,7 +546,22 @@ CHARACTER_PROFILE_TERMS = (
     "次要法术",
     "次级法术",
 )
-BATTLE_JOIN_TERMS = ("我加入", "加入队伍", "加入战场", "参战", "绑定角色", "为我绑定", "排入战队", "排入战斗")
+BATTLE_JOIN_TERMS = (
+    "我加入",
+    "我要加入",
+    "加入队伍",
+    "加入战场",
+    "加入一个角色",
+    "建立角色",
+    "创建角色",
+    "建角色",
+    "新角色",
+    "参战",
+    "绑定角色",
+    "为我绑定",
+    "排入战队",
+    "排入战斗",
+)
 TURN_FLOW_TERMS = (
     "轮动",
     "行动顺序",
@@ -507,6 +580,19 @@ TURN_FLOW_TERMS = (
     "开始结算",
     "场面结算",
 )
+BATTLE_RESOLUTION_TERMS = (
+    "结算战斗",
+    "战斗结算",
+    "结束战斗",
+    "结束遭遇",
+    "遭遇结束",
+    "结束本场",
+    "战斗结束",
+    "清算战场",
+    "收尾战斗",
+    "开始结算",
+    "场面结算",
+)
 STATE_QUERY_TERMS = (
     "我在哪里",
     "什么状态",
@@ -519,7 +605,76 @@ STATE_QUERY_TERMS = (
     "当前位置",
     "还在不在",
 )
-RULE_QUERY_TERMS = ("规则列表", "有哪些规则", "已有规则", "规则详情", "怎么判定", "怎么骰", "骰子规则")
+RULE_QUERY_TERMS = (
+    "规则列表",
+    "有哪些规则",
+    "已有规则",
+    "规则详情",
+    "怎么判定",
+    "怎么骰",
+    "骰子规则",
+    "dnd",
+    "DND",
+    "规则书",
+    "核心规则",
+    "优势",
+    "劣势",
+    "豁免",
+    "命中",
+    "倒地",
+    "束缚",
+    "中毒",
+    "目盲",
+    "躲藏",
+    "附赠动作",
+    "反应",
+    "借机攻击",
+    "机会攻击",
+    "临时生命",
+    "生命值归零",
+)
+DM_GUIDANCE_TERMS = (
+    "dm职责",
+    "dm是做什么",
+    "城主职责",
+    "地下城主",
+    "称职dm",
+    "称职的dm",
+    "共同故事",
+    "不是竞争",
+    "不要对抗玩家",
+    "公平裁定",
+    "灵活裁定",
+    "临时裁定",
+    "怎么裁定",
+    "即兴",
+    "即兴答复",
+    "yes and",
+    "no but",
+    "可以而且",
+    "不能但是",
+    "后果",
+    "失败推进",
+    "成功代价",
+    "部分成功",
+    "桌面安全",
+    "相互尊重",
+    "硬边界",
+    "软边界",
+    "不舒服",
+    "越界",
+    "尊重玩家",
+    "了解玩家",
+    "玩家偏好",
+    "游戏性",
+    "娱乐性",
+    "叙事",
+    "简短叙述",
+    "氛围描写",
+    "战斗叙述",
+    "战斗描写",
+    "战术信息",
+)
 COMBAT_ACTION_TERMS = (
     "移动",
     "走",
@@ -540,15 +695,62 @@ COMBAT_ACTION_TERMS = (
     "掩护",
     "防御",
     "闪避",
+    "附赠动作",
+    "反应",
+    "借机攻击",
+    "机会攻击",
+    "优势",
+    "劣势",
+    "倒地",
+    "束缚",
+    "中毒",
+    "目盲",
+    "生命值归零",
     "侦察",
     "观察",
     "查看",
     "搜索",
     "调查",
+    "寻找",
     "警戒",
     "守望",
     "潜伏",
     "潜行",
+    "询问",
+    "打听",
+    "沟通",
+    "分享",
+    "索要",
+    "索取",
+    "饮用",
+    "喝",
+    "草药",
+    "凝神花",
+    "补给",
+    "消耗",
+    "英勇启发",
+    "资源",
+    "投掷",
+    "扔",
+    "扔进",
+    "推",
+    "拖",
+    "拉",
+    "擒抱",
+    "抓取",
+    "强制位移",
+    "推入",
+    "推下",
+    "投进",
+    "要害",
+    "古井",
+    "挥砍",
+    "砍",
+    "斩",
+    "劈",
+    "刺",
+    "击",
+    "跳起",
     "听",
     "盯",
     "发现",
@@ -562,6 +764,101 @@ COMBAT_ACTION_TERMS = (
     "敌",
     "怪",
 )
+
+
+def _post_game_tool_scope(session: Any, message: str) -> bool:
+    scene = session.scene or {}
+    if scene.get("_post_game") or scene.get("_encounter_ended_at"):
+        return True
+    text = _flatten_for_scope(
+        [
+            scene.get("summary", ""),
+            scene.get("current_conflict", ""),
+            scene.get("last_resolution", {}),
+        ]
+    )
+    if any(
+        term in text
+        for term in (
+            "圆满落幕",
+            "圆满结束",
+            "正式落幕",
+            "危机已正式解除",
+            "危机已落下帷幕",
+            "暂无冲突",
+            "当前冲突：暂无",
+        )
+    ):
+        return True
+    lowered = str(message or "").strip().lower()
+    if not lowered:
+        return False
+    return any(
+        term in lowered
+        for term in (
+            "全局结算",
+            "结束游戏",
+            "个人结局",
+            "后日谈",
+            "尾声",
+            "谁最菜",
+            "谁最强",
+            "评价",
+            "评估",
+            "职业等级",
+            "传奇等级",
+            "休息一会",
+            "背景剧情描述",
+            "下一段冒险",
+            "下一次冒险",
+            "下次冒险",
+            "下个冒险",
+            "下回冒险",
+            "沉睡直到",
+            "沉睡到下",
+            "休眠直到",
+            "休眠到下",
+            "直到下次",
+            "无人可以打扰",
+        )
+    )
+
+
+def _post_game_tool_names(message: str) -> list[str]:
+    text = str(message or "").strip().lower()
+    names = ["query_core_rules", "session_control", "estimate_token_usage"]
+    if any(
+        term in text
+        for term in (
+            "背景",
+            "间幕",
+            "休息",
+            "休整",
+            "沉睡",
+            "休眠",
+            "后日谈",
+            "尾声",
+            "结局",
+            "结束游戏",
+            "下一段冒险",
+            "下一次冒险",
+            "下次冒险",
+            "下个冒险",
+            "下回冒险",
+            "直到下次",
+        )
+    ):
+        names.insert(0, "update_scene")
+    return list(dict.fromkeys(names))
+
+
+def _flatten_for_scope(value: Any) -> str:
+    try:
+        import json
+
+        return json.dumps(value, ensure_ascii=False)
+    except Exception:
+        return str(value)
 RULE_AUTHORING_LIKELY_TERMS = (
     "检定",
     "判定",
@@ -592,6 +889,16 @@ TEXT_ONLY_TERMS = (
     "有哪些规则",
     "已有规则",
     "规则详情",
+    "dm职责",
+    "城主职责",
+    "即兴",
+    "后果",
+    "桌面安全",
+    "玩家偏好",
+    "游戏性",
+    "娱乐性",
+    "叙事",
+    "战斗叙述",
     "状态",
     "当前状态",
     "行动顺序",

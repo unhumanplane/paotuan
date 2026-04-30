@@ -1,0 +1,290 @@
+{
+  "phb2024.core.d20_test": [
+    {
+      "book": "玩家手册2024",
+      "path": "玩家手册2024/进行游戏/D20检定.htm",
+      "available": true
+    }
+  ],
+  "phb2024.core.ability_check": [
+    {
+      "book": "玩家手册2024",
+      "path": "玩家手册2024/进行游戏/属性检定.htm",
+      "available": true
+    }
+  ],
+  "phb2024.core.saving_throw": [
+    {
+      "book": "玩家手册2024",
+      "path": "玩家手册2024/进行游戏/豁免检定.htm",
+      "available": true
+    }
+  ],
+  "phb2024.combat.attack_roll": [
+    {
+      "book": "玩家手册2024",
+      "path": "玩家手册2024/进行游戏/攻击检定.htm",
+      "available": true
+    }
+  ],
+  "phb2024.core.advantage_disadvantage": [
+    {
+      "book": "玩家手册2024",
+      "path": "玩家手册2024/进行游戏/优势_劣势.htm",
+      "available": true
+    }
+  ],
+  "phb2024.core.proficiency": [
+    {
+      "book": "玩家手册2024",
+      "path": "玩家手册2024/进行游戏/熟练.htm",
+      "available": true
+    }
+  ],
+  "phb2024.action.action": [
+    {
+      "book": "玩家手册2024",
+      "path": "玩家手册2024/进行游戏/动作.htm",
+      "available": true
+    }
+  ],
+  "phb2024.action.bonus_action": [
+    {
+      "book": "玩家手册2024",
+      "path": "玩家手册2024/进行游戏/附赠动作.htm",
+      "available": true
+    }
+  ],
+  "phb2024.action.reaction": [
+    {
+      "book": "玩家手册2024",
+      "path": "玩家手册2024/进行游戏/反应.htm",
+      "available": true
+    }
+  ],
+  "phb2024.combat.opportunity_attack": [
+    {
+      "book": "玩家手册2024",
+      "path": "玩家手册2024/术语汇编/动作.htm",
+      "available": true
+    }
+  ],
+  "phb2024.combat.movement_position": [
+    {
+      "book": "玩家手册2024",
+      "path": "玩家手册2024/进行游戏/移动和位置.htm",
+      "available": true
+    }
+  ],
+  "phb2024.exploration.hide": [
+    {
+      "book": "玩家手册2024",
+      "path": "玩家手册2024/进行游戏/躲藏.htm",
+      "available": true
+    }
+  ],
+  "phb2024.combat.combat_flow": [
+    {
+      "book": "玩家手册2024",
+      "path": "玩家手册2024/进行游戏/战斗流程.htm",
+      "available": true
+    }
+  ],
+  "phb2024.damage.damage_roll": [
+    {
+      "book": "玩家手册2024",
+      "path": "玩家手册2024/进行游戏/伤害掷骰.htm",
+      "available": true
+    }
+  ],
+  "phb2024.damage.resistance_vulnerability": [
+    {
+      "book": "玩家手册2024",
+      "path": "玩家手册2024/进行游戏/抗性和易伤.htm",
+      "available": true
+    }
+  ],
+  "phb2024.damage.healing": [
+    {
+      "book": "玩家手册2024",
+      "path": "玩家手册2024/进行游戏/治疗.htm",
+      "available": true
+    }
+  ],
+  "phb2024.damage.temporary_hit_points": [
+    {
+      "book": "玩家手册2024",
+      "path": "玩家手册2024/进行游戏/临时生命值.htm",
+      "available": true
+    }
+  ],
+  "phb2024.damage.zero_hit_points": [
+    {
+      "book": "玩家手册2024",
+      "path": "玩家手册2024/进行游戏/生命值降至0点.htm",
+      "available": true
+    }
+  ],
+  "phb2024.conditions.overview": [
+    {
+      "book": "玩家手册2024",
+      "path": "玩家手册2024/进行游戏/状态.htm",
+      "available": true
+    }
+  ],
+  "phb2024.conditions.prone": [
+    {
+      "book": "玩家手册2024",
+      "path": "玩家手册2024/术语汇编/状态.htm",
+      "available": true
+    }
+  ],
+  "phb2024.conditions.restrained": [
+    {
+      "book": "玩家手册2024",
+      "path": "玩家手册2024/术语汇编/状态.htm",
+      "available": true
+    }
+  ],
+  "phb2024.conditions.blinded": [
+    {
+      "book": "玩家手册2024",
+      "path": "玩家手册2024/术语汇编/状态.htm",
+      "available": true
+    }
+  ],
+  "phb2024.conditions.poisoned": [
+    {
+      "book": "玩家手册2024",
+      "path": "玩家手册2024/术语汇编/状态.htm",
+      "available": true
+    }
+  ],
+  "phb2024.exploration.vision_light": [
+    {
+      "book": "玩家手册2024",
+      "path": "玩家手册2024/进行游戏/视野与光照.htm",
+      "available": true
+    }
+  ],
+  "phb2024.core.area_of_effect": [
+    {
+      "book": "玩家手册2024",
+      "path": "玩家手册2024/术语汇编/效应区域.htm",
+      "available": true
+    }
+  ],
+  "phb2024.combat.ranged_attack": [
+    {
+      "book": "玩家手册2024",
+      "path": "玩家手册2024/进行游戏/远程攻击.htm",
+      "available": true
+    }
+  ],
+  "phb2024.combat.melee_attack": [
+    {
+      "book": "玩家手册2024",
+      "path": "玩家手册2024/进行游戏/近战攻击.htm",
+      "available": true
+    }
+  ],
+  "phb2024.spellcasting.core": [
+    {
+      "book": "玩家手册2024",
+      "path": "玩家手册2024/法术/施展法术.htm",
+      "available": true
+    }
+  ],
+  "phb2024.spellcasting.concentration": [
+    {
+      "book": "玩家手册2024",
+      "path": "玩家手册2024/法术/持续时间.htm",
+      "available": true
+    }
+  ],
+  "phb2024.combat.mounted_combat": [
+    {
+      "book": "玩家手册2024",
+      "path": "玩家手册2024/进行游戏/骑乘战斗.htm",
+      "available": true
+    }
+  ],
+  "dmg2024.guidance.dm_roles": [
+    {
+      "book": "城主指南2024",
+      "path": "城主指南2024/1.基础/DM是做什么的.htm",
+      "available": true
+    }
+  ],
+  "dmg2024.guidance.shared_story": [
+    {
+      "book": "城主指南2024",
+      "path": "城主指南2024/1.基础/DM是做什么的.htm",
+      "available": true
+    },
+    {
+      "book": "城主指南2024",
+      "path": "城主指南2024/1.基础/每个DM都是独一无二的.htm",
+      "available": true
+    }
+  ],
+  "dmg2024.guidance.fair_flexible": [
+    {
+      "book": "城主指南2024",
+      "path": "城主指南2024/1.基础/DM是做什么的.htm",
+      "available": true
+    },
+    {
+      "book": "城主指南2024",
+      "path": "城主指南2024/2.运作游戏/决定掷骰结果/即兴答复.htm",
+      "available": true
+    }
+  ],
+  "dmg2024.guidance.table_safety": [
+    {
+      "book": "城主指南2024",
+      "path": "城主指南2024/1.基础/确保所有人玩得开心/相互尊重.htm",
+      "available": true
+    },
+    {
+      "book": "城主指南2024",
+      "path": "城主指南2024/1.基础/确保所有人玩得开心/尊重玩家.htm",
+      "available": true
+    }
+  ],
+  "dmg2024.guidance.know_players": [
+    {
+      "book": "城主指南2024",
+      "path": "城主指南2024/2.运作游戏/了解你的玩家.htm",
+      "available": true
+    }
+  ],
+  "dmg2024.guidance.concise_narration": [
+    {
+      "book": "城主指南2024",
+      "path": "城主指南2024/2.运作游戏/叙事.htm",
+      "available": true
+    }
+  ],
+  "dmg2024.guidance.improvisation": [
+    {
+      "book": "城主指南2024",
+      "path": "城主指南2024/2.运作游戏/决定掷骰结果/即兴答复.htm",
+      "available": true
+    }
+  ],
+  "dmg2024.guidance.consequences": [
+    {
+      "book": "城主指南2024",
+      "path": "城主指南2024/2.运作游戏/决定掷骰结果/后果.htm",
+      "available": true
+    }
+  ],
+  "dmg2024.guidance.combat_narration": [
+    {
+      "book": "城主指南2024",
+      "path": "城主指南2024/2.运作游戏/运作战斗/战斗中的叙述.htm",
+      "available": true
+    }
+  ]
+}

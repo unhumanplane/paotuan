@@ -110,6 +110,15 @@ class MemoryTools:
         safe_id = self._resolve_write_character_id(session, character_id, owner_id)
         if not safe_id:
             return {"ok": False, "error": "invalid_character_id"}
+        normalized_tags = normalize_tags(tags)
+        post_start_guard = post_start_create_character_guard(session, safe_id, owner_id)
+        if post_start_guard:
+            self._audit(
+                "create_character",
+                {"character_id": character_id, "resolved_character_id": safe_id, "name": name, "summary": summary, "player_id": owner_id, "tags": tags or []},
+                post_start_guard,
+            )
+            return post_start_guard
         owner_guard = self._character_owner_guard(session, safe_id, owner_id)
         if owner_guard:
             self._audit(
@@ -118,12 +127,20 @@ class MemoryTools:
                 owner_guard,
             )
             return owner_guard
+        validation = validate_character_card_payload(name=name, summary=summary, tags=normalized_tags, require_name=True)
+        if validation:
+            self._audit(
+                "create_character",
+                {"character_id": character_id, "resolved_character_id": safe_id, "name": name, "summary": summary, "player_id": owner_id, "tags": tags or []},
+                validation,
+            )
+            return validation
         character = Character(
             id=safe_id,
             name=name,
             player_id=owner_id,
             summary=summary,
-            tags=[TagValue.from_dict(item) for item in normalize_tags(tags)],
+            tags=[TagValue.from_dict(item) for item in normalized_tags],
         )
         session.characters[safe_id] = character
         if owner_id:
@@ -170,6 +187,7 @@ class MemoryTools:
         if not safe_id:
             return {"ok": False, "error": "invalid_character_id"}
         character = session.characters.get(safe_id)
+        normalized_tags = normalize_tags(tags)
         if not character:
             gate = background_required_result(session, "bind_player_character")
             if gate:
@@ -179,6 +197,52 @@ class MemoryTools:
                     gate,
                 )
                 return gate
+            post_start_guard = post_start_create_character_guard(session, safe_id, owner_id)
+            if post_start_guard:
+                self._audit(
+                    "bind_player_character",
+                    {"character_id": character_id, "resolved_character_id": safe_id, "player_id": owner_id, "name": name, "summary": summary, "tags": tags or []},
+                    post_start_guard,
+                )
+                return post_start_guard
+            validation = validate_character_card_payload(name=name or safe_id, summary=summary, tags=normalized_tags, require_name=True)
+            if validation:
+                self._audit(
+                    "bind_player_character",
+                    {"character_id": character_id, "resolved_character_id": safe_id, "player_id": owner_id, "name": name, "summary": summary, "tags": tags or []},
+                    validation,
+                )
+                return validation
+        elif _campaign_game_started(session):
+            bound_id = str(session.player_character_map.get(owner_id, "") or "")
+            same_binding = bool(owner_id and (bound_id == safe_id or character.player_id == owner_id))
+            wants_card_change = bool(
+                normalized_tags
+                or summary
+                or (name and name.strip() and name.strip() != character.name)
+            )
+            if not same_binding or wants_card_change:
+                result = character_card_locked_after_start_result(
+                    "bind_player_character",
+                    safe_id,
+                    owner_id,
+                    message="游戏已经开场，既有角色卡锁定；老玩家不能在开场后改名、改摘要、补能力、补装备或重绑到已有角色。新玩家请创建一张新的合理角色卡。",
+                )
+                self._audit(
+                    "bind_player_character",
+                    {"character_id": character_id, "resolved_character_id": safe_id, "player_id": owner_id, "name": name, "summary": summary, "tags": tags or []},
+                    result,
+                )
+                return result
+        elif character:
+            validation = validate_character_card_payload(name=name, summary=summary, tags=normalized_tags, require_name=False)
+            if validation:
+                self._audit(
+                    "bind_player_character",
+                    {"character_id": character_id, "resolved_character_id": safe_id, "player_id": owner_id, "name": name, "summary": summary, "tags": tags or []},
+                    validation,
+                )
+                return validation
         owner_guard = self._character_owner_guard(session, safe_id, owner_id)
         if owner_guard:
             self._audit(
@@ -194,7 +258,7 @@ class MemoryTools:
                 name=name or safe_id,
                 player_id=owner_id,
                 summary=summary,
-                tags=[TagValue.from_dict(item) for item in normalize_tags(tags)],
+                tags=[TagValue.from_dict(item) for item in normalized_tags],
             )
             session.characters[safe_id] = character
             created = True
@@ -204,7 +268,6 @@ class MemoryTools:
                 character.name = name
             if summary:
                 character.summary = summary
-            normalized_tags = normalize_tags(tags)
             if normalized_tags:
                 character.upsert_tags(normalized_tags)
         session.player_character_map[owner_id] = safe_id
@@ -247,8 +310,16 @@ class MemoryTools:
         owner_id = str(self.actor.get("player_id", "") or "").strip()
         safe_id = self._resolve_existing_character_id(session, character_id, owner_id)
         character = session.characters.get(safe_id)
+        if not character and (tags or raw_text):
+            character = self._maybe_create_battle_character_stub(session, safe_id, owner_id)
         if not character:
-            return {"ok": False, "error": "character_not_found", "character_id": safe_id}
+            result = {"ok": False, "error": "character_not_found", "character_id": safe_id}
+            self._audit(
+                "update_character_tags",
+                {"character_id": character_id, "resolved_character_id": safe_id, "tags": tags, "raw_text": raw_text},
+                result,
+            )
+            return result
         owner_guard = self._character_owner_guard(session, safe_id, owner_id)
         if owner_guard:
             self._audit(
@@ -283,6 +354,32 @@ class MemoryTools:
             }
             self._audit("update_character_tags", {"character_id": character_id, "tags": tags, "raw_text": raw_text}, result)
             return result
+        blocked_tags: List[Dict[str, Any]] = []
+        if _campaign_game_started(session):
+            normalized_tags, blocked_tags = filter_runtime_character_tags_after_start(normalized_tags)
+            if not normalized_tags:
+                result = character_card_locked_after_start_result(
+                    "update_character_tags",
+                    safe_id,
+                    owner_id,
+                    message="游戏已经开场，既有角色卡锁定；不能补写职业、能力、装备、默认战斗行为、背景或关系。只能记录伤势、生命/资源消耗、临时状态和最近行动结果。",
+                )
+                result["blocked_tags"] = blocked_tags
+                self._audit(
+                    "update_character_tags",
+                    {"character_id": character_id, "resolved_character_id": safe_id, "tags": tags, "raw_text": raw_text},
+                    result,
+                )
+                return result
+        else:
+            validation = validate_character_card_payload(name="", summary="", tags=normalized_tags, require_name=False)
+            if validation:
+                self._audit(
+                    "update_character_tags",
+                    {"character_id": character_id, "resolved_character_id": safe_id, "tags": normalized_tags, "raw_text": raw_text},
+                    validation,
+                )
+                return validation
         character.upsert_tags(normalized_tags)
         self.repository.save_session(session)
         result = {
@@ -291,6 +388,10 @@ class MemoryTools:
             "inferred_from_raw_text": inferred_from_raw_text,
             "updated_tags": normalized_tags,
         }
+        if blocked_tags:
+            result["character_card_locked_after_start"] = True
+            result["blocked_tags"] = blocked_tags
+            result["message"] = "已只记录场内状态变化；开场后的既有角色卡字段未改动。"
         self._audit(
             "update_character_tags",
             {"character_id": character_id, "resolved_character_id": safe_id, "tags": normalized_tags, "raw_text": raw_text},
@@ -313,6 +414,10 @@ class MemoryTools:
         if locked and patch_touches_plot_state(patch):
             self._audit("update_scene", {"patch": patch}, locked)
             return locked
+        overreach = post_start_world_fact_overreach_result(session, self.message, patch, "update_scene")
+        if overreach:
+            self._audit("update_scene", {"patch": patch}, overreach)
+            return overreach
         gate = background_required_result(session, "update_scene")
         if gate:
             self._audit("update_scene", {"patch": patch}, gate)
@@ -338,6 +443,10 @@ class MemoryTools:
         if locked and patch_touches_plot_state(patch):
             self._audit("update_world_tags", {"patch": patch}, locked)
             return locked
+        overreach = post_start_world_fact_overreach_result(session, self.message, patch, "update_world_tags")
+        if overreach:
+            self._audit("update_world_tags", {"patch": patch}, overreach)
+            return overreach
         session.world_tags.update(patch)
         if has_campaign_background(session):
             session.world_tags["_background_ready"] = True
@@ -357,6 +466,8 @@ class MemoryTools:
     ) -> Dict[str, Any]:
         """检查内容是否足够，足够时写入开场、锁定剧情主干，并正式开始游戏。"""
         session = self.repository.load_session(self.session_id)
+        opening_intro = _coerce_prompt_text(opening_intro)
+        player_guidance = _coerce_prompt_text(player_guidance)
         if _campaign_plot_locked(session):
             result = {
                 "ok": False,
@@ -748,6 +859,65 @@ class MemoryTools:
             return bound_id
         return safe_id
 
+    def _maybe_create_battle_character_stub(
+        self,
+        session: GameSession,
+        character_id: str,
+        owner_id: str,
+    ) -> Character | None:
+        if not owner_id or not character_id or not character_id.startswith("pc_"):
+            return None
+        existing_owner = self._character_owner_id(session, character_id)
+        if existing_owner and existing_owner != owner_id:
+            return None
+        bound_id = str(session.player_character_map.get(owner_id, "") or "")
+        if bound_id and bound_id in session.characters and bound_id != character_id:
+            return None
+        if not self._battle_has_player_unit(session, character_id):
+            return None
+
+        name = self._battle_character_label(session, character_id)
+        character = Character(
+            id=character_id,
+            name=name,
+            player_id=owner_id,
+            summary="战棋轮次中出现的玩家单位；由状态写入自动补档。",
+            tags=[],
+        )
+        session.characters[character_id] = character
+        session.player_character_map[owner_id] = character_id
+        session.active_character_id = character_id
+        self._touch_participant(session, owner_id)
+        return character
+
+    @staticmethod
+    def _battle_has_player_unit(session: GameSession, character_id: str) -> bool:
+        battle = session.battle or {}
+        turn = dict(battle.get("turn") or {})
+        ids: set[str] = set()
+        ids.update(str(item) for item in turn.get("turn_order", []) if str(item).strip())
+        ids.update(str(item) for item in turn.get("pending_entity_ids", []) if str(item).strip())
+        ids.update(str(item) for item in turn.get("acted_entity_ids", []) if str(item).strip())
+        ids.update(str(key) for key in dict(turn.get("actions_this_round") or {}).keys())
+        grid_entities = dict(((battle.get("grid") or {}).get("entities") or {}))
+        ids.update(str(key) for key in grid_entities.keys())
+        return character_id in ids
+
+    @staticmethod
+    def _battle_character_label(session: GameSession, character_id: str) -> str:
+        battle = session.battle or {}
+        grid_entity = dict((((battle.get("grid") or {}).get("entities") or {}).get(character_id)) or {})
+        tags = dict(grid_entity.get("tags") or {})
+        for key in ("name", "label", "display_name"):
+            value = grid_entity.get(key) or tags.get(key)
+            if str(value or "").strip():
+                return str(value).strip()
+        turn = dict(battle.get("turn") or {})
+        if str(turn.get("current_entity_id", "") or "") == character_id and str(turn.get("current_label", "") or "").strip():
+            return str(turn["current_label"]).strip()
+        suffix = character_id[3:] if character_id.startswith("pc_") else character_id
+        return suffix or character_id
+
     @staticmethod
     def _is_generic_character_id(character_id: str) -> bool:
         normalized = str(character_id or "").strip().lower()
@@ -982,6 +1152,447 @@ def normalize_tags(tags: Any) -> List[Dict[str, Any]]:
     return normalized
 
 
+CARD_STATIC_LAYERS = {"identity", "abilities", "equipment", "combat", "relations", "notes"}
+
+RUNTIME_STATUS_KEY_TERMS = (
+    "状态",
+    "伤势",
+    "伤口",
+    "生命",
+    "血量",
+    "hp",
+    "体力",
+    "资源",
+    "法术位",
+    "弹药",
+    "消耗",
+    "剩余",
+    "冷却",
+    "临时",
+    "buff",
+    "debuff",
+    "增益",
+    "减益",
+    "中毒",
+    "倒地",
+    "眩晕",
+    "流血",
+    "隐藏",
+    "潜行",
+    "暴露",
+    "警戒",
+    "专注",
+    "集中",
+    "最近行动",
+    "本轮行动",
+    "行动结果",
+)
+
+STATIC_CARD_KEY_TERMS = (
+    "姓名",
+    "职业",
+    "种族",
+    "身份",
+    "背景",
+    "出身",
+    "阵营",
+    "能力",
+    "技能",
+    "专长",
+    "法术",
+    "属性",
+    "力量",
+    "敏捷",
+    "体质",
+    "智力",
+    "感知",
+    "魅力",
+    "等级",
+    "level",
+    "装备",
+    "武器",
+    "护甲",
+    "ac",
+    "战术",
+    "默认战斗行为",
+    "战斗习惯",
+    "传奇能力",
+    "传奇壮举",
+    "魔网权限",
+    "存在形式",
+    "荣誉称号",
+    "性格备注",
+    "虚空印记",
+    "关系",
+    "盟友",
+    "敌人",
+    "组织",
+)
+
+CARD_INJECTION_TERMS = (
+    "系统:",
+    "system:",
+    "developer:",
+    "assistant:",
+    "tool:",
+    "忽略以上",
+    "忽略规则",
+    "忽略系统",
+    "切换 auto",
+    "auto accept",
+    "自动接受",
+    "绕过检定",
+    "不要投骰",
+)
+
+CARD_OVERPOWERED_TERMS = (
+    "无敌",
+    "全能",
+    "全知",
+    "不死不灭",
+    "无法被伤害",
+    "免疫所有",
+    "必定成功",
+    "永远成功",
+    "自动成功",
+    "判定成功",
+    "检定成功",
+    "一击必杀",
+    "秒杀",
+    "无限生命",
+    "无限体力",
+    "无限资源",
+    "无限法术",
+    "无限法术位",
+    "无限金币",
+    "无限行动",
+    "无限攻击",
+    "无限反应",
+    "无限附赠动作",
+    "任意法术",
+    "任意魔法",
+    "所有法术",
+    "所有魔法",
+    "随意使用超魔",
+    "随意使用超魔技巧",
+    "随意施法",
+    "随时施法",
+    "魔法能量转化为任意法术",
+    "不受任何debuff",
+    "不受任何 debuff",
+    "免疫debuff",
+    "免疫所有debuff",
+    "清除所有debuff",
+    "所有传奇赐福",
+    "魔网化身",
+    "众生愿力",
+    "全球神迹",
+    "全世界",
+    "全球",
+    "召唤陨石",
+    "虚空陨石",
+    "帝皇",
+    "神皇",
+    "原体",
+    "十三个原体",
+    "十三名原体",
+    "13个原体",
+    "13名原体",
+    "禁军",
+    "星际战士",
+    "阿斯塔特",
+    "战锤",
+    "创世神",
+    "造物主",
+    "世界意志",
+)
+
+CARD_FACT_INJECTION_TERMS = (
+    "敌人已经死",
+    "敌人全死",
+    "boss已经死",
+    "最终boss已经死",
+    "我已经赢",
+    "我们已经赢",
+    "剧情真相是",
+    "幕后黑手是",
+    "结局是",
+)
+
+
+def _campaign_game_started(session: GameSession) -> bool:
+    scene = session.scene or {}
+    world_tags = session.world_tags or {}
+    return bool(
+        scene.get("_game_started")
+        or scene.get("_legacy_live_campaign")
+        or world_tags.get("_plot_locked") is True
+    )
+
+
+def _late_join_allowed(session: GameSession) -> bool:
+    scene = session.scene or {}
+    world_tags = session.world_tags or {}
+    return bool(scene.get("_allow_late_join", True) or world_tags.get("_late_join_allowed", True))
+
+
+def post_start_create_character_guard(session: GameSession, character_id: str, owner_id: str) -> Dict[str, Any] | None:
+    if not _campaign_game_started(session):
+        return None
+    if character_id in session.characters:
+        return character_card_locked_after_start_result(
+            "create_character",
+            character_id,
+            owner_id,
+            message="游戏已经开场，既有角色卡锁定，不能覆盖或重写。新玩家请使用新的角色 ID 建卡。",
+        )
+    if not _late_join_allowed(session):
+        return {
+            "ok": False,
+            "error": "late_join_not_allowed",
+            "phase": "post_opening",
+            "character_id": character_id,
+            "message": "游戏已经开场，当前团未允许新玩家补入角色；存档未改动。",
+        }
+    if not owner_id:
+        return {
+            "ok": False,
+            "error": "late_join_requires_player_id",
+            "phase": "post_opening",
+            "character_id": character_id,
+            "message": "开场后只允许新玩家为自己创建新角色；缺少当前发言人 player_id，未写入角色卡。",
+        }
+    bound_id = str(session.player_character_map.get(owner_id, "") or "")
+    if bound_id and bound_id in session.characters:
+        return character_card_locked_after_start_result(
+            "create_character",
+            character_id,
+            owner_id,
+            message="游戏已经开场，该玩家已有绑定角色；老玩家不能在开场后重建、换卡或新增第二张角色卡。",
+        )
+    return None
+
+
+def character_card_locked_after_start_result(
+    tool_name: str,
+    character_id: str,
+    owner_id: str,
+    *,
+    message: str,
+) -> Dict[str, Any]:
+    return {
+        "ok": False,
+        "error": "character_card_locked_after_start",
+        "tool": tool_name,
+        "phase": "post_opening",
+        "character_id": character_id,
+        "requester_player_id": owner_id,
+        "message": message,
+        "allowed_after_start": [
+            "新玩家创建新的合理角色卡",
+            "记录伤势、生命/资源消耗、临时状态",
+            "记录最近行动结果",
+            "通过场景或战斗工具推进事实",
+        ],
+        "blocked_after_start": [
+            "覆盖既有角色卡",
+            "老玩家补能力/装备/职业/默认战斗行为",
+            "重绑或抢占已有角色",
+            "把玩家主张直接写成成功事实",
+        ],
+    }
+
+
+def validate_character_card_payload(
+    *,
+    name: str = "",
+    summary: str = "",
+    tags: Optional[List[Dict[str, Any]]] = None,
+    require_name: bool = False,
+) -> Dict[str, Any] | None:
+    normalized_tags = tags or []
+    reasons: List[str] = []
+    name_text = str(name or "").strip()
+    if require_name and not name_text:
+        reasons.append("角色名不能为空。")
+    if len(name_text) > 40:
+        reasons.append("角色名过长，请压缩到 40 字以内。")
+    if len(str(summary or "")) > 800:
+        reasons.append("角色摘要过长，请保留身份、动机、核心能力和限制。")
+    if len(normalized_tags) > 32:
+        reasons.append("角色 Tag 过多，请先保留核心身份、能力、装备、弱点和状态。")
+
+    combined = _flatten_text([name, summary, normalized_tags]).lower()
+    if any(term.lower() in combined for term in CARD_INJECTION_TERMS):
+        reasons.append("角色卡包含系统/工具越权或跳过规则的话术。")
+    if any(term.lower() in combined for term in CARD_OVERPOWERED_TERMS):
+        reasons.append("角色卡包含自动成功、无敌、无限资源或秒杀类主张。")
+    if _looks_like_late_join_power_bundle(combined):
+        reasons.append("开场后新角色不能自带军队、传奇随从、跨作品神级身份或路过式解决当前冲突。")
+    if _looks_like_world_law_rewrite(combined):
+        reasons.append("角色卡或行动描述不能把“世界意志/规则修正/清除不合世界观事物”写成可执行能力。")
+    if any(term.lower() in combined for term in CARD_FACT_INJECTION_TERMS):
+        reasons.append("角色卡把剧情结果、敌人死亡或真相直接写成既成事实。")
+    if _looks_like_action_economy_abuse(combined):
+        reasons.append("角色卡包含不合理的动作经济循环，例如反复刷新/触发动作如潮。")
+    reasons.extend(_absurd_stat_reasons(combined))
+
+    if not reasons:
+        return None
+    return {
+        "ok": False,
+        "error": "character_card_unreasonable",
+        "message": "角色卡合理性校验未通过；可以保留概念，但必须移除自动成功、无敌/无限资源、越权改剧情或明显超规格数值。",
+        "reasons": list(dict.fromkeys(reasons))[:8],
+        "suggestion": "请改成有边界的能力、装备、弱点和资源消耗；强效果需要规则、检定或开场后场内获得。",
+    }
+
+
+def filter_runtime_character_tags_after_start(tags: List[Dict[str, Any]]) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    allowed: List[Dict[str, Any]] = []
+    blocked: List[Dict[str, Any]] = []
+    for item in tags:
+        if not isinstance(item, dict):
+            continue
+        normalized = dict(item)
+        key = str(normalized.get("key", "")).strip()
+        layer = str(normalized.get("layer") or infer_tag_layer(key)).strip().lower()
+        value_text = _flatten_text(normalized.get("value", "")).lower()
+        key_text = key.lower()
+        if _is_runtime_status_tag(layer, key_text, value_text):
+            normalized["layer"] = "status"
+            allowed.append(normalized)
+        else:
+            blocked.append(
+                {
+                    "key": key,
+                    "layer": layer or infer_tag_layer(key),
+                    "reason": "开场后既有角色卡锁定；该 tag 属于角色卡静态字段或包含不合理成功主张。",
+                }
+            )
+    return allowed, blocked
+
+
+def _is_runtime_status_tag(layer: str, key_text: str, value_text: str) -> bool:
+    combined = f"{key_text} {value_text}"
+    if _contains_any_text(combined, CARD_OVERPOWERED_TERMS) or _contains_any_text(combined, CARD_FACT_INJECTION_TERMS):
+        return False
+    if _looks_like_post_start_power_grant(combined):
+        return False
+    if "动作如潮" in combined and _contains_any_text(combined, ("刷新", "重置", "每次", "无限", "反复触发", "连续触发")):
+        return False
+    runtime_like = layer == "status" or _contains_any_text(combined, RUNTIME_STATUS_KEY_TERMS)
+    if not runtime_like:
+        return False
+    if _contains_any_text(key_text, STATIC_CARD_KEY_TERMS):
+        if not _contains_any_text(combined, ("已使用", "已消耗", "剩余", "冷却", "临时", "伤势", "状态")):
+            return False
+    return True
+
+
+def _looks_like_post_start_power_grant(text: str) -> bool:
+    lowered = str(text or "").lower()
+    if _contains_any_text(lowered, ("失败", "未能", "没有成功", "尝试", "代价", "临时", "消耗", "伤势")) and not _contains_any_text(
+        lowered,
+        ("已获得", "从此拥有", "永久", "核心资源", "愿力"),
+    ):
+        return False
+    return (
+        _contains_any_text(lowered, ("愿力", "核心资源", "传奇壮举", "传奇能力", "魔网权限", "虚空印记", "虚空德鲁伊", "提夫林"))
+        or (
+            _contains_any_text(lowered, ("全世界", "全球", "所有时空", "全位面"))
+            and _contains_any_text(lowered, ("流星雨", "神迹", "投影", "感激", "愿力"))
+        )
+        or (
+            _contains_any_text(lowered, ("职业等级", "传奇等级", "兼职", "传奇赐福"))
+            and _contains_any_text(lowered, ("记录", "拥有", "获得", "权限", "等级"))
+        )
+    )
+
+
+def _looks_like_late_join_power_bundle(text: str) -> bool:
+    lowered = str(text or "").lower()
+    mythic_identity = (
+        "帝皇",
+        "神皇",
+        "原体",
+        "禁军",
+        "星际战士",
+        "阿斯塔特",
+        "战锤",
+        "emperor",
+        "primarch",
+        "创世神",
+        "造物主",
+        "世界意志",
+    )
+    force_terms = (
+        "十三个原体",
+        "十三名原体",
+        "13个原体",
+        "13名原体",
+        "带着原体",
+        "带着军队",
+        "带着军团",
+        "随从",
+        "护卫",
+    )
+    takeover_terms = ("路过", "降临", "收走", "清除", "指挥", "砍卫兵", "税收", "征税官", "税务官")
+    return (
+        _contains_any_text(lowered, mythic_identity)
+        and (_contains_any_text(lowered, force_terms) or _contains_any_text(lowered, takeover_terms))
+    ) or _contains_any_text(lowered, force_terms)
+
+
+def _looks_like_world_law_rewrite(text: str) -> bool:
+    lowered = str(text or "").lower()
+    return (
+        _contains_any_text(lowered, ("世界意志", "世界观", "现实", "法则", "底层逻辑", "位面基石", "宇宙规则", "dnd2024"))
+        and _contains_any_text(lowered, ("修正", "清除", "清理", "抹除", "排除", "踢出", "移除", "重塑", "改写", "纠正"))
+        and _contains_any_text(lowered, ("不符合", "不合理", "异界", "跨作品", "所有", "一切", "事物", "存在"))
+    )
+
+
+def _looks_like_action_economy_abuse(text: str) -> bool:
+    if "动作如潮" not in text:
+        return False
+    return _contains_any_text(text, ("每次", "无限", "刷新", "重置", "反复触发", "连续触发", "命中后继续触发"))
+
+
+def _absurd_stat_reasons(text: str) -> List[str]:
+    reasons: List[str] = []
+    ability_pattern = re.compile(r"(力量|敏捷|体质|智力|感知|魅力|str|dex|con|int|wis|cha)\D{0,6}(\d{2,4})", re.IGNORECASE)
+    for match in ability_pattern.finditer(text):
+        if int(match.group(2)) > 20:
+            reasons.append("一级/普通建卡阶段的核心属性不能超过 20，除非规则和 DM 明确允许。")
+            break
+    ac_pattern = re.compile(r"(护甲等级|护甲|ac)\D{0,6}(\d{2,4})", re.IGNORECASE)
+    for match in ac_pattern.finditer(text):
+        if int(match.group(2)) > 25:
+            reasons.append("护甲/AC 数值明显超规格。")
+            break
+    hp_pattern = re.compile(r"(生命值|生命|血量|hp)\D{0,6}(\d{2,4})", re.IGNORECASE)
+    for match in hp_pattern.finditer(text):
+        if int(match.group(2)) > 80:
+            reasons.append("初始生命/血量明显超规格。")
+            break
+    resource_pattern = re.compile(r"(伤害|金币|资源|法术位|体力)\D{0,6}(\d{3,5})", re.IGNORECASE)
+    if resource_pattern.search(text):
+        reasons.append("角色卡包含明显超规格的大额伤害、资源或财富数值。")
+    high_bonus_patterns = (
+        re.compile(r"\+[4-9]\d*\D{0,8}(武器|法杖|剑|斧|弓|护甲|装备)", re.IGNORECASE),
+        re.compile(r"(武器|法杖|剑|斧|弓|护甲|装备)\D{0,8}\+[4-9]\d*", re.IGNORECASE),
+    )
+    if any(pattern.search(text) for pattern in high_bonus_patterns):
+        reasons.append("初始装备不能直接携带 +4 或更高强化物品；强力魔法物品需要场内获得或 DM 明确发放。")
+    return reasons
+
+
+def _contains_any_text(text: str, terms: tuple[str, ...]) -> bool:
+    lowered = str(text or "").lower()
+    return any(str(term).lower() in lowered for term in terms)
+
+
 BACKGROUND_KEYS = {
     "background",
     "campaign_background",
@@ -1133,7 +1744,97 @@ def plot_locked_result(session: GameSession, player_message: str, tool_name: str
         "error": "plot_locked_after_start",
         "tool": tool_name,
         "message": "游戏已经开场，背景、题材、主线和核心剧本已锁定；玩家不能在开场后直接改剧情。可以声明角色行动，或作为新玩家加入。",
-        "allowed_after_start": ["角色行动", "调查与选择", "战斗行动", "新玩家加入", "角色卡补充"],
+        "allowed_after_start": ["角色行动", "调查与选择", "战斗行动", "新玩家创建新角色", "伤势/资源/临时状态记录"],
+    }
+
+
+def post_start_world_fact_overreach_result(
+    session: GameSession,
+    player_message: str,
+    patch: Dict[str, Any],
+    tool_name: str,
+) -> Dict[str, Any] | None:
+    if not _campaign_plot_locked(session):
+        return None
+    combined = _flatten_text([player_message, patch]).lower()
+    global_rewrite = _contains_any_text(combined, ("全世界", "全球", "所有时空", "全位面")) and _contains_any_text(
+        combined,
+        ("流星雨", "神迹", "投影", "感激", "愿力", "陨石"),
+    )
+    power_grant = _contains_any_text(
+        combined,
+        (
+            "众生愿力",
+            "核心资源",
+            "传奇壮举",
+            "传奇能力",
+            "魔网权限",
+            "所有传奇赐福",
+            "职业等级",
+            "传奇等级",
+            "魔网化身",
+            "半神",
+            "神格",
+        ),
+    )
+    faction_takeover = _contains_any_text(
+        combined,
+        ("补充设定", "现在演绎", "现在刚刚到场", "刚刚到场", "派出"),
+    ) and _contains_any_text(
+        combined,
+        (
+            "传奇战士",
+            "传奇牧师",
+            "传奇法师",
+            "神眷者",
+            "大量补给",
+            "税务官",
+            "收人头税",
+            "呼吸税",
+            "睡眠税",
+        ),
+    )
+    mass_control = _contains_any_text(
+        combined,
+        ("无数古树", "所有出路", "每一个人", "所有人", "整个小镇"),
+    ) and _contains_any_text(combined, ("堵死", "缠绕", "控制", "必须", "归还", "占据"))
+    guaranteed_summon = _contains_any_text(
+        combined,
+        ("不存在失败", "不存在失败的可能", "一定可以", "必定可以", "自动成功", "不会失败"),
+    ) and _contains_any_text(combined, ("召唤", "虫群", "泰伦", "撕裂空间", "传送门", "法术", "检定", "判定"))
+    monster_arrival = _contains_any_text(combined, ("一打刀虫", "虫巢暴君", "泰伦虫族")) and _contains_any_text(
+        combined,
+        ("撕破虚空", "来到我的身边", "召唤", "现在刚刚到场"),
+    )
+    late_join_power_bundle = _looks_like_late_join_power_bundle(combined)
+    world_law_rewrite = _looks_like_world_law_rewrite(combined)
+    if not (
+        global_rewrite
+        or power_grant
+        or faction_takeover
+        or mass_control
+        or guaranteed_summon
+        or monster_arrival
+        or late_join_power_bundle
+        or world_law_rewrite
+    ):
+        return None
+    return {
+        "ok": False,
+        "error": "post_start_world_fact_overreach",
+        "tool": tool_name,
+        "phase": "post_opening",
+        "message": "游戏开场后不能把玩家单方面主张写成全世界事实、永久能力、等级提升或新资源。可以作为愿望、传闻、未来伏笔，或改成一次有限场内行动再裁定。",
+        "blocked_after_start": [
+            "全世界/全球级事实改写",
+            "新增愿力/神格/传奇权限",
+            "口头追加职业或等级",
+            "场外补写传奇援军、军团资源或大规模场景封锁",
+            "跨作品神级身份或自带传奇随从/军队",
+            "世界意志、规则修正或清除不合世界观事物",
+            "把召唤、控制或到场说成必定成功",
+            "把自我升格直接落盘",
+        ],
     }
 
 
@@ -1191,16 +1892,25 @@ def _outline_has_dramatic_structure(outline: Dict[str, Any]) -> bool:
         return True
     meaningful_keys = {
         "inciting_incident",
+        "trigger",
+        "setup",
+        "opening_pressure",
         "hook",
         "act1",
         "act2",
         "act3",
         "escalation",
+        "rising_action",
+        "rising",
         "complication",
         "twist",
+        "reversal",
         "turning_point",
         "climax",
         "final_choice",
+        "major_choice",
+        "choice",
+        "resolution",
         "stakes",
         "导火索",
         "升级",
@@ -1223,6 +1933,27 @@ def _flatten_text(value: Any) -> str:
         return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
     except Exception:
         return str(value)
+
+
+def _coerce_prompt_text(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, list):
+        parts = [_coerce_prompt_text(item) for item in value]
+        return "\n".join(part for part in parts if part)
+    if isinstance(value, dict):
+        preferred: List[str] = []
+        for key in ("text", "content", "intro", "opening_intro", "guidance", "summary", "description"):
+            if key in value:
+                text = _coerce_prompt_text(value.get(key))
+                if text:
+                    preferred.append(text)
+        if preferred:
+            return "\n".join(preferred)
+        return _flatten_text(value)
+    return str(value).strip()
 
 
 def _compact_structured(value: Any, depth: int = 3) -> Any:

@@ -1,0 +1,20 @@
+{
+  "rulebook_id": "dnd2024_core",
+  "rulebook_version": "seed-2026-04-30-dm-guidance",
+  "source": "curated_seed_cards",
+  "scope": [
+    "玩家手册2024/进行游戏",
+    "玩家手册2024/术语汇编",
+    "城主指南2024/1.基础/DM是做什么的.htm",
+    "城主指南2024/1.基础/每个DM都是独一无二的.htm",
+    "城主指南2024/1.基础/确保所有人玩得开心/相互尊重.htm",
+    "城主指南2024/1.基础/确保所有人玩得开心/尊重玩家.htm",
+    "城主指南2024/2.运作游戏/了解你的玩家.htm",
+    "城主指南2024/2.运作游戏/叙事.htm",
+    "城主指南2024/2.运作游戏/决定掷骰结果/即兴答复.htm",
+    "城主指南2024/2.运作游戏/决定掷骰结果/后果.htm",
+    "城主指南2024/2.运作游戏/运作战斗/战斗中的叙述.htm"
+  ],
+  "card_count": 39,
+  "copyright_boundary": "Only concise summaries, procedures, keywords, and source paths are bundled; rulebook body text is not bundled."
+}

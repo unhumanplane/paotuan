@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from typing import Any
 
 from .memory import MemoryCompressor
@@ -33,6 +34,12 @@ class LlmFailureResponse:
 
     def __str__(self) -> str:
         return self.completion_text
+
+
+class ToolLoopResult:
+    def __init__(self, completion_text: str, tool_results: list[dict[str, Any]] | None = None):
+        self.completion_text = completion_text
+        self.tool_results = tool_results or []
 
 
 class IntentRouter:
@@ -101,14 +108,17 @@ class IntentRouter:
         async with lock:
             session = self.repository.load_session(session_id)
             self._touch_participant(session, actor)
-            turn_policy_events = TurnTools(
-                self.repository,
-                session_id,
-                actor=actor,
-            ).apply_turn_timeout_policy(session, message)
+            legacy_live_scene_changed = _ensure_legacy_live_scene_state(session)
+            post_game_turn_closed = _maybe_close_concluded_turn(session, message)
+            turn_policy_events = []
+            if not post_game_turn_closed:
+                turn_policy_events = TurnTools(
+                    self.repository,
+                    session_id,
+                    actor=actor,
+                ).apply_turn_timeout_policy(session, message)
             mode = self.mode_machine.detect(session, message)
             session.mode = mode
-            legacy_live_scene_changed = _ensure_legacy_live_scene_state(session)
             snapshot_chars_before = self.memory_compressor.snapshot_chars(session)
             if self.memory_compressor.maybe_compress(session):
                 self.repository.append_audit(
@@ -131,6 +141,22 @@ class IntentRouter:
                         "player_message": message,
                     },
                 )
+            if post_game_turn_closed:
+                self.repository.append_audit(
+                    session_id,
+                    {
+                        "type": "post_game_turn_closed",
+                        "actor": actor,
+                        "player_message": message,
+                        **post_game_turn_closed,
+                    },
+                )
+                get_plugin_logger().info(
+                    "post_game_turn_closed session=%s phase=%s reason=%s",
+                    session_id,
+                    post_game_turn_closed.get("previous_phase", ""),
+                    post_game_turn_closed.get("reason", ""),
+                )
             for event in turn_policy_events:
                 self.repository.append_audit(
                     session_id,
@@ -149,6 +175,44 @@ class IntentRouter:
                     event.get("owner_player_id", ""),
                     event.get("deadline_at", ""),
                 )
+
+            reasonableness_guard = _action_reasonableness_guard_reply(session, actor, message)
+            if reasonableness_guard:
+                self.repository.append_audit(
+                    session_id,
+                    {
+                        "type": "local_action_reasonableness_guard",
+                        "actor": actor,
+                        "player_message": message,
+                        "reply": reasonableness_guard,
+                    },
+                )
+                get_plugin_logger().info(
+                    "local_action_reasonableness_guard session=%s actor=%s text=%s",
+                    session_id,
+                    actor.get("player_id", ""),
+                    message[:120].replace("\n", "\\n"),
+                )
+                return reasonableness_guard
+
+            action_economy_guard = _action_economy_guard_reply(session, actor, message)
+            if action_economy_guard:
+                self.repository.append_audit(
+                    session_id,
+                    {
+                        "type": "local_action_economy_guard",
+                        "actor": actor,
+                        "player_message": message,
+                        "reply": action_economy_guard,
+                    },
+                )
+                get_plugin_logger().info(
+                    "local_action_economy_guard session=%s actor=%s text=%s",
+                    session_id,
+                    actor.get("player_id", ""),
+                    message[:120].replace("\n", "\\n"),
+                )
+                return action_economy_guard
 
             toolset, tool_names, tool_executor, tool_specs = self.tool_registry.for_mode(
                 mode,
@@ -171,7 +235,7 @@ class IntentRouter:
                 max(1, (len(system_prompt) + len(tool_schema_text)) // 2),
             )
 
-        completion = await self._run_llm_tool_loop(
+        loop_result = await self._run_llm_tool_loop(
             chat_provider_id=provider_id,
             system_prompt=system_prompt,
             initial_prompt=build_user_prompt(message, security_notes=security_notes),
@@ -181,40 +245,86 @@ class IntentRouter:
             audit_lock=lock,
             raw_player_message=message,
         )
+        completion = self._sanitize_completion_text(loop_result.completion_text)
+        tool_trace = loop_result.tool_results
 
         async with lock:
             latest_session = self.repository.load_session(session_id)
+            raw_completion_chars = len(completion)
             completion = self._limit_completion(completion, latest_session, raw_player_message=message)
-            fallback_turn = await self._maybe_auto_advance_resolved_turn(
-                session=latest_session,
+            if len(completion) < raw_completion_chars:
+                get_plugin_logger().info(
+                    "completion_limited session=%s mode=%s actor=%s from_chars=%s to_chars=%s message=%s",
+                    session_id,
+                    mode.value,
+                    actor.get("player_id", ""),
+                    raw_completion_chars,
+                    len(completion),
+                    message[:120].replace("\n", "\\n"),
+                )
+            completeness_guard = _adjudication_completeness_guard(
+                latest_session,
                 actor=actor,
                 player_message=message,
                 completion=completion,
-                session_id=session_id,
+                tool_results=tool_trace,
             )
-            if fallback_turn:
+            if completeness_guard:
                 completion = self._limit_completion(
-                    f"{completion}\n{fallback_turn.get('reply_suffix', '')}".strip(),
-                    self.repository.load_session(session_id),
+                    f"{completion}\n{completeness_guard.get('reply_suffix', '')}".strip(),
+                    latest_session,
                     raw_player_message=message,
                 )
-                latest_session = self.repository.load_session(session_id)
+                completion = self._sanitize_completion_text(completion)
                 self.repository.append_audit(
                     session_id,
                     {
-                        "type": "turn_auto_advance_fallback",
+                        "type": "adjudication_completeness_guard",
                         "actor": actor,
                         "player_message": message,
-                        **fallback_turn,
+                        "completion_excerpt": completion[:300],
+                        **completeness_guard,
                     },
                 )
                 get_plugin_logger().info(
-                    "turn_auto_advance_fallback session=%s actor=%s from=%s to=%s",
+                    "adjudication_completeness_guard session=%s actor=%s reason=%s tools=%s",
                     session_id,
                     actor.get("player_id", ""),
-                    fallback_turn.get("from_entity_id", ""),
-                    fallback_turn.get("to_entity_id", ""),
+                    completeness_guard.get("reason", ""),
+                    ",".join(completeness_guard.get("tool_names", [])),
                 )
+            else:
+                fallback_turn = await self._maybe_auto_advance_resolved_turn(
+                    session=latest_session,
+                    actor=actor,
+                    player_message=message,
+                    completion=completion,
+                    session_id=session_id,
+                )
+                if fallback_turn:
+                    completion = self._limit_completion(
+                        f"{completion}\n{fallback_turn.get('reply_suffix', '')}".strip(),
+                        self.repository.load_session(session_id),
+                        raw_player_message=message,
+                    )
+                    completion = self._sanitize_completion_text(completion)
+                    latest_session = self.repository.load_session(session_id)
+                    self.repository.append_audit(
+                        session_id,
+                        {
+                            "type": "turn_auto_advance_fallback",
+                            "actor": actor,
+                            "player_message": message,
+                            **fallback_turn,
+                        },
+                    )
+                    get_plugin_logger().info(
+                        "turn_auto_advance_fallback session=%s actor=%s from=%s to=%s",
+                        session_id,
+                        actor.get("player_id", ""),
+                        fallback_turn.get("from_entity_id", ""),
+                        fallback_turn.get("to_entity_id", ""),
+                    )
             trace_record = self._persist_narrative_trace(
                 latest_session,
                 actor=actor,
@@ -281,6 +391,8 @@ class IntentRouter:
         turn = dict(battle.get("turn") or {})
         if not turn.get("active") or str(turn.get("phase", "")) != "character_turn":
             return None
+        if _scene_looks_concluded(session) or _looks_like_terminal_or_interlude_request(player_message):
+            return None
         actor_id = str(actor.get("player_id") or "").strip()
         if not actor_id:
             return None
@@ -299,7 +411,7 @@ class IntentRouter:
             current_entity_id=acting_id,
             summary=summary,
             reason="LLM 已裁定当前发言人的本轮主要动作，但未显式调用 turn_control；本地兜底推进。",
-            output_limit_chars=int(turn.get("output_limit_chars") or 180),
+            output_limit_chars=int(turn.get("output_limit_chars") or 1440),
             advance_after=True,
         )
         result_turn = dict(result.get("turn") or {})
@@ -424,11 +536,12 @@ class IntentRouter:
         session_id: str,
         audit_lock: asyncio.Lock | None = None,
         raw_player_message: str = "",
-    ) -> str:
+    ) -> ToolLoopResult:
         contexts: list[dict[str, str]] = []
         prompt = initial_prompt
         last_error_tool = ""
         repeated_error_count = 0
+        all_tool_results: list[dict[str, Any]] = []
 
         for step in range(self.max_steps):
             response = await self._llm_generate(
@@ -443,13 +556,14 @@ class IntentRouter:
             if not tool_calls:
                 tool_calls = self._extract_text_tool_calls(completion_text)
             if not tool_calls:
+                completion_text = self._sanitize_completion_text(completion_text)
                 get_plugin_logger().info(
                     "llm_text_response session=%s step=%s chars=%s",
                     session_id,
                     step + 1,
                     len(completion_text),
                 )
-                return completion_text
+                return ToolLoopResult(completion_text, all_tool_results)
             get_plugin_logger().info(
                 "llm_tool_calls session=%s step=%s tools=%s",
                 session_id,
@@ -510,6 +624,7 @@ class IntentRouter:
                     else:
                         last_error_tool = tool_name
                         repeated_error_count = 1
+            all_tool_results.extend(tool_results)
             audit_record = {
                 "type": "llm_tool_step",
                 "step": step + 1,
@@ -538,7 +653,10 @@ class IntentRouter:
             contexts=contexts,
             system_prompt=system_prompt,
         )
-        return getattr(final_response, "completion_text", "") or str(final_response)
+        return ToolLoopResult(
+            self._sanitize_completion_text(getattr(final_response, "completion_text", "") or str(final_response)),
+            all_tool_results,
+        )
 
     @staticmethod
     def _repair_tool_args(tool_name: str, args: dict[str, Any], raw_player_message: str) -> dict[str, Any]:
@@ -548,6 +666,17 @@ class IntentRouter:
             nested_args = repaired.get("args")
             if not isinstance(nested_args, dict):
                 nested_args = {}
+            inner_args = nested_args.get("args")
+            if isinstance(inner_args, dict) and (
+                "rule_name" in nested_args or "version" in nested_args or "reason" in nested_args
+            ):
+                if not repaired.get("rule_name") and nested_args.get("rule_name"):
+                    repaired["rule_name"] = nested_args.get("rule_name")
+                if not repaired.get("version") and nested_args.get("version"):
+                    repaired["version"] = nested_args.get("version")
+                if not repaired.get("reason") and nested_args.get("reason"):
+                    repaired["reason"] = nested_args.get("reason")
+                nested_args = inner_args
             extras = {
                 key: value
                 for key, value in list(repaired.items())
@@ -557,8 +686,27 @@ class IntentRouter:
                 repaired.pop(key, None)
             if extras:
                 nested_args.update(extras)
+            rule_name = str(repaired.get("rule_name") or "").strip()
+            version = repaired.get("version")
+            version_match = re.match(r"^(.+?)@v(\d+)$", rule_name, flags=re.IGNORECASE)
+            if not version_match:
+                version_match = re.match(r"^(.+?)_v(\d+)$", rule_name, flags=re.IGNORECASE)
+            if version_match:
+                repaired["rule_name"] = version_match.group(1)
+                if version in (None, "", 0):
+                    repaired["version"] = int(version_match.group(2))
             repaired["args"] = nested_args
             return repaired
+        if tool_name == "query_core_rules":
+            if not str(repaired.get("query") or "").strip():
+                for alias in ("question", "rule", "action", "text", "message", "topic"):
+                    if str(repaired.get(alias) or "").strip():
+                        repaired["query"] = str(repaired.get(alias)).strip()
+                        break
+            if not str(repaired.get("query") or "").strip():
+                repaired["query"] = raw_player_message
+            allowed = {"query", "purpose", "categories", "limit", "max_chars"}
+            return {key: value for key, value in repaired.items() if key in allowed}
         if tool_name == "update_character_tags":
             if args.get("tags"):
                 return args
@@ -655,7 +803,7 @@ class IntentRouter:
     def _limit_completion(text: str, session: Any, raw_player_message: str = "") -> str:
         if not text:
             return text
-        if _wants_full_status_output(raw_player_message):
+        if _wants_full_status_output(raw_player_message) or _wants_expanded_detail_output(raw_player_message):
             limit = 2200
             if len(text) <= limit:
                 return text
@@ -665,18 +813,21 @@ class IntentRouter:
             if len(text) <= limit:
                 return text
             return text[:limit].rstrip()
-        limit = 220
+        limit = 700
+        combat_or_turn_output = _wants_combat_or_turn_output(raw_player_message)
         try:
             turn = ((session.battle or {}).get("turn") or {})
-            if turn.get("output_limit_chars"):
+            if turn.get("active") and turn.get("output_limit_chars"):
                 limit = int(turn.get("output_limit_chars"))
             else:
                 style = session.world_tags.get("response_style", {})
                 if isinstance(style, dict) and style.get("hard_limit_chars"):
                     limit = int(style.get("hard_limit_chars"))
         except Exception:
-            limit = 220
-        limit = max(80, min(500, limit))
+            limit = 700
+        if combat_or_turn_output:
+            limit = max(limit, 360)
+        limit = max(360, min(1800, limit))
         if len(text) <= limit:
             return text
         cutoff = limit - 1
@@ -728,20 +879,26 @@ class IntentRouter:
             lines = stripped.splitlines()
             if len(lines) >= 3:
                 stripped = "\n".join(lines[1:-1]).strip()
+        payloads: list[Any] = []
         try:
-            payload = json.loads(stripped)
+            payloads.append(json.loads(stripped))
         except json.JSONDecodeError:
+            payloads.extend(payload for _, _, payload in _json_object_payloads(stripped))
+        if not payloads:
             return []
-        raw_calls = payload.get("tool_calls") if isinstance(payload, dict) else None
-        calls: list[dict[str, Any]] = []
-        for raw in raw_calls or []:
-            if not isinstance(raw, dict):
-                continue
-            name = raw.get("name")
-            args = raw.get("args") or {}
-            if name:
-                calls.append({"name": str(name), "args": args if isinstance(args, dict) else {}})
-        return calls
+        for payload in payloads:
+            calls = _tool_calls_from_payload(payload)
+            if calls:
+                return calls
+        return []
+
+    @staticmethod
+    def _sanitize_completion_text(text: str) -> str:
+        cleaned = _strip_tool_call_payloads(str(text or ""))
+        cleaned = cleaned.strip()
+        if cleaned:
+            return cleaned
+        return "我已完成这轮工具处理，但没有生成适合展示的叙事文本；请继续描述下一步。"
 
     @staticmethod
     def session_id_for_event(event: Any) -> str:
@@ -805,6 +962,84 @@ class IntentRouter:
         }
 
 
+def _tool_calls_from_payload(payload: Any) -> list[dict[str, Any]]:
+    raw_calls = payload.get("tool_calls") if isinstance(payload, dict) else None
+    calls: list[dict[str, Any]] = []
+    for raw in raw_calls or []:
+        if not isinstance(raw, dict):
+            continue
+        name = raw.get("name")
+        args = raw.get("args") or {}
+        if name:
+            calls.append({"name": str(name), "args": args if isinstance(args, dict) else {}})
+    return calls
+
+
+def _strip_tool_call_payloads(text: str) -> str:
+    cleaned = str(text or "")
+    for start, end, payload in reversed(_json_object_payloads(cleaned)):
+        if _tool_calls_from_payload(payload):
+            cleaned = f"{cleaned[:start]}{cleaned[end:]}"
+    markers = ('{"tool_calls"', '{ "tool_calls"', '"tool_calls":')
+    marker_positions = [cleaned.find(marker) for marker in markers if cleaned.find(marker) >= 0]
+    if marker_positions:
+        index = min(marker_positions)
+        brace = cleaned.rfind("{", 0, index + 1)
+        cleaned = cleaned[: brace if brace >= 0 else index]
+    return _clean_tool_call_artifacts(cleaned)
+
+
+def _clean_tool_call_artifacts(text: str) -> str:
+    lines: list[str] = []
+    for line in str(text or "").splitlines():
+        stripped = line.strip()
+        if stripped in {"```json", "```"}:
+            continue
+        if stripped.startswith('"tool_calls"') or stripped.startswith("'tool_calls'"):
+            continue
+        lines.append(line.rstrip())
+    return "\n".join(lines).strip()
+
+
+def _json_object_payloads(text: str) -> list[tuple[int, int, Any]]:
+    payloads: list[tuple[int, int, Any]] = []
+    source = str(text or "")
+    start = -1
+    depth = 0
+    in_string = False
+    escape = False
+    for index, char in enumerate(source):
+        if in_string:
+            if escape:
+                escape = False
+            elif char == "\\":
+                escape = True
+            elif char == '"':
+                in_string = False
+            continue
+        if char == '"':
+            in_string = True
+            continue
+        if char == "{":
+            if depth == 0:
+                start = index
+            depth += 1
+            continue
+        if char == "}" and depth:
+            depth -= 1
+            if depth == 0 and start >= 0:
+                candidate = source[start : index + 1]
+                if "tool_calls" in candidate:
+                    try:
+                        payload = json.loads(candidate)
+                    except json.JSONDecodeError:
+                        payload = None
+                    if payload is not None:
+                        payloads.append((start, index + 1, payload))
+                start = -1
+    return payloads
+
+
 def _is_retryable_llm_error(exc: Exception) -> bool:
     name = exc.__class__.__name__.lower()
     text = str(exc).lower()
@@ -821,6 +1056,13 @@ def _is_retryable_llm_error(exc: Exception) -> bool:
         "connecttimeout",
         "connection",
         "server disconnected",
+        "clientconnectorerror",
+        "connectionreseterror",
+        "connection reset",
+        "cannot connect",
+        "connection refused",
+        "connect call failed",
+        "ssl handshake",
         "temporarily unavailable",
         "rate limit",
         "429",
@@ -867,6 +1109,79 @@ def _wants_full_status_output(message: str) -> bool:
     return any(term in text for term in full_terms) and any(term in text for term in status_terms)
 
 
+def _wants_expanded_detail_output(message: str) -> bool:
+    text = str(message or "").strip().lower()
+    if not text:
+        return False
+    explicit_phrases = (
+        "人物属性",
+        "角色属性",
+        "具体数值",
+        "属性面板",
+        "角色面板",
+        "完整角色卡",
+        "详细角色卡",
+        "完整状态",
+        "详细状态",
+        "完整属性",
+        "详细属性",
+        "full character sheet",
+        "character sheet",
+        "full stats",
+    )
+    if any(phrase in text for phrase in explicit_phrases):
+        return True
+    if "状态" in text and any(term in text for term in ("物品", "装备", "道具", "背包", "库存")):
+        return True
+    if any(phrase in text for phrase in ("状态与物品", "状态和物品", "状态及物品", "状态与装备", "状态和装备", "状态及装备")):
+        return True
+    request_terms = (
+        "看",
+        "看看",
+        "查看",
+        "显示",
+        "展示",
+        "列出",
+        "给我",
+        "告诉我",
+        "能看到",
+        "show",
+        "list",
+        "display",
+        "details",
+    )
+    detail_terms = (
+        "属性",
+        "数值",
+        "角色卡",
+        "面板",
+        "详情",
+        "详细",
+        "完整",
+        "状态",
+        "生命值",
+        "护甲等级",
+        "技能",
+        "法术",
+        "装备",
+        "物品",
+        "道具",
+        "背包",
+        "库存",
+        "物品列表",
+        "道具列表",
+        "豁免",
+        "熟练",
+        "专长",
+        "hp",
+        "ac",
+        "stats",
+        "sheet",
+        "status",
+    )
+    return any(term in text for term in request_terms) and any(term in text for term in detail_terms)
+
+
 def _wants_opening_output(message: str) -> bool:
     text = str(message or "").strip().lower()
     if not text:
@@ -886,6 +1201,68 @@ def _wants_opening_output(message: str) -> bool:
             "start game",
         )
     )
+
+
+def _wants_combat_or_turn_output(message: str) -> bool:
+    text = str(message or "").strip().lower()
+    if not text:
+        return False
+    terms = (
+        "攻击",
+        "伤害",
+        "命中",
+        "豁免",
+        "检定",
+        "判定",
+        "骰",
+        "施法",
+        "治疗",
+        "移动",
+        "掩护",
+        "闪避",
+        "触发",
+        "附赠动作",
+        "重置",
+        "尝试",
+        "使用",
+        "点燃",
+        "侦查",
+        "搜索",
+        "调查",
+        "寻找",
+        "询问",
+        "打听",
+        "沟通",
+        "安抚",
+        "分享",
+        "索要",
+        "索取",
+        "取走",
+        "浇",
+        "挥砍",
+        "砍",
+        "斩",
+        "劈",
+        "刺",
+        "击",
+        "跳起",
+        "加入角色",
+        "加入战斗",
+        "动作如潮",
+        "顺劈斩",
+        "回合",
+        "轮次",
+        "场面结算",
+        "敌人",
+        "怪物",
+        "战斗",
+        "遭遇",
+        "battle",
+        "turn",
+        "attack",
+        "damage",
+    )
+    return any(term in text for term in terms)
 
 
 def _infer_world_tags_from_text(message: str) -> dict[str, Any]:
@@ -1085,6 +1462,39 @@ def _ensure_legacy_live_scene_state(session: Any) -> bool:
     return changed
 
 
+def _maybe_close_concluded_turn(session: Any, message: str) -> dict[str, Any] | None:
+    battle = session.battle or {}
+    turn = battle.get("turn") if isinstance(battle.get("turn"), dict) else {}
+    if not turn.get("active") and not battle.get("active"):
+        return None
+    terminal_request = _looks_like_terminal_or_interlude_request(message)
+    scene_concluded = _scene_looks_concluded(session)
+    if not terminal_request and not scene_concluded:
+        return None
+    previous_phase = str(turn.get("phase") or "")
+    previous_entity_id = str(turn.get("current_entity_id") or "")
+    turn["active"] = False
+    turn["phase"] = "ended"
+    turn["current_entity_id"] = ""
+    turn["current_index"] = -1
+    turn["deadline_at"] = ""
+    turn["waiting_since_at"] = ""
+    battle["active"] = False
+    battle["turn"] = turn
+    battle["turn_entity_id"] = ""
+    scene = session.scene or {}
+    scene["_post_game"] = True
+    scene["_encounter_ended_at"] = utc_now_iso()
+    session.scene = scene
+    session.battle = battle
+    session.mode = GameMode.NARRATIVE
+    return {
+        "previous_phase": previous_phase,
+        "previous_entity_id": previous_entity_id,
+        "reason": "terminal_or_interlude_request" if terminal_request else "scene_already_concluded",
+    }
+
+
 def _looks_like_legacy_live_campaign(session: Any) -> bool:
     scene = session.scene or {}
     if scene.get("_game_started") or scene.get("_legacy_live_campaign"):
@@ -1138,7 +1548,122 @@ def _has_background_ready(session: Any) -> bool:
     return (matched >= 2 and text_chars >= 12) or (matched >= 1 and text_chars >= 40)
 
 
+def _scene_looks_concluded(session: Any) -> bool:
+    scene = session.scene or {}
+    if scene.get("_post_game") or scene.get("_encounter_ended_at"):
+        return True
+    text = _flatten_for_guard(
+        [
+            scene.get("summary", ""),
+            scene.get("current_conflict", ""),
+            scene.get("last_resolution", {}),
+            scene.get("immediate_hooks", ""),
+        ]
+    )
+    concluded_terms = (
+        "危机已正式解除",
+        "危机已落下帷幕",
+        "跑团到此",
+        "本场跑团到此",
+        "圆满结束",
+        "圆满落幕",
+        "正式落幕",
+        "全局结算",
+        "最终结局",
+        "暂无。世界正处于",
+        "暂无冲突",
+        "当前冲突：暂无",
+    )
+    return any(term in text for term in concluded_terms)
+
+
+def _looks_like_terminal_or_interlude_request(message: str) -> bool:
+    text = str(message or "").strip().lower()
+    if not text:
+        return False
+    terminal_terms = (
+        "全局结算",
+        "展示结算",
+        "退出游戏",
+        "结束游戏",
+        "跑团结束",
+        "本场结束",
+        "本次结束",
+        "到此结束",
+        "正式落幕",
+        "圆满落幕",
+        "个人结局",
+        "结局",
+        "后日谈",
+        "尾声",
+        "下一段冒险",
+        "下一次冒险",
+        "下次冒险",
+        "下个冒险",
+        "下回冒险",
+        "下次开团",
+        "下回开团",
+    )
+    interlude_terms = (
+        "休息一会",
+        "休息一下",
+        "休息到下",
+        "睡到下",
+        "沉睡直到",
+        "沉睡到下",
+        "休眠直到",
+        "休眠到下",
+        "直到下次",
+        "无人可以打扰",
+        "玩家们都累",
+        "来点背景剧情",
+        "背景剧情描述",
+        "间幕",
+        "休整",
+    )
+    return any(term in text for term in terminal_terms) or any(term in text for term in interlude_terms)
+
+
+def _looks_like_post_game_meta_message(message: str) -> bool:
+    text = str(message or "").strip().lower()
+    if not text:
+        return False
+    meta_terms = (
+        "谁最菜",
+        "谁最强",
+        "评价",
+        "评估",
+        "规则书",
+        "职业等级",
+        "传奇等级",
+        "多少级",
+        "个人结局",
+        "后日谈",
+        "尾声",
+        "休息一会",
+        "背景剧情描述",
+        "下一段冒险",
+        "下一次冒险",
+        "下次冒险",
+        "下个冒险",
+        "下回冒险",
+        "沉睡直到",
+        "休眠直到",
+        "直到下次",
+    )
+    return any(term in text for term in meta_terms)
+
+
+def _flatten_for_guard(value: Any) -> str:
+    try:
+        return json.dumps(value, ensure_ascii=False)
+    except TypeError:
+        return str(value)
+
+
 def _should_record_narrative_trace(player_message: str, completion: str) -> bool:
+    if _looks_like_post_game_meta_message(player_message):
+        return False
     if not _looks_like_stateful_player_message(player_message):
         return False
     result_text = str(completion or "").strip()
@@ -1339,6 +1864,495 @@ def _completion_indicates_resolved_turn_action(completion: str) -> bool:
         "结果",
     )
     return any(term in text for term in resolved_terms)
+
+
+def _action_reasonableness_guard_reply(session: Any, actor: dict[str, str], message: str) -> str:
+    if not _campaign_started_for_guard(session):
+        return ""
+    text = str(message or "").strip().lower()
+    if not text:
+        return ""
+    clear_overreach = (
+        _claims_absurd_dc(text)
+        or _claims_extra_major_actions(text)
+        or _claims_mass_control(text)
+        or _claims_unbounded_magic(text)
+        or _claims_absurd_spell_slots(text)
+        or _claims_forced_npc_cooperation(text)
+        or _claims_perpetual_energy_auto_success(text)
+        or _claims_post_start_world_or_power_rewrite(text)
+    )
+    if not clear_overreach:
+        return ""
+    return (
+        "这个主张超出当前角色卡、资源或场景事实，不能直接成立或写入存档。"
+        "开场后不能单方面追加职业/等级/永久能力、全世界神迹、愿力资源或既成胜利。"
+        "可以把它改成一个有限目标来尝试；是否成功、范围、代价和后果由规则检定或 DM 裁定。"
+    )
+
+
+def _campaign_started_for_guard(session: Any) -> bool:
+    scene = session.scene or {}
+    world_tags = session.world_tags or {}
+    battle = session.battle or {}
+    turn = battle.get("turn") if isinstance(battle.get("turn"), dict) else {}
+    return bool(
+        scene.get("_game_started")
+        or scene.get("_legacy_live_campaign")
+        or world_tags.get("_plot_locked") is True
+        or battle.get("active")
+        or turn.get("active")
+    )
+
+
+def _claims_absurd_dc(text: str) -> bool:
+    return bool(re.search(r"\bdc\s*(?:\+\s*)?(?:[3-9]\d|\d{3,})\b", text, flags=re.IGNORECASE))
+
+
+def _claims_extra_major_actions(text: str) -> bool:
+    if not any(term in text for term in ("主要动作", "额外动作", "额外主要动作", "本轮攻击")):
+        return False
+    return any(term in text for term in ("增加两个", "增加2", "获得两个", "获得2", "新的主要动作", "重置本轮攻击", "刷新本轮攻击"))
+
+
+def _claims_mass_control(text: str) -> bool:
+    if any(term in text for term in ("所有除了我以外", "半径200", "半径 200", "所有人", "所有智慧生物")):
+        return any(term in text for term in ("不会撒谎", "不能撒谎", "必须", "都不会", "都要", "逼迫", "交出", "控制"))
+    return False
+
+
+def _claims_unbounded_magic(text: str) -> bool:
+    return any(
+        term in text
+        for term in (
+            "任意法术",
+            "任意魔法",
+            "所有法术",
+            "所有魔法",
+            "随意使用超魔",
+            "随意施法",
+            "魔法能量转化为任意法术",
+            "力量是无限",
+            "力量无限",
+            "能力是无限",
+            "能力无限",
+            "法术能力是无限",
+            "法术能力无限",
+            "不受任何负面影响",
+            "不受任何debuff",
+            "不受任何 debuff",
+            "免疫debuff",
+            "免疫所有debuff",
+            "消除我的所有debuff",
+            "消除所有debuff",
+        )
+    )
+
+
+def _claims_absurd_spell_slots(text: str) -> bool:
+    if "每环12个法术位" in text or "每环十二个法术位" in text:
+        return True
+    if re.search(r"(?:1[1-9]|[2-9]\d|\d{3,})\s*个?\s*9\s*环法术位", text):
+        return True
+    if re.search(r"9\s*环法术位\s*(?:有|拥有)?\s*(?:1[1-9]|[2-9]\d|\d{3,})\s*个?", text):
+        return True
+    return False
+
+
+def _claims_forced_npc_cooperation(text: str) -> bool:
+    return any(term in text for term in ("一定会协助", "一定会帮助", "肯定会协助", "肯定会帮助", "必须协助", "必须帮助"))
+
+
+def _claims_perpetual_energy_auto_success(text: str) -> bool:
+    return any(term in text for term in ("永动", "无限能量", "无限资源")) and any(
+        term in text for term in ("所以", "因此", "核心碎", "自动", "必定", "持续带电")
+    )
+
+
+def _claims_post_start_world_or_power_rewrite(text: str) -> bool:
+    if any(term in text for term in ("全世界", "全球", "所有时空", "全位面")) and any(
+        term in text for term in ("愿力", "感激", "神迹", "投影", "流星雨", "陨石")
+    ):
+        return True
+    if any(
+        term in text
+        for term in (
+            "帝皇",
+            "神皇",
+            "原体",
+            "禁军",
+            "星际战士",
+            "阿斯塔特",
+            "战锤",
+            "创世神",
+            "造物主",
+        )
+    ) and any(
+        term in text
+        for term in (
+            "我加入",
+            "我要加入",
+            "角色是",
+            "我是",
+            "路过这里",
+            "刚好路过",
+            "带着",
+            "降临",
+            "指挥",
+            "收走",
+            "砍卫兵",
+        )
+    ):
+        return True
+    if any(
+        term in text
+        for term in (
+            "十三个原体",
+            "十三名原体",
+            "13个原体",
+            "13名原体",
+            "带着原体",
+            "带着军队",
+            "带着军团",
+        )
+    ):
+        return True
+    if any(term in text for term in ("世界意志", "世界观", "现实", "法则", "底层逻辑", "位面基石", "dnd2024")) and any(
+        term in text for term in ("修正", "清除", "清理", "抹除", "排除", "踢出", "移除", "重塑", "改写", "纠正")
+    ) and any(term in text for term in ("不符合", "不合理", "异界", "跨作品", "所有", "一切", "事物", "存在")):
+        return True
+    if any(term in text for term in ("补充设定", "现在演绎", "现在刚刚到场", "刚刚到场", "派出")) and any(
+        term in text
+        for term in (
+            "传奇战士",
+            "传奇牧师",
+            "传奇法师",
+            "神眷者",
+            "大量补给",
+            "税务官",
+            "收人头税",
+            "呼吸税",
+            "睡眠税",
+        )
+    ):
+        return True
+    if any(term in text for term in ("无数古树", "所有出路", "每一个人", "所有人", "整个小镇")) and any(
+        term in text for term in ("堵死", "缠绕", "控制", "必须", "归还", "占据")
+    ):
+        return True
+    if any(term in text for term in ("不存在失败", "不存在失败的可能", "一定可以", "必定可以", "自动成功", "不会失败")) and any(
+        term in text for term in ("召唤", "虫群", "泰伦", "撕裂空间", "传送门", "法术", "检定", "判定")
+    ):
+        return True
+    if any(term in text for term in ("一打刀虫", "虫巢暴君", "泰伦虫族")) and any(
+        term in text for term in ("撕破虚空", "来到我的身边", "召唤", "现在刚刚到场")
+    ):
+        return True
+    if any(term in text for term in ("记得记录", "记录一下", "写入", "加入角色卡")) and any(
+        term in text for term in ("职业等级", "传奇等级", "兼职", "传奇赐福", "魔网权限", "愿力")
+    ):
+        return True
+    if any(term in text for term in ("现在我是", "我现在是", "成为", "我是")) and any(
+        term in text for term in ("虚空德鲁伊", "提夫林", "魔网化身", "神格", "神明", "半神")
+    ):
+        return True
+    if any(term in text for term in ("直接获得", "永久获得", "从此拥有", "已经拥有")) and any(
+        term in text for term in ("召唤陨石", "虚空陨石", "任意法术", "所有法术", "传奇能力")
+    ):
+        return True
+    return False
+
+
+def _action_economy_guard_reply(session: Any, actor: dict[str, str], message: str) -> str:
+    battle = session.battle or {}
+    turn = dict(battle.get("turn") or {})
+    if not turn.get("active") or str(turn.get("phase", "")) != "character_turn":
+        return ""
+    actor_id = str(actor.get("player_id") or "").strip()
+    if not actor_id:
+        return ""
+    text = str(message or "").strip().lower()
+    if not text:
+        return ""
+
+    attack_terms = ("攻击", "射击", "砍", "斩", "劈", "命中", "击杀", "杀死", "连斩")
+    result_claim_terms = (
+        "判定成功",
+        "检定成功",
+        "已经成功",
+        "直接成功",
+        "必定成功",
+        "自动成功",
+        "全都命中",
+        "不需要检定",
+        "无需检定",
+        "不用检定",
+        "已经杀死",
+        "直接击杀",
+        "直接杀死",
+    )
+    extra_action_terms = (
+        "再次攻击",
+        "连续攻击",
+        "多次攻击",
+        "第二次攻击",
+        "第三次攻击",
+        "第四次",
+        "第4次",
+        "连击",
+        "连斩",
+        "动作如潮",
+        "额外动作",
+        "额外攻击",
+    )
+    cooldown_terms = ("重置", "刷新", "冷却", "cd")
+    attempt_terms = (
+        "尝试",
+        "试图",
+        "想要",
+        "打算",
+        "申请",
+        "能否",
+        "可否",
+        "可以吗",
+        "能不能",
+        "如果可以",
+        "若可以",
+    )
+
+    has_attack = any(term in text for term in attack_terms)
+    claims_result = any(term in text for term in result_claim_terms)
+    extra_action = any(term in text for term in extra_action_terms)
+    asks_for_ruling = any(term in text for term in attempt_terms)
+    claims_extra_action = has_attack and extra_action and not asks_for_ruling
+    claims_cooldown_reset = has_attack and any(term in text for term in cooldown_terms)
+    if not (claims_result or claims_extra_action or claims_cooldown_reset):
+        return ""
+
+    return (
+        "这句把结果或额外行动直接写死了，不能直接成立。"
+        "你可以声明一次主要动作，例如“我用双斧攻击最近的敌人”；"
+        "是否触发动作如潮、额外攻击、冷却重置或击杀，需要已有能力/资源和检定结果来裁定。"
+    )
+
+
+OBJECTIVE_ADJUDICATION_TOOLS = {
+    "execute_rule",
+    "move_entity",
+    "check_attack_vector",
+    "turn_control",
+    "update_scene",
+    "update_character_tags",
+    "create_grid",
+    "place_entity",
+    "start_game",
+}
+
+ROLL_REQUIRED_ACTION_TERMS = (
+    "攻击",
+    "射击",
+    "命中",
+    "伤害",
+    "治疗",
+    "潜行",
+    "躲藏",
+    "偷",
+    "开锁",
+    "破解",
+    "说服",
+    "威胁",
+    "欺骗",
+    "搜索",
+    "调查",
+    "察觉",
+    "发现",
+    "逃脱",
+    "闪避",
+    "豁免",
+    "检定",
+    "骰",
+    "杀",
+    "击倒",
+    "控制",
+    "强迫",
+    "施法",
+    "火球",
+    "陷阱",
+    "解除",
+    "冲锋",
+    "抓住",
+)
+
+SPATIAL_REQUIRED_ACTION_TERMS = (
+    "移动",
+    "走到",
+    "冲到",
+    "靠近",
+    "绕到",
+    "撤离",
+    "射程",
+    "视线",
+    "掩体",
+    "距离",
+    "坐标",
+)
+
+RESOLVED_OUTCOME_TERMS = (
+    "成功",
+    "命中",
+    "击中",
+    "击倒",
+    "击杀",
+    "杀死",
+    "造成",
+    "治疗",
+    "恢复",
+    "发现",
+    "说服",
+    "打开",
+    "破解",
+    "解除",
+    "躲过",
+    "避开",
+    "逃脱",
+    "获得",
+    "完成",
+    "倒下",
+    "受伤",
+    "失去",
+    "变成",
+)
+
+UNRESOLVED_OUTCOME_MARKERS = (
+    "不能直接成功",
+    "不能成功",
+    "尚未成功",
+    "还没有成功",
+    "没有成功",
+    "需要检定",
+    "需要投骰",
+    "需要掷骰",
+    "下一步检定",
+    "先做检定",
+    "未完成",
+    "不把成功写死",
+    "不能把成功写死",
+    "可以尝试",
+    "可尝试",
+)
+
+LOW_RISK_DIRECT_TERMS = (
+    "查看状态",
+    "当前状态",
+    "status",
+    "token",
+    "debug",
+    "日志",
+    "规则",
+    "规则列表",
+    "规则详情",
+    "备份",
+    "恢复",
+    "重开",
+    "暂停",
+    "resume",
+)
+
+
+def _adjudication_completeness_guard(
+    session: Any,
+    *,
+    actor: dict[str, str],
+    player_message: str,
+    completion: str,
+    tool_results: list[dict[str, Any]],
+) -> dict[str, Any]:
+    if not _campaign_started_for_guard(session):
+        return {}
+    text = str(player_message or "").strip().lower()
+    reply = str(completion or "").strip().lower()
+    if not text or not reply:
+        return {}
+    if _contains_any_term(text, LOW_RISK_DIRECT_TERMS):
+        return {}
+    if not _contains_any_term(text, ROLL_REQUIRED_ACTION_TERMS + SPATIAL_REQUIRED_ACTION_TERMS):
+        return {}
+    if not _completion_claims_resolved_outcome(reply):
+        return {}
+
+    tool_names = [str(item.get("tool") or "") for item in tool_results if isinstance(item, dict)]
+    successful_tools = {
+        str(item.get("tool") or "")
+        for item in tool_results
+        if isinstance(item, dict) and _tool_result_ok(item.get("result"))
+    }
+    has_roll_support = "execute_rule" in successful_tools
+    has_spatial_support = bool(successful_tools.intersection({"move_entity", "check_attack_vector", "create_grid", "place_entity"}))
+    has_turn_support = "turn_control" in successful_tools
+    has_state_support = bool(successful_tools.intersection({"update_scene", "update_character_tags", "start_game"}))
+    needs_roll = _contains_any_term(text, ROLL_REQUIRED_ACTION_TERMS)
+    needs_spatial = _contains_any_term(text, SPATIAL_REQUIRED_ACTION_TERMS) or _contains_any_term(
+        text,
+        ("攻击", "射击", "近战", "远程", "冲锋"),
+    )
+
+    if needs_roll and not has_roll_support:
+        reason = "missing_execute_rule_for_risky_outcome"
+    elif needs_spatial and not (has_spatial_support or has_turn_support):
+        reason = "missing_spatial_or_turn_tool_for_positioned_outcome"
+    elif not successful_tools.intersection(OBJECTIVE_ADJUDICATION_TOOLS):
+        reason = "missing_objective_tool_for_resolved_outcome"
+    elif not has_state_support and _completion_claims_state_change(reply):
+        reason = "state_change_not_written"
+    else:
+        return {}
+
+    return {
+        "reason": reason,
+        "tool_names": tool_names,
+        "actor_player_id": str(actor.get("player_id") or ""),
+        "reply_suffix": (
+            "裁定补充：这步涉及风险、对抗或客观状态变化，但本轮还没有足够的骰子/战棋/状态工具结果支撑成功。"
+            "我先不把成功写死；请确认目标和方式，下一步按规则检定或工具结算。"
+        ),
+    }
+
+
+def _completion_claims_resolved_outcome(reply: str) -> bool:
+    if _contains_any_term(reply, UNRESOLVED_OUTCOME_MARKERS):
+        return False
+    return _contains_any_term(reply, RESOLVED_OUTCOME_TERMS)
+
+
+def _completion_claims_state_change(reply: str) -> bool:
+    return _contains_any_term(
+        reply,
+        (
+            "状态",
+            "受伤",
+            "倒地",
+            "中毒",
+            "束缚",
+            "目盲",
+            "生命值",
+            "hp",
+            "资源",
+            "消耗",
+            "位置",
+            "进入",
+            "离开",
+        ),
+    )
+
+
+def _tool_result_ok(result: Any) -> bool:
+    if isinstance(result, dict):
+        return bool(result.get("ok", True))
+    return result is not None
+
+
+def _contains_any_term(text: str, terms: tuple[str, ...]) -> bool:
+    return any(term and term.lower() in text for term in terms)
 
 
 def _turn_entity_label(session: Any, entity_id: str) -> str:

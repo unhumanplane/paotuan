@@ -1,18 +1,93 @@
 # AstrBot Auto TRPG DM
 
-基于 AstrBot v4.5.7+ 的全自然语言 TRPG DM 插件脚手架。
+基于 AstrBot v4.5.7+ 的全自然语言 TRPG DM 插件。
 
-这个插件把 AstrBot 当作消息入口和 LLM 能力层，内部实现一个小型 TRPG 运行时：
+这个项目的目标不是做一组分散的命令，而是把 AstrBot 作为消息入口和 LLM 能力层，在插件内部实现一个可持续运行的小型 TRPG runtime。玩家直接说“我靠墙潜行过去再射最近的敌人”，系统再根据当前模式、角色状态、战场事实和本地规则工具完成裁定。
 
-- 玩家不需要 `/车卡`、`/开团`、`/move` 等命令。
-- Intent Router 会按当前模式动态挂载工具。
-- 多跳工具循环由 `IntentRouter` 手写驱动，每一步都调用 `context.llm_generate()`，底层仍走 AstrBot 的 LLM Provider。
-- 优先使用 AstrBot Function Calling；若某个 Provider 不返回结构化工具调用，会降级解析模型输出的 `{"tool_calls":[...]}` JSON。
-- LLM 可注册和复用本地规则函数。
-- 战棋坐标、移动、视线和攻击距离由本地空间引擎确定性验证。
-- 角色卡与世界设定使用 Tag 型无模式数据结构。
+当前版本重点能力：
 
-## 目录
+- 全自然语言跑团，不要求玩家记忆 `/车卡`、`/move`、`/attack` 之类命令。
+- Intent Router 按场景动态挂载工具，尽量只暴露当前真正需要的能力。
+- 支持多步工具调用循环，优先走 AstrBot Function Calling，不支持时可回退解析 `{"tool_calls":[...]}`。
+- 角色卡、世界设定、场景状态使用 Tag 型无模式结构，便于逐步补完和长期演化。
+- 内置本地战棋空间引擎，负责坐标、移动、障碍、视线、掩体和攻击距离校验。
+- 内置规则运行时，可注册和执行受限 Python 规则函数。
+- 新增 DND 2024 本地核心规则书检索层，用于按需查询规则摘要，而不是把整本规则塞进 prompt。
+- 新增 DM guidance 规则检索，帮助 agent 在“怎么裁定、怎么描述、怎么控制节奏”上更稳。
+
+## 适合什么场景
+
+这个插件比较适合下面几类玩法：
+
+- 纯文字团，希望玩家像聊天一样行动和追问。
+- 带轻战棋或位置概念的团，需要明确移动、视线、距离和轮次。
+- 规则并不固定死板，但你希望数值结算和核心物理事实尽量稳定。
+- 想让 AI 作为 DM / 协同 DM，而不是只做“会说话的骰子机器人”。
+
+## 核心设计
+
+### 1. Intent Router 驱动
+
+`[core/router.py](/F:/paotuan/astrbot_plugin_auto_trpg_dm/core/router.py)` 是自然语言入口。它会：
+
+1. 读取当前会话与战斗状态。
+2. 判断当前模式，例如叙事、角色创建、规则创作、战棋、结算。
+3. 只挂载当前模式允许的工具，避免无关工具膨胀上下文。
+4. 调用 `context.llm_generate()` 驱动多步工具循环。
+5. 保存审计、状态更新和最终回复。
+
+### 2. 本地工具负责“事实”
+
+这个项目尽量把确定性的部分从 LLM 手里拿出来：
+
+- 坐标、阻挡、路径、视线、攻击范围：交给 `spatial/`。
+- 轮次推进、超时、自动保守行动：交给 `turn_tools.py`。
+- 角色卡、场景、世界设定和会话控制：交给 `memory_tools.py`。
+- 规则检定、伤害、豁免等数值执行：交给 `rule_tools.py` 和 `rules/python_runtime.py`。
+- DND 2024 规则摘要和 DM 指引：交给 `rulebook_tools.py`。
+
+这样 LLM 更像“裁定与叙事协调层”，而不是直接篡改底层事实。
+
+### 3. 规则知识与数值执行分离
+
+这部分是当前版本非常重要的变化。
+
+- `query_core_rules`：查询 DND 2024 核心规则摘要、动作经济、状态、施法通用规则、装备通用规则，以及 DM guidance。
+- `execute_rule`：负责真正的骰子、命中、豁免、伤害、治疗和其他数值结算。
+
+规则书内容不会被长期写进 `session`、`memory_summary` 或 `system prompt`。项目倾向于“按需查规则，再做裁定”，而不是把大段规则文本一直挂在上下文里。
+
+## 当前能力一览
+
+### 自然语言状态与角色管理
+
+- 创建和绑定角色。
+- 用自然语言补充角色 Tag，例如职业、装备、风格、默认战斗行为。
+- 维护场景状态、世界设定、长期剧情钩子。
+- 会话重置、备份、恢复和压缩。
+
+### 战棋与轮次
+
+- 创建网格地图。
+- 放置实体。
+- 校验移动。
+- 校验攻击向量、距离、视线和掩体。
+- 管理轮次、行动顺序和结算阶段。
+- 对多人团增加控制权约束和 120 秒超时后的保守自动行动。
+
+### 规则与裁定
+
+- 注册本地规则函数。
+- 执行检定、伤害、治疗等规则。
+- 查询 DND 2024 本地规则卡。
+- 查询 DM guidance，例如“何时临时裁定、如何处理失败推进、如何保持不是和玩家对抗”。
+
+### 视觉地图
+
+- 可按上下文需要生成 SVG 地图或战场示意。
+- 视觉地图只做展示，不直接改写战棋物理事实。
+
+## 目录结构
 
 ```text
 astrbot_plugin_auto_trpg_dm/
@@ -22,15 +97,25 @@ astrbot_plugin_auto_trpg_dm/
     modes.py
     models.py
     prompts.py
+    security.py
   tools/
     registry.py
-    rule_tools.py
-    spatial_tools.py
     memory_tools.py
+    spatial_tools.py
+    turn_tools.py
+    rule_tools.py
+    rulebook_tools.py
+    map_tools.py
   rules/
     python_runtime.py
     validator.py
     dice.py
+  rulebook/
+    models.py
+    store.py
+    retriever.py
+    seed/
+      dnd2024_core/
   spatial/
     grid.py
     engine.py
@@ -38,86 +123,153 @@ astrbot_plugin_auto_trpg_dm/
   storage/
     json_repository.py
 tests/
+scripts/
 ```
 
-## 架构要点
+## DND 2024 规则书集成
 
-### Intent Router
+当前仓库已经接入一版本地规则书检索。
 
-`core/router.py` 是自然语言入口。它会：
+规则书能力的思路是：
 
-1. 读取当前会话状态。
-2. 用 `GameModeStateMachine` 判断模式。
-3. 通过 `ToolRegistry` 只挂载当前模式允许的工具。
-4. 构造 System Prompt。
-5. 调用 `context.llm_generate()` 进行多跳工具循环。
-6. 审计玩家输入、工具列表和最终回复。
+- 离线整理规则资料，生成结构化规则卡。
+- 运行时本地读取 `rule_cards.jsonl`、别名表和索引。
+- 玩家问到状态、动作、豁免、优势/劣势、生命值归零、施法通用规则等内容时，优先调用 `query_core_rules`。
+- 工具只返回少量摘要、流程、例外和来源路径，不返回大段原文。
 
-### 动态 Tool 挂载
+相关文件：
 
-工具白名单由 `tools/registry.py` 控制。例如：
+- [rulebook_tools.py](/F:/paotuan/astrbot_plugin_auto_trpg_dm/tools/rulebook_tools.py)
+- [registry.py](/F:/paotuan/astrbot_plugin_auto_trpg_dm/tools/registry.py)
+- [DND2024_CORE_RULEBOOK_INTEGRATION_PLAN.md](/F:/paotuan/DND2024_CORE_RULEBOOK_INTEGRATION_PLAN.md)
+- [build_dnd2024_core_rulebook.py](/F:/paotuan/scripts/build_dnd2024_core_rulebook.py)
 
-- `narrative`：剧情、世界 Tag、角色、规则工具。
-- `character_creation`：角色卡、Tag、规则工具。
-- `rule_authoring`：规则注册、执行测试、规则列表。
-- `tactical`：战棋快照、建图、放置实体、移动、攻击向量、规则执行。
-- `resolution`：规则结算、角色 Tag、场景更新。
+这套设计的重点是上下文成本可控、来源可追溯、不会污染跑团存档。
 
-模型在非战棋模式下不会看到 `move_entity` / `check_attack_vector`。
+## 运行与部署
 
-### Rule Runtime
+### 本地开发
 
-MVP 使用 `PythonRuleRuntime`：
+把插件目录放入 AstrBot 插件目录后，插件入口是：
 
-- 规则必须定义唯一的 `calculate(...)` 函数。
-- 禁止 `import`、`open`、`eval`、`exec`、`getattr`、dunder 属性、类定义等危险语法。
-- 规则版本化保存到 `data/rules/{rule_name}/v{n}.py`。
-- 执行在独立进程中，有超时保护。
-- 暴露受控骰子函数 `roll("2d6+1")`。
+```text
+astrbot_plugin_auto_trpg_dm/main.py
+```
 
-注意：Python 子集运行时是本地娱乐 MVP 的安全护栏，不是强安全边界。若未来开放给不可信用户，建议替换为 WASM / DSL / 独立隔离服务。
-
-### Spatial Engine
-
-`spatial/` 内部维护二维网格事实：
-
-- 坐标边界。
-- 移动阻挡。
-- 实体占位。
-- BFS 路径与移动力。
-- Bresenham 视线。
-- 曼哈顿攻击距离。
-
-LLM 只能调用：
-
-- `move_entity(entity_id, target_x, target_y)`
-- `check_attack_vector(source_id, target_id)`
-
-不能直接改坐标。
-
-## 部署
-
-把 `astrbot_plugin_auto_trpg_dm/` 放入 AstrBot 插件目录，确保 AstrBot 版本为 v4.5.7+。
-
-运行数据会写入 AstrBot 数据目录：
+运行数据会写入 AstrBot 数据目录，例如：
 
 ```text
 data/plugin_data/astrbot_plugin_auto_trpg_dm/
   saves/
   rules/
   audit/
+  maps/
+  rulebooks/
 ```
 
-插件入口是：
-
-```text
-astrbot_plugin_auto_trpg_dm/main.py
-```
-
-LLM 调用不使用 `requests` 或 `openai`，而是：
+LLM 调用不直接依赖 `requests` 或 `openai` SDK，而是通过 AstrBot 提供的：
 
 ```python
 await self.context.llm_generate(...)
 ```
 
-这会由 AstrBot 负责调用当前会话配置的模型。
+### NAS 部署
+
+仓库已经带有一套本地部署脚本，设计目标是“方便，但别把脏工作区和私钥一起送上去”。
+
+相关文件：
+
+- [deploy-nas.ps1](/F:/paotuan/scripts/deploy-nas.ps1)
+- [nas-deploy.example.json](/F:/paotuan/scripts/nas-deploy.example.json)
+
+特点：
+
+- 只部署当前 Git `HEAD`。
+- 工作区不干净时默认拒绝部署。
+- 部署前运行 `compileall`，本地装了 `pytest` 时会顺便跑测试。
+- 用 `git archive` 打包，不带 `.deploy/`、缓存、运行数据和临时文件。
+- NAS 端先备份旧插件目录，再替换新版本。
+
+初始化本地配置：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/deploy-nas.ps1 -Init
+```
+
+配置好 `.deploy/nas-deploy.json` 后部署：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/deploy-nas.ps1
+```
+
+## PR 流程
+
+仓库已经补了一套比较轻量的 PR 工作流。
+
+- GitHub Actions 会在 PR / push 时运行基础检查。
+- 本地可以用 [handle-pr.ps1](/F:/paotuan/scripts/handle-pr.ps1) 辅助拉取、检查、合并和部署 PR。
+
+检查 PR：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/handle-pr.ps1 -PrNumber 123
+```
+
+检查通过后合并：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/handle-pr.ps1 -PrNumber 123 -Merge
+```
+
+合并并部署到 NAS：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/handle-pr.ps1 -PrNumber 123 -Merge -DeployAfterMerge
+```
+
+## 测试
+
+当前测试主要覆盖这些方向：
+
+- 轮次控制与超时推进。
+- 角色卡与 Tag 处理。
+- 规则书检索。
+- 规则书工具调用。
+- DM guidance / 安全策略。
+
+如果本地环境可用，建议运行：
+
+```powershell
+python -m compileall -q astrbot_plugin_auto_trpg_dm tests
+python -m pytest -q
+```
+
+## 版本更新
+
+当前插件版本：
+
+```text
+v0.1.66
+```
+
+本轮更新重点：
+
+- 接入 DND 2024 本地核心规则书检索与规则卡种子数据。
+- 新增 `query_core_rules`，可按模式挂载到叙事、战棋、规则创作和结算流程。
+- 增加 DM guidance 检索，帮助 agent 在规则不确定、需要临时裁定或控制叙事节奏时更稳。
+- 强化安全策略与 prompt 约束，减少越权控制、状态污染和规则编造。
+- 扩展路由与工具注册逻辑，让不同消息类型拿到更贴合的工具集合。
+- 增补规则书、DM guidance 和安全相关测试。
+
+## 说明
+
+这个项目仍然是一个偏工程化、快速迭代的 TRPG runtime，不是“全自动完美 DM”。它更像一套把自然语言、状态机、战棋事实、规则执行和本地知识层拼起来的可成长骨架。
+
+如果你想做的是：
+
+- 更稳的 AI 跑团裁定
+- 更少 prompt 污染
+- 更强的多人回合约束
+- 更像长期运营项目而不是一次性 demo
+
+这套结构会比把所有规则和状态都硬塞进一个大 prompt 更耐用。

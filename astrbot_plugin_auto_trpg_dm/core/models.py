@@ -207,7 +207,7 @@ class GameSession:
                 "current_entity_id": current_entity_id,
                 "current_label": self._battle_entity_label(current_entity_id, entities),
                 "current_owner_player_id": self._battle_entity_owner(current_entity_id, entities),
-                "output_limit_chars": turn.get("output_limit_chars", 180),
+                "output_limit_chars": turn.get("output_limit_chars", 720),
                 "timeout_seconds": turn.get("timeout_seconds", 120),
                 "waiting_since_at": turn.get("waiting_since_at", ""),
                 "deadline_at": turn.get("deadline_at", ""),

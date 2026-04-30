@@ -19,6 +19,7 @@ from astrbot.core.utils.astrbot_path import get_astrbot_data_path
 from .core.plugin_log import configure_plugin_logging
 from .core.router import IntentRouter
 from .core.security import security_precheck
+from .core.models import GameMode
 from .rules.python_runtime import PythonRuleRuntime
 from .storage.json_repository import JsonGameRepository
 from .tools.diagnostic_tools import DiagnosticTools
@@ -31,7 +32,7 @@ from .tools.turn_tools import TurnTools
     "auto_trpg_dm",
     "codex",
     "全自然语言 TRPG DM：动态规则、战棋物理验证、Tag 角色卡与自动剧本。",
-    "0.1.42",
+        "0.1.66",
 )
 class AutoTrpgDmPlugin(Star):
     DEDUP_WINDOW_SECONDS = 18.0
@@ -65,7 +66,7 @@ class AutoTrpgDmPlugin(Star):
             self.plugin_logger.info("legacy_live_scene_state_migrated saves=%s", live_scene_migrations)
         self._heartbeat_task: asyncio.Task | None = None
         self._start_heartbeat_task()
-        self.plugin_logger.info("plugin_initialized version=0.1.42 data_dir=%s", data_dir)
+        self.plugin_logger.info("plugin_initialized version=0.1.66 data_dir=%s", data_dir)
         logger.info("Auto TRPG DM plugin initialized.")
 
     @filter.command("dm")
@@ -264,6 +265,21 @@ class AutoTrpgDmPlugin(Star):
         session = self.repository.load_session(session_id)
         paused = bool((session.scene or {}).get("_dm_paused", False))
 
+        if _looks_like_dm_autopilot_takeover(text):
+            self.repository.append_audit(
+                session_id,
+                {
+                    "type": "local_fast_path",
+                    "action": "dm_autopilot_takeover_blocked",
+                    "actor": actor,
+                    "text": text[:240],
+                },
+            )
+            return (
+                "不能把所有玩家角色交给 AI 全权托管，也不能自动推完整段剧情。"
+                "我会继续当 DM 引导局势；单个行动者超过 120 秒未响应时，才会按规则保守代管。"
+            )
+
         if normalized in {"pause", "暂停", "暂停流程", "暂停游戏"}:
             session.scene["_dm_paused"] = True
             session.scene["_dm_pause_reason"] = text
@@ -396,6 +412,19 @@ class AutoTrpgDmPlugin(Star):
             self.repository.append_audit(session_id, {"type": "local_fast_path", "action": "turn_status", "actor": actor})
             return self._format_turn_status(session, include_order=_looks_like_turn_order_request(text))
 
+        reasonableness_reply = _post_start_reasonableness_fast_reply(session, text)
+        if reasonableness_reply:
+            self.repository.append_audit(
+                session_id,
+                {
+                    "type": "local_fast_path",
+                    "action": "post_start_reasonableness_guard",
+                    "actor": actor,
+                    "text": text[:240],
+                },
+            )
+            return reasonableness_reply
+
         turn_reply = await self._local_turn_fast_path(session_id, session, actor, text)
         if turn_reply:
             return turn_reply
@@ -403,6 +432,19 @@ class AutoTrpgDmPlugin(Star):
         if _looks_like_player_roster_request(text):
             self.repository.append_audit(session_id, {"type": "local_fast_path", "action": "player_roster", "actor": actor})
             return self._format_player_roster(session)
+
+        unbound_reply = _unbound_tactical_actor_reply(session, actor, text)
+        if unbound_reply:
+            self.repository.append_audit(
+                session_id,
+                {
+                    "type": "local_fast_path",
+                    "action": "unbound_tactical_actor",
+                    "actor": actor,
+                    "text": text[:240],
+                },
+            )
+            return unbound_reply
 
         if _campaign_plot_locked(session) and _looks_like_plot_rewrite_request(text):
             self.repository.append_audit(
@@ -480,7 +522,7 @@ class AutoTrpgDmPlugin(Star):
                     current_entity_id=acting_id,
                     summary=summary,
                     reason=f"玩家本地直路由声明：{text[:80]}",
-                    output_limit_chars=180,
+                    output_limit_chars=1440,
                     advance_after=True,
                 )
                 self.repository.append_audit(
@@ -506,7 +548,7 @@ class AutoTrpgDmPlugin(Star):
                     current_entity_id=current_id,
                     summary=summary,
                     reason=f"当前行动者请求推进：{text[:80]}",
-                    output_limit_chars=180,
+                    output_limit_chars=1440,
                     advance_after=True,
                 )
                 self.repository.append_audit(
@@ -534,7 +576,7 @@ class AutoTrpgDmPlugin(Star):
                     current_entity_id=current_id,
                     summary=summary,
                     reason=f"其他玩家请求推进且已超时约 {max(120, elapsed)} 秒：{text[:80]}",
-                    output_limit_chars=180,
+                    output_limit_chars=1440,
                     auto_policy="defend_or_follow",
                     advance_after=True,
                 )
@@ -665,6 +707,8 @@ class AutoTrpgDmPlugin(Star):
 
     def _action_pacing_reply(self, session_id: str, actor: dict[str, str], routed_message: str) -> str:
         text = self._dedupe_text(routed_message)
+        if _looks_like_terminal_or_interlude_for_pacing(text):
+            return ""
         player_id = str(actor.get("player_id") or "").strip()
         if not player_id or not _looks_like_paced_player_action(text):
             return ""
@@ -743,6 +787,13 @@ class AutoTrpgDmPlugin(Star):
                 changed = True
             if not turn.get("timeout_seconds"):
                 turn["timeout_seconds"] = 120
+                changed = True
+            try:
+                output_limit_chars = int(turn.get("output_limit_chars") or 0)
+            except (TypeError, ValueError):
+                output_limit_chars = 0
+            if output_limit_chars < 1440:
+                turn["output_limit_chars"] = 1440
                 changed = True
             if str(turn.get("phase", "")) == "character_turn":
                 current_id = str(turn.get("current_entity_id") or battle.get("turn_entity_id") or "")
@@ -990,6 +1041,9 @@ class AutoTrpgDmPlugin(Star):
         phase = str(turn.get("phase") or "")
         if phase not in {"character_turn", "scene_resolution"}:
             return {"active": True, "phase": phase}
+        suspended = self._suspend_heartbeat_turn_if_needed(session_id, session, battle, turn, phase)
+        if suspended:
+            return suspended
         deadline = _parse_datetime(turn.get("deadline_at"))
         if deadline is None:
             now = datetime.now(timezone.utc)
@@ -1021,7 +1075,7 @@ class AutoTrpgDmPlugin(Star):
             result = await TurnTools(self.repository, session_id, actor={"player_id": "__heartbeat__", "display_name": "本地心跳"}).turn_control(
                 action="finish_scene_resolution",
                 reason="本地心跳检查：场面结算阶段超过 120 秒未推进，自动进入下一角色回合。",
-                output_limit_chars=int(turn.get("output_limit_chars") or 180),
+                output_limit_chars=int(turn.get("output_limit_chars") or 1440),
             )
             self.repository.append_audit(
                 session_id,
@@ -1062,7 +1116,7 @@ class AutoTrpgDmPlugin(Star):
             current_entity_id=current_id,
             summary=summary,
             reason=f"本地心跳检查：当前行动者从轮到自己起已等待约 {elapsed} 秒，deadline 已过，自动保守推进。",
-            output_limit_chars=int(turn.get("output_limit_chars") or 180),
+            output_limit_chars=int(turn.get("output_limit_chars") or 1440),
             auto_policy="defend_or_follow",
             advance_after=True,
         )
@@ -1119,6 +1173,68 @@ class AutoTrpgDmPlugin(Star):
             return True
         self.plugin_logger.warning("turn_heartbeat_notify_no_platform session=%s", session_id)
         return False
+
+    def _suspend_heartbeat_turn_if_needed(
+        self,
+        session_id: str,
+        session,
+        battle: dict,
+        turn: dict,
+        phase: str,
+    ) -> dict[str, object] | None:
+        reason = _heartbeat_turn_suspend_reason(session, turn, phase)
+        if not reason:
+            return None
+
+        scene = dict(session.scene or {})
+        now = _utc_now_iso()
+        previous_phase = str(turn.get("phase") or "")
+        previous_entity_id = str(turn.get("current_entity_id") or battle.get("turn_entity_id") or "")
+        post_game = reason in {"scene_concluded", "terminal_turn_log"}
+
+        turn["active"] = False
+        turn["phase"] = "ended" if post_game else "suspended"
+        turn["current_entity_id"] = ""
+        turn["current_index"] = -1
+        turn["deadline_at"] = ""
+        turn["waiting_since_at"] = ""
+        battle["active"] = False
+        battle["turn"] = turn
+        battle["turn_entity_id"] = ""
+        session.battle = battle
+        session.mode = GameMode.NARRATIVE
+        scene["_heartbeat_turn_suspended_at"] = now
+        scene["_heartbeat_turn_suspended_reason"] = reason
+        if post_game:
+            scene["_post_game"] = True
+            scene["_encounter_ended_at"] = now
+        session.scene = scene
+        self.repository.save_session(session)
+
+        audit = {
+            "type": "turn_heartbeat_suspended",
+            "reason": reason,
+            "previous_phase": previous_phase,
+            "previous_entity_id": previous_entity_id,
+            "post_game": post_game,
+        }
+        self.repository.append_audit(session_id, audit)
+        self.plugin_logger.info(
+            "turn_heartbeat_suspended session=%s reason=%s phase=%s current=%s post_game=%s",
+            session_id,
+            reason,
+            previous_phase,
+            previous_entity_id,
+            post_game,
+        )
+
+        if post_game:
+            notice = "检测到当前场面已经进入终章/间幕，轮次心跳已停止；不会再因超时自动代管或推进战斗。"
+        elif reason == "social_or_political_scene":
+            notice = "当前冲突更像谈判、征税或社会场面，不适合按战斗心跳代打；我已停止本轮自动超时推进，后续按普通叙事裁定。"
+        else:
+            notice = "检测到重复超时或旧终局信号，轮次心跳已停止；需要继续战斗时可由玩家重新明确进入轮次。"
+        return {"active": False, "suspended": True, "reason": reason, "notice": notice}
 
     def _apply_turn_timeout_pause_if_needed(
         self,
@@ -1837,27 +1953,340 @@ def _clean_turn_order(order: list[str]) -> list[str]:
 
 
 def _game_started_text(session) -> str:
-    if bool((session.scene or {}).get("_game_started")):
-        return "已开始/主线锁定"
-    return "未开始"
+    if _campaign_game_started(session):
+        return "开场后（主线与既有角色卡锁定，只记录场内状态；新玩家可建新角色）"
+    return "开场前（可设定背景、建卡/补卡，尚未进入主线）"
 
 
 def _campaign_game_started(session) -> bool:
-    return bool((session.scene or {}).get("_game_started"))
+    scene = session.scene or {}
+    world_tags = session.world_tags or {}
+    return bool(scene.get("_game_started") or scene.get("_legacy_live_campaign") or world_tags.get("_plot_locked") is True)
 
 
 def _campaign_action_pacing_enabled(session) -> bool:
-    if _campaign_game_started(session) or bool((session.battle or {}).get("active")):
+    scene = session.scene or {}
+    battle = session.battle or {}
+    turn = battle.get("turn") if isinstance(battle.get("turn"), dict) else {}
+    if _scene_looks_concluded_for_pacing(session):
+        return False
+    if (
+        bool(battle.get("active"))
+        or bool(turn.get("active"))
+    ):
+        return True
+    return False
+
+
+def _post_start_reasonableness_fast_reply(session, text: str) -> str:
+    if not _campaign_game_started(session):
+        return ""
+    normalized = str(text or "").strip().lower()
+    if not normalized:
+        return ""
+    if (
+        _looks_like_late_join_power_overreach(normalized)
+        or _looks_like_world_law_rewrite(normalized)
+        or _looks_like_forced_scene_takeover(normalized)
+        or _looks_like_self_cleansing_overreach(normalized)
+    ):
+        return (
+            "这个主张不能直接进入场内事实。开场后允许新玩家加入，但只能创建符合当前团尺度的个人角色；"
+            "不能自带军队、传奇随从、跨作品神级身份，不能路过式改写阵营胜负，也不能用“世界意志/规则修正”清除现实。"
+            "请改成一个有限、可检定的个人目标。"
+        )
+    return ""
+
+
+def _looks_like_late_join_power_overreach(text: str) -> bool:
+    mythic_identity = (
+        "帝皇",
+        "神皇",
+        "原体",
+        "禁军",
+        "星际战士",
+        "阿斯塔特",
+        "战锤",
+        "创世神",
+        "造物主",
+        "世界意志",
+        "神格",
+        "半神",
+        "神明",
+        "神祇",
+    )
+    force_terms = (
+        "十三个原体",
+        "十三名原体",
+        "13个原体",
+        "13名原体",
+        "一队原体",
+        "带着原体",
+        "带着十三",
+        "带着军队",
+        "带着军团",
+        "随从",
+        "护卫",
+        "军团路过",
+    )
+    join_or_command = (
+        "我加入",
+        "我要加入",
+        "角色是",
+        "我是",
+        "我正好",
+        "路过这里",
+        "刚好路过",
+        "带着",
+        "降临",
+        "指挥",
+        "收走",
+        "征的税",
+        "砍卫兵",
+    )
+    return (
+        any(term in text for term in mythic_identity)
+        and any(term in text for term in join_or_command)
+    ) or any(term in text for term in force_terms)
+
+
+def _looks_like_world_law_rewrite(text: str) -> bool:
+    law_terms = ("世界意志", "世界观", "现实", "法则", "底层逻辑", "位面基石", "宇宙规则", "dnd2024")
+    rewrite_terms = ("修正", "清除", "清理", "抹除", "排除", "踢出", "移除", "重塑", "改写", "纠正")
+    target_terms = ("不符合", "不合理", "异界", "跨作品", "所有", "一切", "事物", "存在")
+    return any(term in text for term in law_terms) and any(term in text for term in rewrite_terms) and any(
+        term in text for term in target_terms
+    )
+
+
+def _looks_like_forced_scene_takeover(text: str) -> bool:
+    force_terms = ("所有卫兵", "全部卫兵", "税务官", "军团", "平民", "所有人", "整个小镇", "所有事物")
+    outcome_terms = ("都听我的", "交给我", "收走", "清除", "臣服", "跪下", "投降", "全部消失", "直接成功")
+    return any(term in text for term in force_terms) and any(term in text for term in outcome_terms)
+
+
+def _looks_like_self_cleansing_overreach(text: str) -> bool:
+    status_terms = ("debuff", "负面状态", "负面效果", "震慑", "眩晕", "反噬", "劣势", "惩罚")
+    cleanse_terms = ("不受任何", "不受", "免疫", "无视", "清除", "消除", "解除", "不会受到")
+    return any(term in text for term in status_terms) and any(term in text for term in cleanse_terms)
+
+
+def _unbound_tactical_actor_reply(session, actor: dict[str, str], text: str) -> str:
+    battle = session.battle or {}
+    turn = battle.get("turn") if isinstance(battle.get("turn"), dict) else {}
+    if not turn.get("active") or str(turn.get("phase") or "") != "character_turn":
+        return ""
+    player_id = str(actor.get("player_id") or "").strip()
+    if not player_id:
+        return ""
+    bound_id = str((session.player_character_map or {}).get(player_id, "") or "").strip()
+    if bound_id and bound_id in (session.characters or {}):
+        return ""
+    normalized = str(text or "").strip().lower()
+    if not normalized or _looks_like_non_action_request(normalized):
+        return ""
+    if not _looks_like_unbound_scene_action(normalized):
+        return ""
+    return (
+        "你还没有绑定本场角色，这句不能作为角色行动结算。"
+        "开场后仍可加入新角色：请发 `/dm 我加入，角色是……`；"
+        "如果只是交代旁观或问状态，可以用 `/dm 当前轮次` 或 `/dm 玩家列表`。"
+    )
+
+
+def _looks_like_unbound_scene_action(text: str) -> bool:
+    action_terms = (
+        "上交",
+        "交出",
+        "交给",
+        "缴纳",
+        "支付",
+        "掏出",
+        "拿出",
+        "递给",
+        "捡起",
+        "拾取",
+        "带走",
+        "攻击",
+        "射击",
+        "施法",
+        "移动",
+        "靠近",
+        "搜索",
+        "调查",
+        "侦查",
+        "防御",
+        "躲避",
+    )
+    return _looks_like_paced_player_action(text) or any(term in text for term in action_terms)
+
+
+def _looks_like_terminal_or_interlude_for_pacing(text: str) -> bool:
+    normalized = str(text or "").strip().lower()
+    if not normalized:
+        return False
+    terminal_terms = (
+        "全局结算",
+        "展示结算",
+        "退出游戏",
+        "结束游戏",
+        "跑团结束",
+        "本场结束",
+        "本次结束",
+        "到此结束",
+        "正式落幕",
+        "圆满落幕",
+        "个人结局",
+        "结局",
+        "后日谈",
+        "尾声",
+        "下一段冒险",
+        "下一次冒险",
+        "下次冒险",
+        "下个冒险",
+        "下回冒险",
+        "下次开团",
+        "下回开团",
+    )
+    interlude_terms = (
+        "休息一会",
+        "休息一下",
+        "休息到下",
+        "睡到下",
+        "沉睡直到",
+        "沉睡到下",
+        "休眠直到",
+        "休眠到下",
+        "直到下次",
+        "无人可以打扰",
+        "玩家们都累",
+        "来点背景剧情",
+        "背景剧情描述",
+        "间幕",
+        "休整",
+    )
+    return any(term in normalized for term in terminal_terms) or any(term in normalized for term in interlude_terms)
+
+
+def _scene_looks_concluded_for_pacing(session) -> bool:
+    scene = session.scene or {}
+    if scene.get("_post_game") or scene.get("_encounter_ended_at"):
         return True
     try:
-        background_ready = has_campaign_background(session)
-    except Exception:
-        background_ready = bool((session.world_tags or {}).get("_background_ready"))
-    if not background_ready:
+        text = json.dumps(
+            [
+                scene.get("summary", ""),
+                scene.get("current_conflict", ""),
+                scene.get("last_resolution", {}),
+            ],
+            ensure_ascii=False,
+        )
+    except TypeError:
+        text = str(scene)
+    return any(
+        term in text
+        for term in (
+            "危机已正式解除",
+            "危机已落下帷幕",
+            "跑团到此",
+            "本场跑团到此",
+            "圆满结束",
+            "圆满落幕",
+            "正式落幕",
+            "全局结算",
+            "最终结局",
+            "暂无。世界正处于",
+            "暂无冲突",
+            "当前冲突：暂无",
+        )
+    )
+
+
+def _heartbeat_turn_suspend_reason(session, turn: dict, phase: str) -> str:
+    if _scene_looks_concluded_for_pacing(session):
+        return "scene_concluded"
+    if _recent_turn_log_has_terminal_or_interlude(turn):
+        return "terminal_turn_log"
+    if phase == "character_turn" and _scene_looks_social_or_political_for_heartbeat(session):
+        return "social_or_political_scene"
+    if _repeated_timeout_after_auto_pause(session, turn):
+        return "repeated_timeout_after_auto_pause"
+    return ""
+
+
+def _recent_turn_log_has_terminal_or_interlude(turn: dict) -> bool:
+    entries = list(turn.get("turn_log") or [])[-16:]
+    if not entries:
         return False
-    # Legacy live sessions created before start_game do not have _game_started,
-    # but they can already have bound characters, rules, and active play.
-    return bool(session.characters) and (bool(session.rules) or len(session.participants or {}) >= 2)
+    try:
+        text = json.dumps(entries, ensure_ascii=False)
+    except Exception:
+        text = str(entries)
+    return _looks_like_terminal_or_interlude_for_pacing(text)
+
+
+def _scene_looks_social_or_political_for_heartbeat(session) -> bool:
+    scene = session.scene or {}
+    current_conflict = str(scene.get("current_conflict") or "")
+    if not current_conflict.strip():
+        return False
+    social_terms = (
+        "谈判",
+        "劝说",
+        "威吓",
+        "征税",
+        "税务",
+        "收缴",
+        "免税",
+        "军团",
+        "平民",
+        "镇民",
+        "抗议",
+        "骚乱",
+        "软禁",
+        "从军",
+        "审判",
+        "交涉",
+        "政治",
+        "秩序",
+        "统治",
+    )
+    combat_terms = (
+        "战斗",
+        "遭遇",
+        "先攻",
+        "敌方回合",
+        "攻击",
+        "命中",
+        "伤害",
+        "龙息",
+        "红龙",
+        "怪物",
+        "hp",
+        "生命值",
+        "战棋",
+        "格子",
+    )
+    return any(term in current_conflict for term in social_terms) and not any(
+        term in current_conflict for term in combat_terms
+    )
+
+
+def _repeated_timeout_after_auto_pause(session, turn: dict) -> bool:
+    scene = session.scene or {}
+    pause_reason = str(scene.get("_dm_pause_reason") or "")
+    if "超时" not in pause_reason and "自动暂停" not in pause_reason and "半数" not in pause_reason:
+        return False
+    if not scene.get("_dm_resumed_at"):
+        return False
+    try:
+        count = int(turn.get("_timeout_tracker_count") or len(list(turn.get("_timeout_tracker_keys") or [])))
+        total = int(turn.get("_timeout_tracker_total") or len(list(turn.get("turn_order") or [])))
+    except (TypeError, ValueError):
+        return False
+    if total <= 0:
+        return False
+    return count >= 2 and count * 3 >= total
 
 
 def _campaign_plot_locked(session) -> bool:
@@ -1884,6 +2313,46 @@ def _looks_like_plot_rewrite_request(text: str) -> bool:
         term in normalized for term in plot_terms
     )
     return direct_rewrite or fact_injection
+
+
+def _looks_like_dm_autopilot_takeover(text: str) -> bool:
+    normalized = str(text or "").strip().lower()
+    if not normalized:
+        return False
+    all_player_scope = any(
+        term in normalized
+        for term in (
+            "所有玩家",
+            "全部玩家",
+            "全体玩家",
+            "所有角色",
+            "全部角色",
+            "所有人物",
+            "全部人物",
+            "玩家将不再",
+            "玩家不再",
+        )
+    )
+    takeover = any(
+        term in normalized
+        for term in (
+            "交由你操作",
+            "交给你操作",
+            "由你操作",
+            "由你控制",
+            "交给ai",
+            "交给 ai",
+            "全权托管",
+            "全员托管",
+            "自动推演后续剧情",
+            "自动结算后续剧情",
+            "玩家将不再干预",
+            "玩家不再干预",
+            "玩家将不再介入",
+            "玩家不再介入",
+        )
+    )
+    return all_player_scope and takeover
 
 
 def _looks_like_paced_player_action(text: str) -> bool:
@@ -1949,6 +2418,10 @@ def _looks_like_paced_player_action(text: str) -> bool:
 
 
 def _looks_like_non_action_request(text: str) -> bool:
+    if _looks_like_terminal_or_interlude_for_pacing(text):
+        return True
+    if _looks_like_rules_or_adjudication_meta_request(text):
+        return True
     non_action_terms = (
         "status",
         "token",
@@ -1986,6 +2459,33 @@ def _looks_like_non_action_request(text: str) -> bool:
     question_terms = ("吗", "呢", "什么", "多少", "怎么", "为什么", "能不能", "可不可以", "有没有", "?")
     action_verbs = ("攻击", "移动", "射", "砍", "走", "跑", "侦查", "搜索", "调查")
     return any(term in text for term in question_terms) and not any(term in text for term in action_verbs)
+
+
+def _looks_like_rules_or_adjudication_meta_request(text: str) -> bool:
+    normalized = str(text or "").strip().lower()
+    if not normalized:
+        return False
+    meta_terms = (
+        "重新判定",
+        "重判",
+        "重新计算",
+        "重新裁定",
+        "要求修复",
+        "修复或者重新判定",
+        "你误解",
+        "你的错误",
+        "规则错误",
+        "脚本中有错误",
+        "判定脚本",
+        "骰子判定",
+        "dc不合理",
+        "dc 不合理",
+        "加值你没有计算",
+        "没有计算加值",
+        "正确计算我的加值",
+    )
+    rules_context = ("规则", "判定", "检定", "骰", "dc", "加值", "脚本", "错误", "不合理", "裁定")
+    return any(term in normalized for term in meta_terms) and any(term in normalized for term in rules_context)
 
 
 def _looks_like_player_roster_request(text: str) -> bool:
