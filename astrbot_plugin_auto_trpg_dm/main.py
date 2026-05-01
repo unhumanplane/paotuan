@@ -53,6 +53,7 @@ class AutoTrpgDmPlugin(Star):
             astr_context=context,
             repository=self.repository,
             tool_registry=tool_registry,
+            dual_agent_cycles_enabled=self._config_bool("dual_agent_cycles_enabled", False),
         )
         migrated = self._migrate_legacy_turn_fields()
         if migrated:
@@ -595,6 +596,11 @@ class AutoTrpgDmPlugin(Star):
         battle = session.battle or {}
         turn = dict(battle.get("turn") or {})
         paused = "暂停中" if (session.scene or {}).get("_dm_paused") else "运行中"
+        cycle_state = getattr(session, "cycle_state", None)
+        cycle_text = f"周期：{cycle_state.value if cycle_state else 'unknown'}"
+        summaries = getattr(session, "environment_summaries", []) or []
+        if summaries:
+            cycle_text += f"；已结算周期 {len(summaries)}"
         if turn.get("active"):
             turn_text = self._format_turn_status(session)
         else:
@@ -602,6 +608,7 @@ class AutoTrpgDmPlugin(Star):
         return (
             f"团名：{session.title}；模式：{session.mode.value}；流程：{paused}；开场：{_game_started_text(session)}。\n"
             f"玩家 {len(session.participants)}，角色 {len(session.characters)}，规则 {len(session.rules)}。\n"
+            f"{cycle_text}\n"
             f"{turn_text}"
         )
 

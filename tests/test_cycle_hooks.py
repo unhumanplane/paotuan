@@ -148,6 +148,17 @@ def router(fake_repo):
 
 
 @pytest.fixture
+def router_enabled(fake_repo):
+    r = IntentRouter(
+        astr_context=None,
+        repository=fake_repo,
+        tool_registry=None,
+        dual_agent_cycles_enabled=True,
+    )
+    return r
+
+
+@pytest.fixture
 def fake_plugin(fake_repo):
     class Plugin(AutoTrpgDmPlugin):
         def __init__(self, repo):
@@ -179,21 +190,21 @@ class TestLooksLikeStatefulPlayerMessage:
 
 
 class TestMaybeAppendCycleBuffer:
-    def test_skips_queries(self, router, fake_repo):
+    def test_skips_queries(self, router_enabled, fake_repo):
         session = GameSession(session_id="test")
         fake_repo.sessions["test"] = session
-        router._maybe_append_cycle_buffer(
+        router_enabled._maybe_append_cycle_buffer(
             session, "test", {"player_id": "p1"}, "status", "OK"
         )
         assert len(session.audit_buffer.actions) == 0
 
-    def test_appends_stateful_actions(self, router, fake_repo):
+    def test_appends_stateful_actions(self, router_enabled, fake_repo):
         session = GameSession(session_id="test")
         fake_repo.sessions["test"] = session
-        router._last_tool_trace = [
+        router_enabled._last_tool_trace = [
             {"name": "execute_rule", "args": {}, "result": {"damage": 5}}
         ]
-        router._maybe_append_cycle_buffer(
+        router_enabled._maybe_append_cycle_buffer(
             session, "test", {"player_id": "p1"}, "我攻击哥布林", "你命中了！"
         )
         assert len(session.audit_buffer.actions) == 1
@@ -203,48 +214,66 @@ class TestMaybeAppendCycleBuffer:
         assert action.dm_narrative == "你命中了！"
         assert len(action.tools_called) == 1
 
-    def test_appends_with_character_binding(self, router, fake_repo):
+    def test_appends_with_character_binding(self, router_enabled, fake_repo):
         session = GameSession(session_id="test")
         session.player_character_map["p1"] = "pc_wizard"
         fake_repo.sessions["test"] = session
-        router._maybe_append_cycle_buffer(
+        router_enabled._maybe_append_cycle_buffer(
             session, "test", {"player_id": "p1"}, "我施法", "法术生效。"
         )
         action = session.audit_buffer.actions[0]
         assert action.character_id == "pc_wizard"
 
-    def test_preserves_cycle_id(self, router, fake_repo):
+    def test_preserves_cycle_id(self, router_enabled, fake_repo):
         session = GameSession(session_id="test")
         session.current_cycle_id = 3
         session.audit_buffer.cycle_id = 3
         fake_repo.sessions["test"] = session
-        router._maybe_append_cycle_buffer(
+        router_enabled._maybe_append_cycle_buffer(
             session, "test", {"player_id": "p1"}, "我移动", "你移动了。"
         )
         assert session.audit_buffer.cycle_id == 3
         assert session.current_cycle_id == 3
 
-    def test_handles_exception_gracefully(self, router, fake_repo):
+    def test_handles_exception_gracefully(self, router_enabled, fake_repo):
         session = GameSession(session_id="test")
         fake_repo.sessions["test"] = session
         # Passing a non-dict for actor should not crash
-        router._maybe_append_cycle_buffer(
+        router_enabled._maybe_append_cycle_buffer(
             session, "test", None, "我攻击", "命中"
         )
         # Should survive due to exception handling
 
+    def test_disabled_flag_skips_append(self, router, fake_repo):
+        session = GameSession(session_id="test")
+        fake_repo.sessions["test"] = session
+        router._last_tool_trace = [{"name": "execute_rule", "args": {}, "result": {}}]
+        router._maybe_append_cycle_buffer(
+            session, "test", {"player_id": "p1"}, "我攻击", "命中"
+        )
+        assert len(session.audit_buffer.actions) == 0
+
 
 class TestMaybeResolveCycle:
-    async def test_fallback_when_ra_context_missing(self, router, fake_repo):
+    async def test_disabled_flag_short_circuits(self, router, fake_repo):
         session = GameSession(session_id="test")
         session.cycle_state = CycleState.CYCLE_RESOLVING
         fake_repo.sessions["test"] = session
         result = await router._maybe_resolve_cycle(session, "test")
         assert result is not None
+        assert result["short_circuit"] is True
+        assert session.cycle_state == CycleState.CYCLE_ACTIVE
+        audit = [a for a in fake_repo.audit if a.get("type") == "cycle_resolved_short_circuit"]
+        assert len(audit) == 1
+
+    async def test_enabled_flag_fallback_without_context(self, router_enabled, fake_repo):
+        session = GameSession(session_id="test")
+        session.cycle_state = CycleState.CYCLE_RESOLVING
+        fake_repo.sessions["test"] = session
+        result = await router_enabled._maybe_resolve_cycle(session, "test")
+        assert result is not None
         assert result["fallback"] is True
         assert session.cycle_state == CycleState.CYCLE_ACTIVE
-        audit = [a for a in fake_repo.audit if a.get("type") == "cycle_resolved_fallback"]
-        assert len(audit) == 1
 
     async def test_noop_when_already_active(self, router, fake_repo):
         session = GameSession(session_id="test")
@@ -297,29 +326,46 @@ class TestCycleStateGate:
 
 
 class TestEndToEndCycleFlow:
-    async def test_full_cycle_from_action_to_fallback_resolution(self, router, fake_plugin, fake_repo):
+    async def test_disabled_flag_short_circuits(self, router, fake_plugin, fake_repo):
         session = GameSession(session_id="e2e")
         session.cycle_state = CycleState.CYCLE_ACTIVE
         fake_repo.sessions["e2e"] = session
 
-        # Player sends a stateful action
+        # With feature disabled, buffer append is skipped
         router._last_tool_trace = [{"name": "execute_rule", "args": {}, "result": {"damage": 5}}]
         router._maybe_append_cycle_buffer(
             session, "e2e", {"player_id": "p1"}, "我攻击", "命中，造成5点伤害。"
         )
-        assert len(session.audit_buffer.actions) == 1
+        assert len(session.audit_buffer.actions) == 0
 
-        # DM signals cycle end (via cycle_control tool, simulated here)
+        # DM signals cycle end
         CycleStateMachine.transition(session, CycleState.CYCLE_RESOLVING)
         assert session.cycle_state == CycleState.CYCLE_RESOLVING
 
-        # Router falls back to ACTIVE because RA context is missing in test
+        # Router short-circuits because feature is disabled
         result = await router._maybe_resolve_cycle(session, "e2e")
         assert result is not None
-        assert result["fallback"] is True
+        assert result["short_circuit"] is True
         assert session.cycle_state == CycleState.CYCLE_ACTIVE
 
-        # Next player message hits the gate (no-op in PR 4)
-        reply = fake_plugin._cycle_state_gate("e2e", {"player_id": "p2"}, "我治疗")
-        assert reply == ""
+    async def test_enabled_flag_falls_back_without_context(self, router_enabled, fake_plugin, fake_repo):
+        session = GameSession(session_id="e2e")
+        session.cycle_state = CycleState.CYCLE_ACTIVE
+        fake_repo.sessions["e2e"] = session
+
+        # With feature enabled, buffer append works
+        router_enabled._last_tool_trace = [{"name": "execute_rule", "args": {}, "result": {"damage": 5}}]
+        router_enabled._maybe_append_cycle_buffer(
+            session, "e2e", {"player_id": "p1"}, "我攻击", "命中，造成5点伤害。"
+        )
+        assert len(session.audit_buffer.actions) == 1
+
+        # DM signals cycle end
+        CycleStateMachine.transition(session, CycleState.CYCLE_RESOLVING)
+        assert session.cycle_state == CycleState.CYCLE_RESOLVING
+
+        # Router falls back because RA context is missing in test
+        result = await router_enabled._maybe_resolve_cycle(session, "e2e")
+        assert result is not None
+        assert result["fallback"] is True
         assert session.cycle_state == CycleState.CYCLE_ACTIVE

@@ -44,6 +44,7 @@ class IntentRouter:
         repository: JsonGameRepository,
         tool_registry: ToolRegistry,
         max_steps: int = 8,
+        dual_agent_cycles_enabled: bool = False,
     ):
         self.astr_context = astr_context
         self.repository = repository
@@ -51,6 +52,7 @@ class IntentRouter:
         self.mode_machine = GameModeStateMachine()
         self.memory_compressor = MemoryCompressor()
         self.max_steps = max_steps
+        self.dual_agent_cycles_enabled = dual_agent_cycles_enabled
         self._session_locks: dict[str, asyncio.Lock] = {}
         self._session_turn_locks: dict[str, asyncio.Lock] = {}
         self._last_tool_trace: list[dict[str, Any]] = []
@@ -384,6 +386,8 @@ class IntentRouter:
         player_message: str,
         completion: str,
     ) -> None:
+        if not self.dual_agent_cycles_enabled:
+            return
         if not _looks_like_stateful_player_message(player_message):
             return
         try:
@@ -422,6 +426,31 @@ class IntentRouter:
     ) -> dict[str, Any] | None:
         if session.cycle_state != CycleState.CYCLE_RESOLVING:
             return None
+        if not self.dual_agent_cycles_enabled:
+            try:
+                CycleStateMachine.transition(session, CycleState.CYCLE_ACTIVE)
+                self.repository.save_session(session)
+                self.repository.append_audit(
+                    session_id,
+                    {
+                        "type": "cycle_resolved_short_circuit",
+                        "reason": "dual_agent_cycles_enabled=false",
+                        "cycle_id": session.current_cycle_id,
+                    },
+                )
+                get_plugin_logger().info(
+                    "cycle_short_circuit_disabled session=%s cycle_id=%s",
+                    session_id,
+                    session.current_cycle_id,
+                )
+                return {"short_circuit": True, "reason": "dual_agent_cycles_disabled"}
+            except Exception as exc:
+                get_plugin_logger().warning(
+                    "cycle_short_circuit_disabled_failed session=%s error=%s",
+                    session_id,
+                    exc,
+                )
+                return None
         try:
             result = await self.recorder_agent.resolve_cycle(session_id, session)
             if result.get("ok"):
