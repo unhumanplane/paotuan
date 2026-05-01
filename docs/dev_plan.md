@@ -72,6 +72,7 @@
 | 文件 | 操作 | 说明 |
 |------|------|------|
 | `core/prompts.py` | 修改 | 新增 `BASE_RULES`、`build_ra_system_prompt()`、`build_cycle_start_prompt()`；修改 `build_system_prompt()` |
+| `tests/test_prompts.py` | 新建 | `build_system_prompt()` 包含 BASE_RULES；`build_ra_system_prompt()` 符合 RA 角色定义；prompt 长度不超限 |
 
 ### 核心变更
 
@@ -86,6 +87,7 @@
 - [ ] `build_ra_system_prompt()` 输出符合设计文档中 RA 角色定义
 - [ ] `build_cycle_start_prompt()` 输出包含周期摘要、角色状态、世界变更
 - [ ] Prompt 长度估算不超限（当前 System Prompt 约 150 条规则，新增 BASE_RULES 需控制增量）
+- [ ] `test_prompts.py` 全绿：`_inject_base_rules()` 在 prompt 头部注入；`_inject_ra_summary()` 占位符格式正确；`build_ra_system_prompt()` 包含 "output JSON only" 指令
 
 ### 风险
 
@@ -107,7 +109,7 @@
 | `core/router.py` | 修改 | **仅插入 2 行 hook 调用**：`_maybe_append_cycle_buffers()` 和 `_maybe_resolve_cycle()`。复杂逻辑下沉到 `CycleStateMachine`。 |
 | `tools/registry.py` | 修改 | 新增 `cycle_control` 工具 |
 | `main.py` | 修改 | **仅插入 1 个 guard clause**：`_cycle_state_gate()`。周期门控逻辑封装在私有方法中。 |
-| `tests/` | 新建/修改 | Cycle buffer 累积测试、周期结束检测测试 |
+| `tests/test_cycle_hooks.py` | 新建 | `_maybe_append_cycle_buffers()` 行动/查询区分；`_cycle_state_gate()` 状态拦截；`cycle_control` 工具状态转换；`ra_enabled=false` 短路行为 |
 
 ### 核心变更
 
@@ -130,6 +132,7 @@
 - [ ] 回合系统（turn_control）不受周期状态影响，正常推进
 - [ ] `router.py` 主流程改动不超过 5 行（2 个 hook 调用 + 条件判断）
 - [ ] `main.py` 主流程改动不超过 3 行（1 个 guard clause）
+- [ ] `test_cycle_hooks.py` 全绿：查询消息不写入 audit_buffer；行动消息正确生成 ra_cycle_input（不含 player_message）；`cycle_state != CYCLE_ACTIVE` 时 gate 拦截；`cycle_control("end_cycle")` 触发状态转换；`ra_enabled=false` 时所有 hook 短路
 
 ### 风险
 
@@ -181,6 +184,7 @@
 - [ ] DM Agent 在 `discrepancies` 非空时，用合理的场内解释圆回叙事冲突
 - [ ] RA 失败（超时、无效 JSON、异常）时不阻塞游戏：保留未消费 `audit_buffer`、记录 recoverable error、从 tool trace 生成最小状态补丁、直接回到 `CYCLE_ACTIVE`
 - [ ] 战斗回合（turn_control）与周期边界互不干扰
+- [ ] `test_environment_agent.py` 全绿：RA 输出 JSON schema 校验通过；无效 JSON 时保留 audit_buffer、记录 recovery log、生成最小状态补丁；RA 失败后 `cycle_state` 回到 `CYCLE_ACTIVE`（跳过 `CYCLE_TRANSITION`）
 
 ### 风险
 
@@ -203,6 +207,7 @@
 | `_conf_schema.json` | 修改 | 新增 RA 相关配置项 |
 | `storage/json_repository.py` | 修改 | audit log 记录 RA 执行 |
 | `core/router.py` / `main.py` | 修改 | 读取配置，控制 RA 启用/禁用 |
+| `tests/test_config_fallback.py` | 新建 | 配置缺失时 fallback 到 `ra_enabled=false`；`ra_enabled=false` 时双 Agent 逻辑完全短路；热加载生效 |
 | `docs/` | 更新 | 更新设计文档，标注已实现项 |
 
 ### 核心变更
@@ -220,6 +225,7 @@
 - [ ] `ra_enabled=true` 时，双 Agent 流水线完整运行
 - [ ] audit log 包含 RA 执行记录
 - [ ] 配置热加载无需重启插件
+- [ ] `test_config_fallback.py` 全绿：配置缺失或读取失败时 fallback 到 `ra_enabled=false`；`ra_enabled=false` 时 `_maybe_append_cycle_buffers()`、`_maybe_resolve_cycle()`、`_inject_ra_summary()` 全部短路，不抛异常；配置热加载后 `ra_enabled` 切换即时生效
 
 ### 风险
 
