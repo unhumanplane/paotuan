@@ -717,46 +717,13 @@ class AutoTrpgDmPlugin(Star):
         cycle_state = getattr(session, "cycle_state", None)
         if cycle_state is None:
             return ""
-        from astrbot_plugin_auto_trpg_dm.core.models import CycleState
-        from astrbot_plugin_auto_trpg_dm.core.cycle_state_machine import CycleStateMachine
-        if cycle_state == CycleState.CYCLE_RESOLVING:
-            CycleStateMachine.transition(session, CycleState.CYCLE_ACTIVE)
-            self.repository.save_session(session)
-            self.repository.append_audit(
-                session_id,
-                {
-                    "type": "cycle_state_gate_short_circuit",
-                    "from_state": "CYCLE_RESOLVING",
-                    "to_state": "CYCLE_ACTIVE",
-                    "reason": "RA not yet implemented (PR 3)",
-                    "actor": actor,
-                    "message": message[:240],
-                },
-            )
+        if cycle_state.value != "cycle_active":
             self.plugin_logger.info(
-                "cycle_state_gate_short_circuit session=%s from=RESOLVING to=ACTIVE",
+                "cycle_state_gate session=%s state=%s actor=%s",
                 session_id,
+                cycle_state.value,
+                actor.get("player_id", ""),
             )
-            return ""
-        if cycle_state == CycleState.CYCLE_TRANSITION:
-            CycleStateMachine.transition(session, CycleState.CYCLE_ACTIVE)
-            self.repository.save_session(session)
-            self.repository.append_audit(
-                session_id,
-                {
-                    "type": "cycle_state_gate_short_circuit",
-                    "from_state": "CYCLE_TRANSITION",
-                    "to_state": "CYCLE_ACTIVE",
-                    "reason": "RA not yet implemented (PR 3)",
-                    "actor": actor,
-                    "message": message[:240],
-                },
-            )
-            self.plugin_logger.info(
-                "cycle_state_gate_short_circuit session=%s from=TRANSITION to=ACTIVE",
-                session_id,
-            )
-            return ""
         return ""
 
     def _migrate_legacy_turn_fields(self) -> int:

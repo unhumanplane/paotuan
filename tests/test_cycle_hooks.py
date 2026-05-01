@@ -235,53 +235,51 @@ class TestMaybeAppendCycleBuffer:
 
 
 class TestMaybeResolveCycle:
-    def test_short_circuits_resolving_state(self, router, fake_repo):
+    async def test_fallback_when_ra_context_missing(self, router, fake_repo):
         session = GameSession(session_id="test")
         session.cycle_state = CycleState.CYCLE_RESOLVING
         fake_repo.sessions["test"] = session
-        result = router._maybe_resolve_cycle(session, "test")
+        result = await router._maybe_resolve_cycle(session, "test")
         assert result is not None
-        assert result["short_circuit"] is True
+        assert result["fallback"] is True
         assert session.cycle_state == CycleState.CYCLE_ACTIVE
-        audit = [a for a in fake_repo.audit if a.get("type") == "cycle_resolved_short_circuit"]
+        audit = [a for a in fake_repo.audit if a.get("type") == "cycle_resolved_fallback"]
         assert len(audit) == 1
 
-    def test_noop_when_already_active(self, router, fake_repo):
+    async def test_noop_when_already_active(self, router, fake_repo):
         session = GameSession(session_id="test")
         session.cycle_state = CycleState.CYCLE_ACTIVE
         fake_repo.sessions["test"] = session
-        result = router._maybe_resolve_cycle(session, "test")
+        result = await router._maybe_resolve_cycle(session, "test")
         assert result is None
         assert session.cycle_state == CycleState.CYCLE_ACTIVE
 
-    def test_noop_on_transition_state(self, router, fake_repo):
+    async def test_noop_on_transition_state(self, router, fake_repo):
         session = GameSession(session_id="test")
         session.cycle_state = CycleState.CYCLE_TRANSITION
         fake_repo.sessions["test"] = session
-        result = router._maybe_resolve_cycle(session, "test")
+        result = await router._maybe_resolve_cycle(session, "test")
         assert result is None
         assert session.cycle_state == CycleState.CYCLE_TRANSITION
 
 
 class TestCycleStateGate:
-    def test_short_circuits_resolving(self, fake_plugin, fake_repo):
+    def test_passes_through_resolving(self, fake_plugin, fake_repo):
         session = GameSession(session_id="gate_test")
         session.cycle_state = CycleState.CYCLE_RESOLVING
         fake_repo.sessions["gate_test"] = session
         reply = fake_plugin._cycle_state_gate("gate_test", {"player_id": "p1"}, "我行动")
         assert reply == ""
-        assert session.cycle_state == CycleState.CYCLE_ACTIVE
-        audit = [a for a in fake_repo.audit if a.get("type") == "cycle_state_gate_short_circuit"]
-        assert len(audit) == 1
-        assert audit[0]["from_state"] == "CYCLE_RESOLVING"
+        # Gate no longer modifies state in PR 4
+        assert session.cycle_state == CycleState.CYCLE_RESOLVING
 
-    def test_short_circuits_transition(self, fake_plugin, fake_repo):
+    def test_passes_through_transition(self, fake_plugin, fake_repo):
         session = GameSession(session_id="gate_test")
         session.cycle_state = CycleState.CYCLE_TRANSITION
         fake_repo.sessions["gate_test"] = session
         reply = fake_plugin._cycle_state_gate("gate_test", {"player_id": "p1"}, "我行动")
         assert reply == ""
-        assert session.cycle_state == CycleState.CYCLE_ACTIVE
+        assert session.cycle_state == CycleState.CYCLE_TRANSITION
 
     def test_passes_through_active(self, fake_plugin, fake_repo):
         session = GameSession(session_id="gate_test")
@@ -299,7 +297,7 @@ class TestCycleStateGate:
 
 
 class TestEndToEndCycleFlow:
-    def test_full_cycle_from_action_to_resolution(self, router, fake_repo):
+    async def test_full_cycle_from_action_to_fallback_resolution(self, router, fake_plugin, fake_repo):
         session = GameSession(session_id="e2e")
         session.cycle_state = CycleState.CYCLE_ACTIVE
         fake_repo.sessions["e2e"] = session
@@ -315,20 +313,13 @@ class TestEndToEndCycleFlow:
         CycleStateMachine.transition(session, CycleState.CYCLE_RESOLVING)
         assert session.cycle_state == CycleState.CYCLE_RESOLVING
 
-        # Router short-circuits back to ACTIVE (PR 3, no RA yet)
-        result = router._maybe_resolve_cycle(session, "e2e")
+        # Router falls back to ACTIVE because RA context is missing in test
+        result = await router._maybe_resolve_cycle(session, "e2e")
         assert result is not None
+        assert result["fallback"] is True
         assert session.cycle_state == CycleState.CYCLE_ACTIVE
 
-        # Next player message hits the gate
-        from astrbot_plugin_auto_trpg_dm.main import AutoTrpgDmPlugin
-
-        class Plugin(AutoTrpgDmPlugin):
-            def __init__(self, repo):
-                self.repository = repo
-                self.plugin_logger = FakeLogger()
-
-        plugin = Plugin(fake_repo)
-        reply = plugin._cycle_state_gate("e2e", {"player_id": "p2"}, "我治疗")
+        # Next player message hits the gate (no-op in PR 4)
+        reply = fake_plugin._cycle_state_gate("e2e", {"player_id": "p2"}, "我治疗")
         assert reply == ""
         assert session.cycle_state == CycleState.CYCLE_ACTIVE

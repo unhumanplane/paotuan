@@ -4,6 +4,7 @@ import asyncio
 import json
 from typing import Any
 
+from .environment_agent import RecorderAgent
 from .memory import MemoryCompressor
 from .modes import GameModeStateMachine
 from .cycle_state_machine import CycleStateMachine
@@ -53,6 +54,7 @@ class IntentRouter:
         self._session_locks: dict[str, asyncio.Lock] = {}
         self._session_turn_locks: dict[str, asyncio.Lock] = {}
         self._last_tool_trace: list[dict[str, Any]] = []
+        self.recorder_agent = RecorderAgent(self.astr_context, self.repository)
 
     async def handle_message(
         self,
@@ -187,7 +189,7 @@ class IntentRouter:
         async with lock:
             latest_session = self.repository.load_session(session_id)
             self._maybe_append_cycle_buffer(latest_session, session_id, actor, message, completion)
-            self._maybe_resolve_cycle(latest_session, session_id)
+            await self._maybe_resolve_cycle(latest_session, session_id)
             completion = self._limit_completion(completion, latest_session, raw_player_message=message)
             fallback_turn = await self._maybe_auto_advance_resolved_turn(
                 session=latest_session,
@@ -413,7 +415,7 @@ class IntentRouter:
                 exc,
             )
 
-    def _maybe_resolve_cycle(
+    async def _maybe_resolve_cycle(
         self,
         session: Any,
         session_id: str,
@@ -421,29 +423,64 @@ class IntentRouter:
         if session.cycle_state != CycleState.CYCLE_RESOLVING:
             return None
         try:
+            result = await self.recorder_agent.resolve_cycle(session_id, session)
+            if result.get("ok"):
+                self.repository.append_audit(
+                    session_id,
+                    {
+                        "type": "cycle_resolved_by_ra",
+                        "cycle_id": session.current_cycle_id,
+                        "summary": result.get("summary", {}),
+                    },
+                )
+                get_plugin_logger().info(
+                    "cycle_resolved_by_ra session=%s cycle_id=%s",
+                    session_id,
+                    session.current_cycle_id,
+                )
+                return {"resolved_by_ra": True, "cycle_id": session.current_cycle_id}
+            # RA returned ok=False — fallback short-circuit to keep game alive
+            get_plugin_logger().warning(
+                "ra_resolution_failed session=%s cycle_id=%s error=%s reason=%s",
+                session_id,
+                session.current_cycle_id,
+                result.get("error"),
+                result.get("reason"),
+            )
             CycleStateMachine.transition(session, CycleState.CYCLE_ACTIVE)
             self.repository.save_session(session)
             self.repository.append_audit(
                 session_id,
                 {
-                    "type": "cycle_resolved_short_circuit",
-                    "reason": "RA Recorder Agent not yet implemented (PR 4); short-circuiting RESOLVING -> ACTIVE",
+                    "type": "cycle_resolved_fallback",
+                    "reason": "RA returned error",
+                    "ra_error": result.get("error"),
+                    "ra_reason": result.get("reason"),
                     "cycle_id": session.current_cycle_id,
                 },
             )
-            get_plugin_logger().info(
-                "cycle_resolved_short_circuit session=%s cycle_id=%s",
-                session_id,
-                session.current_cycle_id,
-            )
-            return {"short_circuit": True, "cycle_id": session.current_cycle_id}
+            return {"fallback": True, "cycle_id": session.current_cycle_id}
         except Exception as exc:
             get_plugin_logger().warning(
-                "cycle_resolve_short_circuit_failed session=%s error=%s",
+                "cycle_resolve_exception session=%s error=%s",
                 session_id,
                 exc,
             )
-            return None
+            try:
+                CycleStateMachine.transition(session, CycleState.CYCLE_ACTIVE)
+                self.repository.save_session(session)
+            except Exception:
+                pass
+            self.repository.append_audit(
+                session_id,
+                {
+                    "type": "cycle_resolved_fallback",
+                    "reason": "exception during RA resolution",
+                    "error": str(exc),
+                    "cycle_id": session.current_cycle_id,
+                },
+            )
+            return {"fallback": True, "cycle_id": session.current_cycle_id}
 
     def _lock_for_session(self, session_id: str) -> asyncio.Lock:
         lock = self._session_locks.get(session_id)
