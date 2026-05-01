@@ -98,25 +98,47 @@ class PythonRuleRuntime:
         version: int | None = None,
     ) -> dict[str, Any]:
         safe_name = self._safe_rule_name(rule_name)
-        selected = self._select_version(safe_name, version)
+        resolved_name, selected = self._select_rule(safe_name, version)
         if selected is None:
             return {"ok": False, "error": "rule_not_found", "rule_name": safe_name}
         selected_version, code_path = selected
         code = code_path.read_text(encoding="utf-8")
+        original_args = dict(args or {})
+        execution_args = _coerce_rule_args_by_schema(
+            original_args,
+            self._load_input_schema(resolved_name, selected_version),
+        )
         try:
-            payload = self._execute_in_process(code, args)
+            payload = self._execute_in_process(code, execution_args)
         except (OSError, PermissionError):
-            payload = self._execute_in_thread(code, args)
+            payload = self._execute_in_thread(code, execution_args)
             payload.setdefault("warnings", []).append(
                 "process isolation unavailable; executed with restricted globals in current process"
             )
         if payload.get("error") == "rule_process_failed":
-            payload = self._execute_in_thread(code, args)
+            payload = self._execute_in_thread(code, execution_args)
             payload.setdefault("warnings", []).append(
                 "process isolation failed; executed with restricted globals in current process"
             )
-        payload["rule_name"] = safe_name
+        if _should_retry_with_numeric_args(payload):
+            coerced_args = _coerce_rule_args_for_retry(execution_args)
+            if coerced_args != execution_args:
+                retry_payload = self._execute_in_thread(code, coerced_args)
+                if retry_payload.get("ok"):
+                    payload = retry_payload
+                    payload["coerced_args"] = coerced_args
+                    payload.setdefault("warnings", []).append(
+                        "coerced non-numeric rule arguments for retry"
+                    )
+        if execution_args != original_args:
+            payload.setdefault("coerced_args", execution_args)
+            payload.setdefault("warnings", []).append(
+                "coerced numeric rule arguments from input_schema"
+            )
+        payload["rule_name"] = resolved_name
         payload["version"] = selected_version
+        if resolved_name != safe_name:
+            payload["requested_rule_name"] = safe_name
         return payload
 
     def _execute_in_process(self, code: str, args: dict[str, Any]) -> dict[str, Any]:
@@ -160,14 +182,25 @@ class PythonRuleRuntime:
 
     def load_rule_ref(self, rule_name: str, version: int | None = None) -> RuleRef | None:
         safe_name = self._safe_rule_name(rule_name)
-        selected = self._select_version(safe_name, version)
+        resolved_name, selected = self._select_rule(safe_name, version)
         if not selected:
             return None
         selected_version, _ = selected
-        meta_path = self.rules_dir / safe_name / f"v{selected_version}.json"
+        meta_path = self.rules_dir / resolved_name / f"v{selected_version}.json"
         if not meta_path.exists():
             return None
         return RuleRef.from_dict(json.loads(meta_path.read_text(encoding="utf-8")))
+
+    def _load_input_schema(self, safe_name: str, version: int) -> dict[str, Any]:
+        meta_path = self.rules_dir / safe_name / f"v{version}.json"
+        if not meta_path.exists():
+            return {}
+        try:
+            metadata = json.loads(meta_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return {}
+        input_schema = metadata.get("input_schema")
+        return input_schema if isinstance(input_schema, dict) else {}
 
     def _next_version(self, safe_name: str) -> int:
         rule_dir = self.rules_dir / safe_name
@@ -187,6 +220,29 @@ class PythonRuleRuntime:
         if not code_path.exists():
             return None
         return version, code_path
+
+    def _select_rule(self, safe_name: str, version: int | None) -> tuple[str, tuple[int, Path] | None]:
+        selected = self._select_version(safe_name, version)
+        if selected:
+            return safe_name, selected
+        for alias in self._rule_name_aliases(safe_name, version):
+            selected = self._select_version(alias, None)
+            if selected:
+                return alias, selected
+        return safe_name, None
+
+    def _rule_name_aliases(self, safe_name: str, version: int | None) -> list[str]:
+        aliases: list[str] = []
+        if version:
+            aliases.append(f"{safe_name}_v{version}")
+        prefix = f"{safe_name}_v"
+        if self.rules_dir.exists():
+            for rule_dir in sorted(self.rules_dir.iterdir()):
+                if rule_dir.is_dir() and rule_dir.name.startswith(prefix):
+                    suffix = rule_dir.name[len(prefix):]
+                    if suffix.isdigit():
+                        aliases.append(rule_dir.name)
+        return list(dict.fromkeys(aliases))
 
     @staticmethod
     def _versions(rule_dir: Path) -> list[int]:
@@ -241,6 +297,207 @@ def _execute_rule_direct(code: str, args: dict[str, Any]) -> dict[str, Any]:
         return {"ok": False, "error": "rule_exception", "reason": str(exc), "rolls": roller.dump()}
 
 
+def _should_retry_with_numeric_args(payload: dict[str, Any]) -> bool:
+    reason = str(payload.get("reason") or "")
+    return payload.get("error") == "rule_exception" and (
+        ("unsupported operand type" in reason and "'str'" in reason)
+        or ("not supported between instances" in reason and "'str'" in reason)
+        or "invalid literal for int()" in reason
+        or "could not convert string to float" in reason
+    )
+
+
+def _coerce_rule_args_by_schema(args: dict[str, Any], input_schema: dict[str, Any]) -> dict[str, Any]:
+    properties = input_schema.get("properties") if isinstance(input_schema, dict) else {}
+    if not isinstance(properties, dict):
+        return dict(args or {})
+    coerced = dict(args or {})
+    for key, property_schema in properties.items():
+        if key not in coerced or not _schema_declares_numeric(property_schema):
+            continue
+        value = _coerce_rule_arg_value_for_schema(coerced[key], str(key), property_schema)
+        if _schema_declares_integer(property_schema) and isinstance(value, float):
+            value = int(round(value))
+        coerced[key] = value
+    return coerced
+
+
+def _schema_declares_numeric(property_schema: Any) -> bool:
+    types = _schema_type_names(property_schema)
+    return bool({"integer", "number"} & types)
+
+
+def _schema_declares_integer(property_schema: Any) -> bool:
+    return "integer" in _schema_type_names(property_schema)
+
+
+def _schema_type_names(property_schema: Any) -> set[str]:
+    if not isinstance(property_schema, dict):
+        return set()
+    type_value = property_schema.get("type")
+    if isinstance(type_value, str):
+        return {type_value}
+    if isinstance(type_value, list):
+        return {str(item) for item in type_value}
+    return set()
+
+
+def _coerce_rule_arg_value_for_schema(value: Any, key: str, property_schema: Any) -> Any:
+    if isinstance(value, bool) or value is None or isinstance(value, (int, float)):
+        return value
+    text = str(value).strip()
+    if not text:
+        return _schema_neutral_numeric_value(key, property_schema)
+    try:
+        number = float(text)
+        if _schema_looks_like_ten_scale(key, property_schema):
+            number = max(1, min(10, number))
+        return int(number) if number.is_integer() else number
+    except ValueError:
+        pass
+    if _schema_looks_like_ten_scale(key, property_schema):
+        return _coerce_ten_scale_value(text)
+    value = _coerce_rule_arg_value(value)
+    if value == 0:
+        return _schema_neutral_numeric_value(key, property_schema)
+    return value
+
+
+def _schema_looks_like_ten_scale(key: str, property_schema: Any) -> bool:
+    lowered = _schema_hint_text(key, property_schema)
+    return any(
+        term in lowered
+        for term in (
+            "1-10",
+            "1~10",
+            "1 到 10",
+            "1至10",
+            "1到10",
+            "1..10",
+            "1/10",
+            "十分",
+            "十级",
+            "scale 1",
+            "1 to 10",
+        )
+    )
+
+
+def _schema_neutral_numeric_value(key: str, property_schema: Any) -> int:
+    lowered = _schema_hint_text(key, property_schema)
+    if any(term in lowered for term in ("bonus", "modifier", "penalty", "加成", "修正", "惩罚")):
+        return 0
+    if _schema_looks_like_ten_scale(key, property_schema):
+        return 5
+    return 0
+
+
+def _schema_hint_text(key: str, property_schema: Any) -> str:
+    parts = [key]
+    if isinstance(property_schema, dict):
+        for field in ("title", "description"):
+            value = property_schema.get(field)
+            if value:
+                parts.append(str(value))
+    return " ".join(parts).lower()
+
+
+def _coerce_ten_scale_value(value: str) -> int:
+    lowered = value.lower()
+    high_terms = (
+        "极高",
+        "很高",
+        "强",
+        "大量",
+        "丰富",
+        "高",
+        "近距",
+        "接触",
+        "上风",
+        "下风",
+        "顺风",
+        "迎风",
+        "有风",
+        "大风",
+        "强风",
+        "contact",
+        "high",
+        "large",
+        "rich",
+        "abundant",
+        "close",
+        "windy",
+        "upwind",
+        "downwind",
+        "tailwind",
+        "headwind",
+    )
+    low_terms = (
+        "极低",
+        "很低",
+        "低",
+        "很少",
+        "稀少",
+        "小",
+        "弱",
+        "远",
+        "无风",
+        "避风",
+        "small",
+        "low",
+        "weak",
+        "far",
+        "scarce",
+        "calm",
+    )
+    mid_terms = ("中等", "适中", "中", "普通", "一般", "medium", "moderate", "normal")
+    if any(term in lowered for term in high_terms):
+        return 8
+    if any(term in lowered for term in low_terms):
+        return 2
+    if any(term in lowered for term in mid_terms):
+        return 5
+    return 5
+
+
+def _coerce_rule_args_for_retry(args: dict[str, Any]) -> dict[str, Any]:
+    return {str(key): _coerce_rule_arg_value(value) for key, value in dict(args or {}).items()}
+
+
+def _coerce_rule_arg_value(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {str(key): _coerce_rule_arg_value(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_coerce_rule_arg_value(item) for item in value]
+    if isinstance(value, bool) or value is None or isinstance(value, (int, float)):
+        return value
+    text = str(value).strip()
+    if not text:
+        return 0
+    try:
+        number = float(text)
+        return int(number) if number.is_integer() else number
+    except ValueError:
+        pass
+    lowered = text.lower()
+    score = 0
+    if any(term in lowered for term in ("上风", "下风", "顺风", "迎风", "有风", "大风", "强风", "windy", "upwind", "downwind", "tailwind", "headwind")):
+        score += 3
+    if any(term in lowered for term in ("微风", "弱风", "无风", "避风", "breeze", "calm")):
+        score += 1
+    if any(term in lowered for term in ("极高", "很高", "强", "大", "高", "近距", "接触", "contact", "high", "large", "close")):
+        score += 3
+    if any(term in lowered for term in ("中等", "中", "普通", "适应", "medium", "moderate", "normal")):
+        score += 2
+    if any(term in lowered for term in ("低", "小", "弱", "远", "small", "low", "weak", "far")):
+        score += 1
+    if any(term in lowered for term in ("谨慎", "小心", "cautious")):
+        score += 1
+    if any(term in lowered for term in ("直接", "鲁莽", "无观察", "reckless", "direct")):
+        score -= 1
+    return max(-5, min(5, score))
+
+
 def _filter_calculate_args(calculate: Any, args: dict[str, Any]) -> dict[str, Any]:
     try:
         signature = inspect.signature(calculate)
@@ -248,6 +505,8 @@ def _filter_calculate_args(calculate: Any, args: dict[str, Any]) -> dict[str, An
         return {"args": dict(args), "ignored": []}
     if any(param.kind == inspect.Parameter.VAR_KEYWORD for param in signature.parameters.values()):
         return {"args": dict(args), "ignored": [], "missing": []}
+    if _accepts_single_kwargs_mapping(signature):
+        return {"args": {"kwargs": dict(args)}, "ignored": [], "missing": []}
     accepted = {
         name
         for name, param in signature.parameters.items()
@@ -265,3 +524,13 @@ def _filter_calculate_args(calculate: Any, args: dict[str, Any]) -> dict[str, An
         and param.default is inspect.Parameter.empty
     )
     return {"args": filtered, "ignored": ignored, "missing": missing}
+
+
+def _accepts_single_kwargs_mapping(signature: inspect.Signature) -> bool:
+    parameters = list(signature.parameters.values())
+    return (
+        len(parameters) == 1
+        and parameters[0].name == "kwargs"
+        and parameters[0].kind
+        in (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)
+    )

@@ -112,11 +112,12 @@ class RuleTools:
             args=normalized_args,
             version=version,
         )
-        _augment_check_result(rule_name=rule_name, args=normalized_args, result=result)
+        effective_args = dict(result.get("coerced_args") or normalized_args)
+        _augment_check_result(rule_name=rule_name, args=effective_args, result=result)
         if result.get("rolls"):
             self._queue_dice_check(
                 rule_name=rule_name,
-                args=normalized_args,
+                args=effective_args,
                 version=version,
                 reason=reason,
                 result=result,

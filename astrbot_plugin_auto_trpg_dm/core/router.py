@@ -864,8 +864,10 @@ class IntentRouter:
             return {key: value for key, value in repaired.items() if key in allowed}
         if tool_name == "update_character_tags":
             if args.get("tags"):
-                return args
+                repaired.setdefault("character_id", "")
+                return repaired
             repaired.setdefault("raw_text", raw_player_message)
+            repaired.setdefault("character_id", "")
             return repaired
         if tool_name in {"update_scene", "update_world_tags"}:
             patch = repaired.get("patch")
@@ -949,6 +951,22 @@ class IntentRouter:
     async def _llm_generate_once(self, **kwargs: Any) -> Any:
         try:
             return await self.astr_context.llm_generate(**kwargs)
+        except json.JSONDecodeError as exc:
+            get_plugin_logger().warning(
+                "llm_tool_arguments_json_error fallback_to_text error=%s",
+                str(exc)[:200],
+            )
+            retry_kwargs = dict(kwargs)
+            retry_kwargs.pop("func_tool", None)
+            retry_kwargs.pop("tools", None)
+            retry_kwargs["prompt"] = (
+                str(retry_kwargs.get("prompt") or "")
+                + "\n\n刚才工具参数 JSON 无法解析。请不要再调用工具，直接用简短自然语言说明本轮无法完成工具结算，并让玩家重发更短动作。"
+            )
+            try:
+                return await self.astr_context.llm_generate(**retry_kwargs)
+            except Exception:
+                raise exc
         except TypeError as exc:
             if "func_tool" not in kwargs:
                 raise
@@ -956,6 +974,22 @@ class IntentRouter:
             retry_kwargs["tools"] = retry_kwargs.pop("func_tool")
             try:
                 return await self.astr_context.llm_generate(**retry_kwargs)
+            except json.JSONDecodeError as json_exc:
+                get_plugin_logger().warning(
+                    "llm_tool_arguments_json_error fallback_to_text error=%s",
+                    str(json_exc)[:200],
+                )
+                text_retry_kwargs = dict(kwargs)
+                text_retry_kwargs.pop("func_tool", None)
+                text_retry_kwargs.pop("tools", None)
+                text_retry_kwargs["prompt"] = (
+                    str(text_retry_kwargs.get("prompt") or "")
+                    + "\n\n刚才工具参数 JSON 无法解析。请不要再调用工具，直接用简短自然语言说明本轮无法完成工具结算，并让玩家重发更短动作。"
+                )
+                try:
+                    return await self.astr_context.llm_generate(**text_retry_kwargs)
+                except Exception:
+                    raise json_exc
             except TypeError:
                 raise exc
 
