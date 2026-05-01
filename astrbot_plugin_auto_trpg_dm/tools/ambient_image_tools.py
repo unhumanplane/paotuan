@@ -307,13 +307,13 @@ AMBIENT_IMAGE_PROMPT_SYSTEM = """你是 TRPG 氛围图提示词策划。你只�
 3. 保持同一跑团故事内的视觉风格一致；若已有风格线索，必须延续。
 4. 提示词应描述主题、地点、主要人物/轮廓、情绪、光线、构图、镜头、材质和色彩。
 5. 不要包含血腥猎奇、色情、真实人物肖像、版权角色、API key、平台 ID 或本地路径。
-6. 默认横向 4K 电影感氛围图；不要要求多张图。
+6. 默认横向 1.5k（1536x1024）、medium 质量的电影感氛围图；不要要求多张图。
 """
 
 
-DEFAULT_AMBIENT_IMAGE_PROMPT_TEMPLATE = """请根据跑团上下文，为 gpt-image-2 写一条高质量氛围图片 prompt。
+DEFAULT_AMBIENT_IMAGE_PROMPT_TEMPLATE = """请根据跑团上下文，为 gpt-image-2 写一条稳定、清晰的氛围图片 prompt。
 
-目标：只生成一张横向 4K、高质量、电影感 TRPG 氛围图。图片用于渲染氛围、推动剧情理解、展示关键场景或人物关系，不改变任何跑团事实。
+目标：只生成一张横向 1.5k（1536x1024）、medium 质量、电影感 TRPG 氛围图。图片用于渲染氛围、推动剧情理解、展示关键场景或人物关系，不改变任何跑团事实。
 
 同一故事的视觉风格必须稳定；如果 story_style 已存在，沿用它，不要另起画风。进入新故事后，旧故事的风格不再约束本次 prompt。
 
@@ -526,8 +526,8 @@ def build_ambient_image_prompt_request(
         "story_key": _ambient_story_key(session),
         "output_defaults": _prompt_json({
             "count": 1,
-            "size": "3840x2160",
-            "quality": "high",
+            "size": "1536x1024",
+            "quality": "medium",
             "purpose": "ambient story illustration only",
         }, 500),
     }
@@ -850,7 +850,7 @@ def _ambient_style_seed(session: Any) -> str:
         str(scene.get("style", "") or ""),
     ]
     joined = "；".join(item for item in seeds if item.strip())
-    return joined or "统一的电影感奇幻 TRPG 氛围，横向 4K，克制构图，重视光影和场景叙事。"
+    return joined or "统一的电影感奇幻 TRPG 氛围，横向 1.5k（1536x1024），克制构图，重视光影和场景叙事。"
 
 
 def _ambient_existing_story_style(session: Any) -> str:

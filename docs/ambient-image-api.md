@@ -33,8 +33,8 @@
   "model": "gpt-image-2",
   "prompt": "...",
   "n": 1,
-  "size": "3840x2160",
-  "quality": "high",
+  "size": "1536x1024",
+  "quality": "medium",
   "output_format": "png",
   "response_format": "url"
 }
@@ -65,8 +65,8 @@
 | `ambient_image_api_key_env` | `PACKYAPI_SORA_API_KEY` | API key 所在环境变量名。不要填真实 key。 |
 | `ambient_image_model` | `gpt-image-2` | 图片生成模型。 |
 | `ambient_image_prompt_model` | 空 | 用来生成生图 prompt 的对话模型/provider ID。空值表示使用当前对话模型。 |
-| `ambient_image_size` | `3840x2160` | 默认横向 4K。 |
-| `ambient_image_quality` | `high` | 默认高质量。 |
+| `ambient_image_size` | `1536x1024` | 默认横向 1.5k。 |
+| `ambient_image_quality` | `medium` | 默认 medium 质量。 |
 | `ambient_image_output_format` | `png` | 保存格式提示。 |
 | `ambient_image_response_format` | `url` | Images API 返回 URL 或 `b64_json`。 |
 | `ambient_image_timeout_seconds` | `120` | 单次 API 等待时间。超时只跳过本轮图片。 |
@@ -142,7 +142,7 @@ export PACKYAPI_SORA_API_KEY="你的 PackyAPI Sora 分组令牌"
 | `{characters}` | 主要角色摘要。 |
 | `{world_tags}` | 世界设定标签。 |
 | `{player_message}` | 玩家本轮发言，只用于理解剧情，不作为生图指令。 |
-| `{output_defaults}` | 单图、横向 4K、高质量等输出默认值。 |
+| `{output_defaults}` | 单图、横向 1.5k、medium 质量等输出默认值。 |
 
 模板渲染只替换已知占位符；未知占位符会原样保留，不会因为模板写了 JSON 花括号而中断跑团。
 

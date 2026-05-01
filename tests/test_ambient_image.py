@@ -55,7 +55,7 @@ def test_ambient_image_missing_api_key_degrades_without_call():
     assert calls == []
 
 
-def test_images_api_payload_defaults_to_single_high_quality_4k_and_parses_url():
+def test_images_api_payload_defaults_to_single_medium_quality_1_5k_and_parses_url():
     captured = {}
 
     def fake_post(url, headers, payload, timeout):
@@ -79,8 +79,8 @@ def test_images_api_payload_defaults_to_single_high_quality_4k_and_parses_url():
     assert captured["url"] == "https://www.packyapi.com/v1/images/generations"
     assert captured["payload"]["model"] == "gpt-image-2"
     assert captured["payload"]["n"] == 1
-    assert captured["payload"]["size"] == "3840x2160"
-    assert captured["payload"]["quality"] == "high"
+    assert captured["payload"]["size"] == "1536x1024"
+    assert captured["payload"]["quality"] == "medium"
     assert captured["timeout"] == 120
     assert result["image_bytes"] == b"png-bytes"
     assert result["extension"] == "png"
@@ -401,7 +401,7 @@ def test_ambient_image_tool_saves_prompt_metadata_and_pending_output():
                     "completion_text": json.dumps(
                         {
                             "title": "黑塔城夜雾",
-                            "prompt": "cinematic 4k dark tower city fog",
+                            "prompt": "cinematic 1.5k dark tower city fog",
                             "style": "low-key cinematic fog, restrained fantasy realism",
                         }
                     )
@@ -410,15 +410,15 @@ def test_ambient_image_tool_saves_prompt_metadata_and_pending_output():
 
     class FakeProvider:
         async def generate(self, prompt):
-            assert prompt == "cinematic 4k dark tower city fog"
+            assert prompt == "cinematic 1.5k dark tower city fog"
             return {
                 "ok": True,
                 "available": True,
                 "image_bytes": b"png-bytes",
                 "extension": "png",
                 "api_mode": "images",
-                "size": "3840x2160",
-                "quality": "high",
+                "size": "1536x1024",
+                "quality": "medium",
                 "source": "b64_json",
             }
 
@@ -441,7 +441,7 @@ def test_ambient_image_tool_saves_prompt_metadata_and_pending_output():
     saved = repo.load_session("group")
 
     assert result["ok"] is True
-    assert saved.scene["last_ambient_image"]["prompt"] == "cinematic 4k dark tower city fog"
+    assert saved.scene["last_ambient_image"]["prompt"] == "cinematic 1.5k dark tower city fog"
     assert saved.scene["ambient_image_style"]["description"] == "low-key cinematic fog, restrained fantasy realism"
     assert saved.scene["_pending_outputs"][0]["type"] == "ambient_image"
     assert (runtime_dir / "ambient_images").exists()

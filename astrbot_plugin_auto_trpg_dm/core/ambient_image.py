@@ -25,8 +25,8 @@ class AmbientImageConfig:
     api_key_env: str = "PACKYAPI_SORA_API_KEY"
     model: str = "gpt-image-2"
     prompt_model: str = ""
-    size: str = "3840x2160"
-    quality: str = "high"
+    size: str = "1536x1024"
+    quality: str = "medium"
     output_format: str = "png"
     response_format: str = "url"
     timeout_seconds: int = 120
@@ -184,8 +184,8 @@ class AmbientImageProvider:
         return {
             "model": model,
             "prompt": prompt,
-            "size": str(self.config.size or "3840x2160").strip() or "3840x2160",
-            "quality": str(self.config.quality or "high").strip() or "high",
+            "size": str(self.config.size or "1536x1024").strip() or "1536x1024",
+            "quality": str(self.config.quality or "medium").strip() or "medium",
             "output_format": str(self.config.output_format or "png").strip() or "png",
             "response_format": str(self.config.response_format or "url").strip() or "url",
             "n": 1,

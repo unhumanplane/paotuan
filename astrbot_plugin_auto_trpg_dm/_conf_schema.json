@@ -125,14 +125,14 @@
     "hint": ""
   },
   "ambient_image_size": {
-    "description": "图片尺寸。默认横向 4K。",
+    "description": "图片尺寸。默认横向 1.5k。",
     "type": "string",
-    "hint": "3840x2160"
+    "hint": "1536x1024"
   },
   "ambient_image_quality": {
-    "description": "图片质量。默认 high。",
+    "description": "图片质量。默认 medium。",
     "type": "string",
-    "hint": "high"
+    "hint": "medium"
   },
   "ambient_image_output_format": {
     "description": "图片输出格式。",
