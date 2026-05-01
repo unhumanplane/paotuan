@@ -13,6 +13,7 @@ from ..core.models import GameMode
 from ..rules.python_runtime import PythonRuleRuntime
 from ..storage.json_repository import JsonGameRepository
 from .diagnostic_tools import DiagnosticTools, EstimateTokenUsageArgs
+from .external_memory_tools import ExternalMemoryTools, SearchExternalMemoryArgs
 from .map_tools import GenerateMapSvgArgs, MapTools
 from .memory_tools import (
     BindPlayerCharacterArgs,
@@ -118,10 +119,14 @@ class ToolRegistry:
         repository: JsonGameRepository,
         rule_runtime: PythonRuleRuntime,
         astr_context: Any | None = None,
+        external_memory_config: Any | None = None,
+        external_memory: Any | None = None,
     ):
         self.repository = repository
         self.rule_runtime = rule_runtime
         self.astr_context = astr_context
+        self.external_memory_config = external_memory_config
+        self.external_memory = external_memory
 
     def for_mode(
         self,
@@ -139,9 +144,25 @@ class ToolRegistry:
             message=message,
         )
         memory_tools = MemoryTools(self.repository, session_id, actor=actor, message=message)
+        external_memory_tools = ExternalMemoryTools(
+            self.repository,
+            session_id,
+            actor=actor,
+            message=message,
+            external_memory=self.external_memory,
+        )
         spatial_tools = SpatialTools(self.repository, session_id, actor=actor)
         turn_tools = TurnTools(self.repository, session_id, actor=actor)
-        diagnostic_tools = DiagnosticTools(self.repository, session_id)
+        external_memory_config = self.external_memory_config
+        diagnostic_tools = DiagnosticTools(
+            self.repository,
+            session_id,
+            external_memory_enabled=bool(getattr(external_memory_config, "enabled", False)),
+            external_memory_read_enabled=bool(getattr(external_memory_config, "read_enabled", False)),
+            external_memory_max_context_chars=_safe_int(
+                getattr(external_memory_config, "max_context_chars", 0)
+            ),
+        )
         rulebook_tools = RulebookTools(self.repository, session_id)
         map_tools = MapTools(
             repository=self.repository,
@@ -216,6 +237,12 @@ class ToolRegistry:
                 description="会话控制工具：查询状态、备份存档、列出备份、在当前档为空时恢复上一个非空备份、重开当前会话、压缩记忆、查看最近调试记录。重开/清空存档必须先获取确认码，再用 confirm_reset 和 confirm_token 二次确认。",
                 model=SessionControlArgs,
                 handler=memory_tools.session_control,
+            ),
+            "search_external_memory": make_tool(
+                name="search_external_memory",
+                description="按需检索 Honcho 外置记忆，用于玩家询问旧事件、旧关系、玩家偏好、上一章 recap、未解决伏笔或角色长期倾向。返回内容只作非权威回忆线索；不得用它覆盖 HP、物品、位置、轮次、规则、骰子或工具结果。",
+                model=SearchExternalMemoryArgs,
+                handler=external_memory_tools.search_external_memory,
             ),
             "create_grid": make_tool(
                 name="create_grid",
@@ -483,12 +510,16 @@ class ToolRegistry:
 
     @staticmethod
     def _with_llm_decided_tools(names: list[str], message: str = "") -> list[str]:
-        """Expose visual generation unless the local intent is clearly text-only."""
-        if "generate_map_svg" in names:
-            return names
+        """Expose expensive/optional tools only when the message makes them useful."""
+        selected = list(names)
+        text = (message or "").strip().lower()
+        if text and _contains_any(text, EXTERNAL_MEMORY_TERMS):
+            selected.append("search_external_memory")
+        if "generate_map_svg" in selected:
+            return list(dict.fromkeys(selected))
         if message and _looks_text_only_request(message):
-            return names
-        return [*names, "generate_map_svg"]
+            return list(dict.fromkeys(selected))
+        return list(dict.fromkeys([*selected, "generate_map_svg"]))
 
     @staticmethod
     def _background_first_tool_names(names: list[str], message: str = "") -> list[str]:
@@ -516,7 +547,33 @@ class ToolRegistry:
         return allowed
 
 
+def _safe_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
 DIAGNOSTIC_TERMS = ("token", "上下文", "压缩", "调试", "debug", "日志", "消耗", "预算")
+EXTERNAL_MEMORY_TERMS = (
+    "honcho",
+    "外置记忆",
+    "长期记忆",
+    "还记得",
+    "记得",
+    "回忆",
+    "以前",
+    "之前",
+    "上次",
+    "上一章",
+    "前情",
+    "recap",
+    "关系",
+    "偏好",
+    "伏笔",
+    "旧事",
+    "过去",
+)
 MAP_SETUP_TERMS = ("创建地图", "重置地图", "生成地图", "放置", "摆放", "开战棋", "布置地图", "设置地图")
 CHARACTER_PROFILE_TERMS = (
     "人物卡",

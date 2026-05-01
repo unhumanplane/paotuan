@@ -50,7 +50,6 @@ class AutoTrpgDmPlugin(Star):
         self.repository = JsonGameRepository(data_dir)
         self.plugin_logger = configure_plugin_logging(self.repository.plugin_log_path())
         rule_runtime = PythonRuleRuntime(data_dir / "rules")
-        tool_registry = ToolRegistry(repository=self.repository, rule_runtime=rule_runtime, astr_context=context)
         honcho_config = HonchoMemoryConfig(
             enabled=self._config_bool("honcho_enabled", False),
             workspace_id=self._config_str("honcho_workspace_id", ""),
@@ -62,8 +61,20 @@ class AutoTrpgDmPlugin(Star):
             write_enabled=self._config_bool("honcho_write_enabled", True),
             read_enabled=self._config_bool("honcho_read_enabled", True),
             assistant_peer_id=self._config_str("honcho_assistant_peer_id", "paotuan_dm"),
+            cross_campaign_personalization_enabled=self._config_bool(
+                "honcho_cross_campaign_personalization_enabled",
+                False,
+            ),
         )
+        self.honcho_config = honcho_config
         external_memory = HonchoExternalMemory(honcho_config)
+        tool_registry = ToolRegistry(
+            repository=self.repository,
+            rule_runtime=rule_runtime,
+            astr_context=context,
+            external_memory_config=honcho_config,
+            external_memory=external_memory,
+        )
         self.router = IntentRouter(
             astr_context=context,
             repository=self.repository,
@@ -416,16 +427,30 @@ class AutoTrpgDmPlugin(Star):
             return self._format_local_status(session)
 
         if normalized in {"token", "tokens", "token消耗", "上下文", "上下文消耗"}:
-            usage = await DiagnosticTools(self.repository, session_id).estimate_token_usage("summary")
+            usage = await DiagnosticTools(
+                self.repository,
+                session_id,
+                external_memory_enabled=self.honcho_config.enabled,
+                external_memory_read_enabled=self.honcho_config.read_enabled,
+                external_memory_max_context_chars=self.honcho_config.max_context_chars,
+            ).estimate_token_usage("summary")
             current = usage.get("current", {})
             rough = usage.get("rough_token_estimate", {})
             compression = usage.get("compression", {})
+            external_memory = usage.get("external_memory", {})
+            external_note = ""
+            if external_memory.get("enabled") and external_memory.get("read_enabled"):
+                external_note = (
+                    f"Honcho 外置记忆本轮预算上限 {external_memory.get('configured_max_context_chars', 0)} 字；"
+                    "实际读取字符数以 router 日志为准。"
+                )
             self.repository.append_audit(session_id, {"type": "local_fast_path", "action": "token", "actor": actor})
             return (
                 "Token 粗算："
                 f"快照 {current.get('compact_snapshot_chars', 0)} 字，约 {rough.get('heuristic', 0)} token；"
                 f"完整存档 {current.get('full_save_chars', 0)} 字。"
                 f"距自动压缩约 {compression.get('snapshot_chars_remaining_before_compression', 0)} 字。"
+                f"{external_note}"
             )
 
         if normalized in {"当前轮次", "当前回合", "轮次", "回合", "谁行动", "轮到谁", "行动顺序", "战斗顺序", "轮动顺序"} or _looks_like_turn_status_request(text):

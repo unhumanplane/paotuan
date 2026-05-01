@@ -5,7 +5,11 @@ import json
 import re
 from typing import Any
 
-from .external_memory import HonchoExternalMemory, audit_safe_external_memory_result
+from .external_memory import (
+    HonchoExternalMemory,
+    audit_safe_external_memory_result,
+    external_memory_observation,
+)
 from .memory import MemoryCompressor
 from .modes import GameModeStateMachine
 from .models import GameMode, utc_now_iso
@@ -231,6 +235,14 @@ class IntentRouter:
                 if external_result.get("ok") and external_result.get("available"):
                     external_memory_context = str(external_result.get("context", "") or "")
                     external_memory_context_chars = len(external_memory_context)
+                    self.repository.append_audit(
+                        session_id,
+                        {
+                            "type": "external_memory_context_observed",
+                            "provider": "honcho",
+                            "result": external_memory_observation(external_result),
+                        },
+                    )
                 elif not external_result.get("ok", True):
                     self.repository.append_audit(
                         session_id,
@@ -379,7 +391,13 @@ class IntentRouter:
                         actor,
                         trace_record,
                     )
-                    if external_write.get("available") or not external_write.get("ok", True):
+                    if external_write.get("synced"):
+                        self.repository.save_session(latest_session)
+                    if (
+                        external_write.get("available")
+                        or not external_write.get("ok", True)
+                        or external_write.get("reason") == "duplicate_external_memory_event"
+                    ):
                         self.repository.append_audit(
                             session_id,
                             {
@@ -418,7 +436,13 @@ class IntentRouter:
                         actor,
                         reason="post_message_compression",
                     )
-                    if external_summary.get("available") or not external_summary.get("ok", True):
+                    if external_summary.get("synced"):
+                        self.repository.save_session(latest_session)
+                    if (
+                        external_summary.get("available")
+                        or not external_summary.get("ok", True)
+                        or external_summary.get("reason") == "duplicate_external_memory_event"
+                    ):
                         self.repository.append_audit(
                             session_id,
                             {
@@ -685,7 +709,7 @@ class IntentRouter:
             audit_record = {
                 "type": "llm_tool_step",
                 "step": step + 1,
-                "tool_results": tool_results,
+                "tool_results": _audit_safe_tool_results(tool_results),
             }
             if audit_lock is None:
                 self.repository.append_audit(session_id, audit_record)
@@ -2421,6 +2445,17 @@ def _tool_result_ok(result: Any) -> bool:
     if isinstance(result, dict):
         return bool(result.get("ok", True))
     return result is not None
+
+
+def _audit_safe_tool_results(tool_results: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    safe_results: list[dict[str, Any]] = []
+    for item in tool_results:
+        safe_item = dict(item)
+        result = safe_item.get("result")
+        if item.get("tool") == "search_external_memory" and isinstance(result, dict):
+            safe_item["result"] = audit_safe_external_memory_result(result)
+        safe_results.append(safe_item)
+    return safe_results
 
 
 def _contains_any_term(text: str, terms: tuple[str, ...]) -> bool:
