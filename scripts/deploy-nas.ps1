@@ -129,8 +129,12 @@ if ($Pull) {
 
 if (-not $SkipChecks) {
     Run "python" @("-m", "compileall", "-q", "astrbot_plugin_auto_trpg_dm", "tests")
-    & python -c "import pytest" 2>$null
-    if ($LASTEXITCODE -eq 0) {
+    $previousErrorActionPreference = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    & python -c "import importlib.util, sys; sys.exit(0 if importlib.util.find_spec('pytest') else 1)" *> $null
+    $pytestAvailable = ($LASTEXITCODE -eq 0)
+    $ErrorActionPreference = $previousErrorActionPreference
+    if ($pytestAvailable) {
         Run "python" @("-m", "pytest", "-q")
     } else {
         Write-Warning "pytest is not installed; compileall passed, pytest skipped."
