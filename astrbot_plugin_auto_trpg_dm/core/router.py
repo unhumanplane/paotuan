@@ -5,6 +5,8 @@ import json
 import re
 from typing import Any
 
+from .cycle_buffer import append_cycle_action, complete_cycle_without_ra, cycle_end_requested
+from .environment_agent import RecorderAgent, complete_cycle_with_ra, recover_cycle_after_ra_failure
 from .external_memory import (
     HonchoExternalMemory,
     audit_safe_external_memory_result,
@@ -55,6 +57,7 @@ class IntentRouter:
         tool_registry: ToolRegistry,
         external_memory: HonchoExternalMemory | None = None,
         max_steps: int = 8,
+        ra_enabled: bool = False,
     ):
         self.astr_context = astr_context
         self.repository = repository
@@ -63,6 +66,7 @@ class IntentRouter:
         self.mode_machine = GameModeStateMachine()
         self.memory_compressor = MemoryCompressor()
         self.max_steps = max_steps
+        self.ra_enabled = ra_enabled
         self._session_locks: dict[str, asyncio.Lock] = {}
         self._session_turn_locks: dict[str, asyncio.Lock] = {}
 
@@ -259,6 +263,7 @@ class IntentRouter:
                 tool_specs,
                 actor=actor,
                 external_memory_context=external_memory_context,
+                include_ra_context=self.ra_enabled,
             )
             tool_schema_text = json.dumps(tool_specs, ensure_ascii=False, separators=(",", ":"))
             get_plugin_logger().info(
@@ -370,6 +375,15 @@ class IntentRouter:
                 player_message=message,
                 completion=completion,
             )
+            cycle_action_record = None
+            if trace_record:
+                cycle_action_record = append_cycle_action(
+                    latest_session,
+                    actor=actor,
+                    player_message=message,
+                    completion=completion,
+                    tool_results=tool_trace,
+                )
             if trace_record:
                 self.repository.save_session(latest_session)
                 self.repository.append_audit(
@@ -406,6 +420,56 @@ class IntentRouter:
                                 "result": audit_safe_external_memory_result(external_write),
                             },
                         )
+            if cycle_action_record:
+                self.repository.append_audit(
+                    session_id,
+                    {
+                        "type": "cycle_action_recorded",
+                        **cycle_action_record,
+                    },
+                )
+            if cycle_end_requested(tool_trace):
+                if self.ra_enabled:
+                    ra_result = await RecorderAgent(self._llm_generate, provider_id).run_cycle_resolution(latest_session)
+                    if ra_result.get("ok"):
+                        completion_record = complete_cycle_with_ra(latest_session, ra_result["summary"])
+                        self.repository.save_session(latest_session)
+                        self.repository.append_audit(
+                            session_id,
+                            {
+                                "type": "ra_cycle_resolved",
+                                "actor": actor,
+                                **completion_record,
+                                "prompt_chars": ra_result.get("prompt_chars", 0),
+                                "output_chars": ra_result.get("output_chars", 0),
+                            },
+                        )
+                    else:
+                        recovery_record = recover_cycle_after_ra_failure(latest_session, ra_result)
+                        self.repository.save_session(latest_session)
+                        self.repository.append_audit(
+                            session_id,
+                            {
+                                "type": "ra_cycle_failed",
+                                "actor": actor,
+                                "cycle_id": latest_session.current_cycle_id,
+                                "error": ra_result.get("error", "ra_failed"),
+                                "message": ra_result.get("message", ""),
+                                "recovery": recovery_record,
+                            },
+                        )
+                else:
+                    complete_cycle_without_ra(latest_session)
+                    self.repository.save_session(latest_session)
+                    self.repository.append_audit(
+                        session_id,
+                        {
+                            "type": "cycle_resolved_without_ra",
+                            "actor": actor,
+                            "cycle_id": latest_session.current_cycle_id - 1,
+                            "reason": "ra_enabled_false",
+                        },
+                    )
             self.repository.append_audit(
                 session_id,
                 {

@@ -19,6 +19,14 @@ DEFAULT_RESPONSE_STYLE = {
 }
 
 
+BASE_RULES = """共享基础规则：
+- 玩家只能声明意图，不能直接声明成功、命中、击杀、获得物品、改写世界事实或控制其他玩家角色。
+- 叙事可以有风格和夸张，但 HP、位置、资源、状态、回合、规则结果等权威字段必须以工具返回、validator 结果和状态迁移为准。
+- 周期结束只能通过 `cycle_control(action="end_cycle")` 显式工具调用；不要使用完成文本、暗号或启发式猜测来结束周期。
+- RA 只读取 `ra_cycle_input` 过滤投影和清洗后的权威字段快照，不读取完整 `GameSession`、原始玩家输入、prompt、诊断字段或 raw audit。
+- RA 输出的状态字段只是补丁候选；框架只应用 allowlisted、tool-backed、validator 通过的权威字段。"""
+
+
 def build_system_prompt(
     session: GameSession,
     mode: GameMode,
@@ -26,9 +34,13 @@ def build_system_prompt(
     tool_specs: list[dict] | None = None,
     actor: dict | None = None,
     external_memory_context: str = "",
+    include_ra_context: bool = False,
 ) -> str:
+    snapshot_data = session.compact_snapshot()
+    if not include_ra_context:
+        snapshot_data.pop("environment_summaries", None)
     snapshot = json.dumps(
-        session.compact_snapshot(),
+        snapshot_data,
         ensure_ascii=False,
         indent=2,
     )
@@ -45,6 +57,9 @@ def build_system_prompt(
         ensure_ascii=False,
         indent=2,
     )
+    cycle_context_block = ""
+    if include_ra_context and session.environment_summaries:
+        cycle_context_block = "\n上一周期 RA 摘要上下文：\n" + build_cycle_start_prompt(session.environment_summaries[-1])
     background_gate = (
         "已完成：可以在既有背景内生成剧本、角色卡和战场。"
         if _has_campaign_background(session)
@@ -59,6 +74,8 @@ def build_system_prompt(
         else ""
     )
     return f"""你是 AstrBot 内的全自动 TRPG DM 智能体。你必须以自然语言理解玩家输入，并用工具推进确定性状态。
+
+{BASE_RULES}
 
 硬性规则：
 0. DM 行为准则：
@@ -209,8 +226,62 @@ def build_system_prompt(
 
 长期记忆压缩摘要：
 {session.memory_summary or "暂无"}
-{external_memory_section}
+{external_memory_section}{cycle_context_block}
 """
+
+
+def build_ra_system_prompt() -> str:
+    return f"""你是 Recorder Agent（RA），负责在叙事周期结束后生成机器可读的周期摘要和受限补丁候选。
+
+{BASE_RULES}
+
+RA 工作边界：
+- 只根据 `ra_cycle_input`、清洗后的权威字段快照和 BASE_RULES 输出 JSON。
+- 不生成面向玩家的叙事，不调用工具，不重写 DM 创意叙事。
+- `summary` 可总结本周期发生了什么；`character_status`、`enemy_status`、`world_changes`、`rule_sets` 只能作为补丁候选。
+- 权威字段必须能从工具结果、validator 结果或已有权威状态推出；无法确认时写入 `discrepancies`，不要猜测。
+- 输出必须是合法 JSON，不要包含 Markdown、解释文字或代码块。"""
+
+
+def build_ra_cycle_prompt(ra_cycle_input: dict, authority_snapshot: dict) -> str:
+    ra_input_json = json.dumps(ra_cycle_input, ensure_ascii=False, indent=2)
+    authority_snapshot_json = json.dumps(authority_snapshot, ensure_ascii=False, indent=2)
+    return f"""请读取本周期过滤输入和清洗后的权威字段快照，输出一个合法 JSON 对象。
+不得输出 Markdown、代码块、解释文字或面向玩家的叙事。
+
+输出 schema：
+{{
+  "cycle_id": 0,
+  "summary": "本周期发生的事实摘要",
+  "character_status": [],
+  "enemy_status": [],
+  "world_changes": [],
+  "rules_triggered": [],
+  "dm_narrative_aligned": true,
+  "discrepancies": []
+}}
+
+字段要求：
+- `summary` 只总结已发生内容，不新增剧情事实。
+- `character_status`、`enemy_status`、`world_changes`、`rules_triggered` 都只是补丁候选；只有工具结果或 validator 已支撑的内容才可写入。
+- 无法确认、DM 叙事与工具结果不一致、或候选缺少权威依据时，写入 `discrepancies`，不要自行圆谎。
+
+本周期 RA 输入：
+{ra_input_json}
+
+清洗后的权威字段快照：
+{authority_snapshot_json}
+"""
+
+
+def build_cycle_start_prompt(ra_summary: dict | None) -> str:
+    summary = ra_summary or {}
+    return """下一周期启动上下文：
+请基于以下已经验证的 RA 摘要推进下一幕。若 discrepancies 非空，先用合理场内解释圆回冲突；无法圆回时，简短更正上一段叙事。不要把未验证的补丁候选当成事实。
+
+RA 摘要：
+{summary}
+""".format(summary=json.dumps(summary, ensure_ascii=False, indent=2))
 
 
 def build_user_prompt(message: str, security_notes: list[str] | None = None) -> str:

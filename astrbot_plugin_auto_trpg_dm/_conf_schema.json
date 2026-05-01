@@ -88,5 +88,10 @@
     "description": "是否允许同一玩家的偏好跨团复用。默认关闭；关闭时玩家 peer 会按 campaign 隔离，避免把 A 团偏好或语境带到 B 团。",
     "type": "bool",
     "hint": "false"
+  },
+  "ra_enabled": {
+    "description": "是否启用 Recorder Agent 周期结算。默认关闭；关闭时保持现有单 DM 行为。",
+    "type": "bool",
+    "hint": "false"
   }
 }
