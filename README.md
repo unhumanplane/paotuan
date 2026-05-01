@@ -81,12 +81,37 @@ pip install honcho-ai
 honcho_enabled=true
 honcho_workspace_id=paotuan-prod
 honcho_api_key_env=HONCHO_API_KEY
+honcho_base_url=
+honcho_environment=production
+honcho_timeout_seconds=8
 honcho_read_enabled=true
 honcho_write_enabled=true
 honcho_max_context_chars=1600
+honcho_assistant_peer_id=paotuan_dm
+honcho_cross_campaign_personalization_enabled=false
 ```
 
 真实 API key 应放在环境变量里，例如 `HONCHO_API_KEY`，不要写进仓库或插件配置文件。建议一个机器人环境对应一个 Honcho workspace，Honcho session 按群、团或章节切分；玩家 peer 和角色 peer 分开，避免把玩家偏好和角色知识混写。
+
+通常只需要配置 `honcho_enabled`、`honcho_workspace_id` 和环境变量里的 API key。`honcho_base_url` 只在自托管 Honcho 时填写；`honcho_environment` 用于区分 production/dev；`honcho_timeout_seconds` 控制单次外置记忆调用的最长等待时间；`honcho_assistant_peer_id` 是 Honcho 里代表 paotuan DM 的 peer。
+
+`honcho_cross_campaign_personalization_enabled` 默认关闭。关闭时，同一玩家在不同 campaign 会得到不同 player peer，避免跨团串味；打开后只建议复用玩家级偏好，例如节奏、详细程度、战斗复杂度接受度、谜题偏好和 recap 风格，不复用角色事实或剧情事实。
+
+写入 Honcho 前会按 `paotuan.external_memory.v1` 契约生成 metadata，并对正文、检索 query 和外发 ID 做安全处理：平台玩家 ID、群 ID 等会变成稳定 pseudonym；本机路径、服务器路径、API key、token、prompt 和 audit 片段会被替换为 `[redacted]`。这保证 Honcho 侧只拿到可用于长期回忆的跑团投影，而不是本地账号、部署环境或原始调试材料。
+
+外置写入还会记录短 `source_event_id` 标记，用来避免同一关键事件或同一压缩摘要在重试时重复写入 Honcho；这个标记只用于幂等控制，不包含原文。
+
+读取 Honcho context 时，插件会把记忆标成“可用回忆线索”或“状态敏感线索”。玩家偏好、关系、recap 和伏笔可以辅助叙事；涉及 HP、物品、位置、轮次、规则或骰子的外部记忆只能当历史线索，不能覆盖当前本地状态和工具结果。
+
+当玩家明确追问“上次”“以前”“关系”“偏好”“前情 recap”或“伏笔”这类长期回忆时，router 还会按需暴露 `search_external_memory` 工具，让 LLM 主动检索 Honcho。这个工具不会修改本地状态；工具返回给 LLM 的正文不会原样写进本地 audit。
+
+玩家和角色会使用不同 Honcho peer：玩家 peer 主要保存偏好、节奏和互动风格，角色 peer 主要保存角色经历、关系和个人弧光。读取时如果当前玩家绑定了角色，会分别查询“玩家偏好视角”和“角色知识视角”；写入关键事件时，玩家行动摘要写入玩家 peer，角色经历/裁定写入角色 peer。
+
+Honcho dreams 相关能力暂时只接入本地安全契约：未来 dream 产出的玩家偏好、角色倾向、关系、recap 或 DM 风格洞察，必须先变成已脱敏、非权威、待审阅的建议；证据不足、置信度过低或不属于允许类型的内容会被丢弃。
+
+每次外置记忆读取还会附带 campaign lifecycle scope，包括 workspace、campaign、chapter、phase、Honcho session 和 peer IDs。当前 prompt 默认只取当前章节；旧章节应通过明确的回忆检索工具查询，避免污染当前回合预算。
+
+外置记忆的观测信息只记录安全指标，例如读取/写入是否成功、错误类型、context 字符数、是否截断、是否重复跳过和是否出现状态敏感线索；不会把 Honcho context、写入正文、完整 prompt、原始 audit、凭证或原始平台 ID 复制进本地 audit 或 `/dm token` 诊断。手动回滚很直接：关闭 `honcho_enabled` 或关闭读写开关后，跑团会回到本地 JSON 行为。
 
 ## 当前能力一览
 
