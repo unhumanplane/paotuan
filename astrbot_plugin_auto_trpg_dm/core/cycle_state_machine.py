@@ -67,7 +67,7 @@ class CycleStateMachine:
 
 _VALID_TRANSITIONS: dict[CycleState, set[CycleState]] = {
     CycleState.CYCLE_ACTIVE: {CycleState.CYCLE_RESOLVING},
-    CycleState.CYCLE_RESOLVING: {CycleState.CYCLE_TRANSITION},
+    CycleState.CYCLE_RESOLVING: {CycleState.CYCLE_TRANSITION, CycleState.CYCLE_ACTIVE},
     CycleState.CYCLE_TRANSITION: {CycleState.CYCLE_ACTIVE},
 }
 

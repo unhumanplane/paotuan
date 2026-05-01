@@ -6,7 +6,8 @@ from typing import Any
 
 from .memory import MemoryCompressor
 from .modes import GameModeStateMachine
-from .models import GameMode, utc_now_iso
+from .cycle_state_machine import CycleStateMachine
+from .models import CycleState, GameMode, utc_now_iso
 from .plugin_log import get_plugin_logger
 from .prompts import build_system_prompt, build_user_prompt
 from ..storage.json_repository import JsonGameRepository
@@ -51,6 +52,7 @@ class IntentRouter:
         self.max_steps = max_steps
         self._session_locks: dict[str, asyncio.Lock] = {}
         self._session_turn_locks: dict[str, asyncio.Lock] = {}
+        self._last_tool_trace: list[dict[str, Any]] = []
 
     async def handle_message(
         self,
@@ -184,6 +186,8 @@ class IntentRouter:
 
         async with lock:
             latest_session = self.repository.load_session(session_id)
+            self._maybe_append_cycle_buffer(latest_session, session_id, actor, message, completion)
+            self._maybe_resolve_cycle(latest_session, session_id)
             completion = self._limit_completion(completion, latest_session, raw_player_message=message)
             fallback_turn = await self._maybe_auto_advance_resolved_turn(
                 session=latest_session,
@@ -370,6 +374,77 @@ class IntentRouter:
             )
         return event
 
+    def _maybe_append_cycle_buffer(
+        self,
+        session: Any,
+        session_id: str,
+        actor: dict[str, str] | None,
+        player_message: str,
+        completion: str,
+    ) -> None:
+        if not _looks_like_stateful_player_message(player_message):
+            return
+        try:
+            player_id = str((actor or {}).get("player_id") or "").strip()
+            character_id = str((session.player_character_map or {}).get(player_id, "") or "")
+            CycleStateMachine.append_action(
+                session,
+                player_id=player_id,
+                character_id=character_id,
+                player_message=player_message,
+                dm_narrative=completion,
+                tools_called=list(self._last_tool_trace),
+            )
+            self.repository.save_session(session)
+            self.repository.append_audit(
+                session_id,
+                {
+                    "type": "cycle_action_appended",
+                    "cycle_id": session.current_cycle_id,
+                    "cycle_state": session.cycle_state.value,
+                    "player_id": player_id,
+                    "character_id": character_id,
+                },
+            )
+        except Exception as exc:
+            get_plugin_logger().warning(
+                "cycle_buffer_append_failed session=%s error=%s",
+                session_id,
+                exc,
+            )
+
+    def _maybe_resolve_cycle(
+        self,
+        session: Any,
+        session_id: str,
+    ) -> dict[str, Any] | None:
+        if session.cycle_state != CycleState.CYCLE_RESOLVING:
+            return None
+        try:
+            CycleStateMachine.transition(session, CycleState.CYCLE_ACTIVE)
+            self.repository.save_session(session)
+            self.repository.append_audit(
+                session_id,
+                {
+                    "type": "cycle_resolved_short_circuit",
+                    "reason": "RA Recorder Agent not yet implemented (PR 4); short-circuiting RESOLVING -> ACTIVE",
+                    "cycle_id": session.current_cycle_id,
+                },
+            )
+            get_plugin_logger().info(
+                "cycle_resolved_short_circuit session=%s cycle_id=%s",
+                session_id,
+                session.current_cycle_id,
+            )
+            return {"short_circuit": True, "cycle_id": session.current_cycle_id}
+        except Exception as exc:
+            get_plugin_logger().warning(
+                "cycle_resolve_short_circuit_failed session=%s error=%s",
+                session_id,
+                exc,
+            )
+            return None
+
     def _lock_for_session(self, session_id: str) -> asyncio.Lock:
         lock = self._session_locks.get(session_id)
         if lock is None:
@@ -425,6 +500,7 @@ class IntentRouter:
         audit_lock: asyncio.Lock | None = None,
         raw_player_message: str = "",
     ) -> str:
+        self._last_tool_trace = []
         contexts: list[dict[str, str]] = []
         prompt = initial_prompt
         last_error_tool = ""
@@ -492,6 +568,13 @@ class IntentRouter:
                 tool_results.append(
                     {
                         "tool": tool_name,
+                        "args": args,
+                        "result": result,
+                    }
+                )
+                self._last_tool_trace.append(
+                    {
+                        "name": tool_name,
                         "args": args,
                         "result": result,
                     }

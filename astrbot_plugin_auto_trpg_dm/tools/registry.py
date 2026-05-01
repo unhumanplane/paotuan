@@ -34,6 +34,7 @@ from .spatial_tools import (
     SpatialTools,
 )
 from .turn_tools import TurnControlArgs, TurnTools
+from .cycle_tools import CycleControlArgs, CycleTools
 
 
 ToolHandler = Callable[..., Awaitable[dict[str, Any]]]
@@ -140,6 +141,7 @@ class ToolRegistry:
         memory_tools = MemoryTools(self.repository, session_id, actor=actor, message=message)
         spatial_tools = SpatialTools(self.repository, session_id, actor=actor)
         turn_tools = TurnTools(self.repository, session_id, actor=actor)
+        cycle_tools = CycleTools(self.repository, session_id, actor=actor)
         diagnostic_tools = DiagnosticTools(self.repository, session_id)
         map_tools = MapTools(
             repository=self.repository,
@@ -244,6 +246,12 @@ class ToolRegistry:
                 description="控制战斗轮动状态：场面结算、角色回合、行动顺序、本轮乱序行动记录、推进下一建议行动者、120 秒超时、无人响应自动保守行动。",
                 model=TurnControlArgs,
                 handler=turn_tools.turn_control,
+            ),
+            "cycle_control": make_tool(
+                name="cycle_control",
+                description="控制叙事周期边界：end_cycle 结束当前叙事周期并触发 RA 结算；start_cycle 开始新周期并重置 buffer。周期是叙事概念，可跨越多个战斗回合。",
+                model=CycleControlArgs,
+                handler=cycle_tools.cycle_control,
             ),
             "generate_map_svg": make_tool(
                 name="generate_map_svg",
