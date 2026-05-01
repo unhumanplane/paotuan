@@ -60,58 +60,143 @@
 
 ### 4. Honcho 外置记忆增强
 
-Honcho 接入是可选增强层，不替代本地 `GameSession` 和 `JsonGameRepository`。本地 JSON 仍然是 HP、物品、位置、回合、规则结果等强一致事实的权威来源；Honcho 只提供玩家偏好、角色倾向、幕间 recap 和关键事件这类辅助回忆。
+Honcho 接入是可选增强层，不替代本地 `GameSession` 和 `JsonGameRepository`。本地 JSON 仍然是 HP、物品、位置、回合、规则结果等强一致事实的权威来源；Honcho 只提供玩家偏好、角色倾向、幕间 recap、伏笔和关键事件这类辅助回忆。
 
-第一版采用“摘要/关键事件同步 + context 注入”：
+接入后能带来的能力：
 
-- prompt 前读取 Honcho context，并作为单独的“外部 Honcho 辅助记忆”段落注入。
-- 本地完成叙事轨迹或压缩摘要后，把受控摘要写入 Honcho。
+- 每轮回复前读取 Honcho context，并作为单独的“外部 Honcho 辅助记忆”段落注入 prompt。
+- 本地完成叙事轨迹或压缩摘要后，把受控摘要和关键事件写入 Honcho。
+- 玩家追问“上次”“以前”“关系”“偏好”“前情 recap”“伏笔”时，router 会按需暴露 `search_external_memory` 工具，让 LLM 主动检索长期记忆。
+- 玩家 peer 和角色 peer 分开：玩家 peer 保存偏好、节奏和互动风格；角色 peer 保存角色经历、关系、承诺、伤痕、恐惧和个人弧光。
+- 当前章节默认进入 prompt；旧章节通过明确的回忆检索工具查询，避免污染每轮上下文预算。
+- `/dm token` 会显示外置记忆预算和最近读写观测指标，便于判断是否启用、是否超时、是否重复跳过。
+
+它不会做这些事：
+
+- 不把 Honcho 当作 HP、物品、位置、回合、规则结果或骰子结果的权威来源。
 - 不写完整原始聊天流、完整 prompt、原始 audit、凭证、服务器路径或本地环境隐私。
-- Honcho 不可用、未安装 `honcho-ai`、缺少 API key 或请求超时时，本地跑团继续运行，并写入受控 audit 诊断。
+- 不要求安装 Honcho 才能跑团。Honcho 不可用、未安装 `honcho-ai`、缺少 API key 或请求超时时，本地跑团继续运行。
+- 不自动使用 Honcho dreams 改写本地状态。当前只保留本地安全契约：未来 dream 产出的玩家偏好、角色倾向、关系、recap 或 DM 风格洞察，必须先变成已脱敏、非权威、待审阅的建议。
 
-启用时，需要在 AstrBot 运行环境安装 Honcho SDK：
+#### 部署 Honcho
 
-```powershell
-pip install honcho-ai
-```
+Honcho 官方文档入口：
 
-然后通过插件配置设置：
+- [Honcho Quickstart](https://docs.honcho.dev/v3/documentation/introduction/quickstart)
+- [Honcho SDK Reference](https://docs.honcho.dev/v3/documentation/reference/sdk)
+- [Honcho self-hosting](https://docs.honcho.dev/v3/contributing/self-hosting)
+
+部署步骤：
+
+1. 在 Honcho 控制台创建 API key。生产环境建议使用 `environment=production`。
+2. 在运行 AstrBot 的同一个 Python 环境里安装 SDK：
+
+   ```powershell
+   python -m pip install honcho-ai
+   ```
+
+3. 把 API key 放到 AstrBot 进程能读取的环境变量里，不要写进仓库或插件配置文件。
+
+   Windows PowerShell 当前窗口临时设置：
+
+   ```powershell
+   $env:HONCHO_API_KEY="your-honcho-api-key"
+   ```
+
+   Windows 持久设置：
+
+   ```powershell
+   setx HONCHO_API_KEY "your-honcho-api-key"
+   ```
+
+   Linux / macOS shell：
+
+   ```bash
+   export HONCHO_API_KEY="your-honcho-api-key"
+   ```
+
+   使用 `setx` 或系统服务配置后，需要重启 AstrBot，让新环境变量进入进程。
+
+4. 在 AstrBot 插件配置里启用 Honcho：
+
+   ```text
+   honcho_enabled=true
+   honcho_workspace_id=paotuan-prod
+   honcho_api_key_env=HONCHO_API_KEY
+   honcho_base_url=
+   honcho_environment=production
+   honcho_timeout_seconds=8
+   honcho_read_enabled=true
+   honcho_write_enabled=true
+   honcho_max_context_chars=1600
+   honcho_assistant_peer_id=paotuan_dm
+   honcho_cross_campaign_personalization_enabled=false
+   ```
+
+5. 重启 AstrBot 或重新加载插件，然后在一个测试团里发几轮 `/dm` 消息，让插件产生关键事件或压缩摘要。
+6. 用 `/dm token` 查看外置记忆预算和观测摘要。如果 Honcho 正常工作，后续追问“还记得上次我们答应了谁吗？”这类问题时，router 会按需检索长期记忆。
+
+自托管 Honcho 时，把 `honcho_base_url` 设置为你的服务地址，例如 `http://localhost:8000` 或内网 HTTPS 地址；Honcho Cloud 通常留空。
+
+#### 配置项
+
+| 配置项 | 默认值 | 作用 | 建议 |
+| --- | --- | --- | --- |
+| `honcho_enabled` | `false` | 总开关。关闭时不会读取或写入 Honcho。 | 第一次部署前保持关闭；确认 SDK、API key 和 workspace 后再打开。 |
+| `honcho_workspace_id` | 空 | Honcho workspace ID。 | 一个机器人环境一个 workspace，例如 `paotuan-prod`、`paotuan-dev`。 |
+| `honcho_api_key_env` | `HONCHO_API_KEY` | 保存 API key 的环境变量名。 | 只写变量名，不写真实 key。 |
+| `honcho_base_url` | 空 | 自托管 Honcho API 地址。 | 使用 Honcho Cloud 时留空；自托管时填写完整 base URL。 |
+| `honcho_environment` | `production` | 传给 Honcho SDK 的 environment。 | 生产环境用 `production`，测试环境可用单独 workspace 区分。 |
+| `honcho_timeout_seconds` | `8` | 单次 Honcho 读写最长等待时间。 | 网络慢可调大；超时只影响本轮外置记忆，不影响本地跑团。 |
+| `honcho_read_enabled` | `true` | 是否在 prompt 前读取 Honcho context。 | 排查 prompt 预算或内容污染时可单独关闭。 |
+| `honcho_write_enabled` | `true` | 是否把受控摘要和关键事件写入 Honcho。 | 只想试读不想写入时关闭。 |
+| `honcho_max_context_chars` | `1600` | 每轮注入 prompt 的 Honcho context 最大字符数。 | 小模型或高频群聊可调低；需要更多 recap 时可调高。 |
+| `honcho_assistant_peer_id` | `paotuan_dm` | Honcho 里代表 paotuan DM 的 peer ID。 | 多个机器人共用 workspace 时应使用不同 ID。 |
+| `honcho_cross_campaign_personalization_enabled` | `false` | 是否允许同一玩家的偏好跨团复用。 | 默认关闭。打开后只复用玩家级偏好，不复用角色事实或剧情事实。 |
+
+#### 如何使用
+
+普通跑团时不需要新命令。玩家继续用自然语言和 `/dm` 互动，插件会在后台读写外置记忆。
+
+适合触发长期回忆检索的说法：
 
 ```text
-honcho_enabled=true
-honcho_workspace_id=paotuan-prod
-honcho_api_key_env=HONCHO_API_KEY
-honcho_base_url=
-honcho_environment=production
-honcho_timeout_seconds=8
-honcho_read_enabled=true
-honcho_write_enabled=true
-honcho_max_context_chars=1600
-honcho_assistant_peer_id=paotuan_dm
-honcho_cross_campaign_personalization_enabled=false
+/dm 还记得上次我们答应了酒馆老板什么吗？
+/dm 我以前和这个 NPC 的关系怎么样？
+/dm 上一章最后留下了哪些伏笔？
+/dm 你记得我更喜欢细节多一点还是节奏快一点吗？
 ```
 
-真实 API key 应放在环境变量里，例如 `HONCHO_API_KEY`，不要写进仓库或插件配置文件。建议一个机器人环境对应一个 Honcho workspace，Honcho session 按群、团或章节切分；玩家 peer 和角色 peer 分开，避免把玩家偏好和角色知识混写。
+这些请求会让 router 倾向于暴露 `search_external_memory`。工具返回内容只作非权威回忆线索；如果它和本地状态、工具结果或规则执行冲突，必须以本地结果为准。
 
-通常只需要配置 `honcho_enabled`、`honcho_workspace_id` 和环境变量里的 API key。`honcho_base_url` 只在自托管 Honcho 时填写；`honcho_environment` 用于区分 production/dev；`honcho_timeout_seconds` 控制单次外置记忆调用的最长等待时间；`honcho_assistant_peer_id` 是 Honcho 里代表 paotuan DM 的 peer。
+写入 Honcho 的内容主要来自：
 
-`honcho_cross_campaign_personalization_enabled` 默认关闭。关闭时，同一玩家在不同 campaign 会得到不同 player peer，避免跨团串味；打开后只建议复用玩家级偏好，例如节奏、详细程度、战斗复杂度接受度、谜题偏好和 recap 风格，不复用角色事实或剧情事实。
+- 叙事轨迹里的关键行动和结果；
+- 本地 memory compression 后的摘要；
+- 玩家偏好、角色倾向、关系、recap、DM 风格反馈这类受控摘要。
 
-写入 Honcho 前会按 `paotuan.external_memory.v1` 契约生成 metadata，并对正文、检索 query 和外发 ID 做安全处理：平台玩家 ID、群 ID 等会变成稳定 pseudonym；本机路径、服务器路径、API key、token、prompt 和 audit 片段会被替换为 `[redacted]`。这保证 Honcho 侧只拿到可用于长期回忆的跑团投影，而不是本地账号、部署环境或原始调试材料。
+写入前会按 `paotuan.external_memory.v1` 契约生成 metadata，并对正文、检索 query 和外发 ID 做安全处理：平台玩家 ID、群 ID 等会变成稳定 pseudonym；本机路径、服务器路径、API key、token、prompt 和 audit 片段会被替换为 `[redacted]`。外置写入还会记录短 `source_event_id` 标记，避免同一关键事件或同一压缩摘要在重试时重复写入 Honcho；这个标记只用于幂等控制，不包含原文。
 
-外置写入还会记录短 `source_event_id` 标记，用来避免同一关键事件或同一压缩摘要在重试时重复写入 Honcho；这个标记只用于幂等控制，不包含原文。
+#### 如何验证和排错
 
-读取 Honcho context 时，插件会把记忆标成“可用回忆线索”或“状态敏感线索”。玩家偏好、关系、recap 和伏笔可以辅助叙事；涉及 HP、物品、位置、轮次、规则或骰子的外部记忆只能当历史线索，不能覆盖当前本地状态和工具结果。
+先用 `/dm token` 看本地诊断。外置记忆观测信息只记录安全指标，例如读取/写入是否成功、错误类型、context 字符数、是否截断、是否重复跳过和是否出现状态敏感线索；不会把 Honcho context、写入正文、完整 prompt、原始 audit、凭证或原始平台 ID 复制进本地 audit 或 `/dm token` 诊断。
 
-当玩家明确追问“上次”“以前”“关系”“偏好”“前情 recap”或“伏笔”这类长期回忆时，router 还会按需暴露 `search_external_memory` 工具，让 LLM 主动检索 Honcho。这个工具不会修改本地状态；工具返回给 LLM 的正文不会原样写进本地 audit。
+常见问题：
 
-玩家和角色会使用不同 Honcho peer：玩家 peer 主要保存偏好、节奏和互动风格，角色 peer 主要保存角色经历、关系和个人弧光。读取时如果当前玩家绑定了角色，会分别查询“玩家偏好视角”和“角色知识视角”；写入关键事件时，玩家行动摘要写入玩家 peer，角色经历/裁定写入角色 peer。
+| 现象 / 错误 | 含义 | 处理方式 |
+| --- | --- | --- |
+| `honcho_disabled` | `honcho_enabled=false`。 | 打开 `honcho_enabled`，或保持关闭作为本地 JSON 模式。 |
+| `honcho_read_disabled` | 读取开关关闭。 | 打开 `honcho_read_enabled`。 |
+| `honcho_write_disabled` | 写入开关关闭。 | 打开 `honcho_write_enabled`。 |
+| `honcho_workspace_missing` | 没有配置 workspace。 | 设置 `honcho_workspace_id`。 |
+| `honcho_api_key_missing` | 环境变量不存在或 AstrBot 进程读不到。 | 确认 `honcho_api_key_env` 指向的变量存在；重启 AstrBot。 |
+| `honcho_sdk_missing` | AstrBot Python 环境里没有安装 `honcho-ai`。 | 在同一个 Python 环境执行 `python -m pip install honcho-ai`。 |
+| `honcho_timeout` | Honcho 调用超过 `honcho_timeout_seconds`。 | 检查网络或调大超时；本轮跑团会继续走本地状态。 |
+| `honcho_call_failed` | SDK 或 Honcho 服务返回异常。 | 检查 `honcho_base_url`、workspace、API key 权限和 Honcho 服务状态。 |
+| context 太长或效果不稳定 | 外置记忆占用 prompt 预算或返回内容太多。 | 调低 `honcho_max_context_chars`，或临时关闭 `honcho_read_enabled`。 |
+| 记忆“串团” | 跨团个性化或 workspace/session 规划不当。 | 保持 `honcho_cross_campaign_personalization_enabled=false`；按环境拆 workspace，按团/章节拆 session。 |
 
-Honcho dreams 相关能力暂时只接入本地安全契约：未来 dream 产出的玩家偏好、角色倾向、关系、recap 或 DM 风格洞察，必须先变成已脱敏、非权威、待审阅的建议；证据不足、置信度过低或不属于允许类型的内容会被丢弃。
-
-每次外置记忆读取还会附带 campaign lifecycle scope，包括 workspace、campaign、chapter、phase、Honcho session 和 peer IDs。当前 prompt 默认只取当前章节；旧章节应通过明确的回忆检索工具查询，避免污染当前回合预算。
-
-外置记忆的观测信息只记录安全指标，例如读取/写入是否成功、错误类型、context 字符数、是否截断、是否重复跳过和是否出现状态敏感线索；不会把 Honcho context、写入正文、完整 prompt、原始 audit、凭证或原始平台 ID 复制进本地 audit 或 `/dm token` 诊断。手动回滚很直接：关闭 `honcho_enabled` 或关闭读写开关后，跑团会回到本地 JSON 行为。
+手动回滚很直接：关闭 `honcho_enabled`，或只关闭 `honcho_read_enabled` / `honcho_write_enabled`。关闭后插件会回到本地 JSON 行为，已有本地存档不依赖 Honcho。
 
 ## 当前能力一览
 
