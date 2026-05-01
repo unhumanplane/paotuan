@@ -29,7 +29,7 @@ class AmbientImageConfig:
     quality: str = "high"
     output_format: str = "png"
     response_format: str = "url"
-    timeout_seconds: int = 60
+    timeout_seconds: int = 120
     send_to_chat: bool = True
     frequency: str = "medium"
     prompt_template: str = ""
@@ -58,7 +58,7 @@ class AmbientImageProvider:
         if unavailable:
             return unavailable
         started = time.monotonic()
-        timeout = max(1, int(self.config.timeout_seconds or 60))
+        timeout = max(1, int(self.config.timeout_seconds or 120))
         try:
             return await asyncio.wait_for(
                 asyncio.to_thread(self._generate_sync, prompt),
@@ -122,7 +122,7 @@ class AmbientImageProvider:
             "Accept": "application/json",
             "Authorization": f"Bearer {api_key}",
         }
-        timeout = max(1, int(self.config.timeout_seconds or 60))
+        timeout = max(1, int(self.config.timeout_seconds or 120))
         started = time.monotonic()
         try:
             status, response_headers, response_body = self.http_post(url, headers, payload, timeout)

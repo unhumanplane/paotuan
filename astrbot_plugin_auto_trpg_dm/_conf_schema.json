@@ -147,7 +147,7 @@
   "ambient_image_timeout_seconds": {
     "description": "氛围图片 API 单次最长等待时间。超时只跳过本轮图片，不影响跑团。",
     "type": "int",
-    "hint": "60"
+    "hint": "120"
   },
   "ambient_image_send_to_chat": {
     "description": "生成成功后是否把图片随本轮回复发送。",

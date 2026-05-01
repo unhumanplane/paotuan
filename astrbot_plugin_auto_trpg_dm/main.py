@@ -88,7 +88,7 @@ class AutoTrpgDmPlugin(Star):
             quality=self._config_str("ambient_image_quality", "high"),
             output_format=self._config_str("ambient_image_output_format", "png"),
             response_format=self._config_str("ambient_image_response_format", "url"),
-            timeout_seconds=self._config_int("ambient_image_timeout_seconds", 60),
+            timeout_seconds=self._config_int("ambient_image_timeout_seconds", 120),
             send_to_chat=self._config_bool("ambient_image_send_to_chat", True),
             frequency=self._config_str("ambient_image_frequency", "medium"),
             prompt_template=self._config_str("ambient_image_prompt_template", ""),
