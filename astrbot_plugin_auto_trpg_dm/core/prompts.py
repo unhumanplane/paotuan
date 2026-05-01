@@ -19,6 +19,77 @@ DEFAULT_RESPONSE_STYLE = {
 }
 
 
+BASE_RULES = """【BASE_RULES — 双 Agent 元规则】
+1. 本游戏使用双 Agent 架构：DM Agent（创意导演）负责叙事与工具调用；RA Recorder Agent（状态记录员）负责周期结束时的结构化状态规范化。
+2. DM 拥有叙事最终解释权；RA 不得覆盖 DM 的叙事描述，但有权基于 tool trace 记录权威结构化字段（HP、位置、存活状态等）与叙事之间的 discrepancies。
+3. 禁止 OOC（场外发言）、元游戏（利用系统信息操作）、以及未经同意的 PvP。
+4. start_game 后背景、题材、主线锁定，不得由玩家或 DM 自行改写。
+5. 所有改变场内事实的裁定必须通过工具写入状态；口头叙事不自动成为存档事实。
+6. 数值事实（检定、伤害、治疗、资源消耗）必须以规则工具返回为准，DM 不得口头覆盖。"""
+
+
+def build_ra_system_prompt() -> str:
+    return f"""你是 RA Recorder Agent（状态记录员）。
+{BASE_RULES}
+
+你的职责：
+1. 严格跟随 DM 叙事，绝不覆盖或改写 DM 的叙事描述。
+2. 基于 tool trace 和状态迁移结果，生成结构化的周期总结 JSON。
+3. 区分“叙事字段”（场景、氛围、对话）与“权威结构化字段”（HP、MP、alive、position、conditions、inventory 等）。
+4. 权威字段必须以 tool trace 为准；若 DM 叙事与 tool trace 冲突，记录 discrepancy 但不覆盖权威值。
+5. 输出必须是合法 JSON only，禁止任何自然语言包裹或 markdown 代码块。
+6. 你不拥有工具调用权限；只读取输入，输出 JSON。"""
+
+
+def build_cycle_start_prompt(session: GameSession) -> str:
+    if not session.environment_summaries:
+        return "【周期开始】暂无上一周期总结。请继续推进叙事。"
+    summary = session.environment_summaries[-1]
+    return f"""【周期 #{summary.get("cycle_id", session.current_cycle_id)} 开始】
+
+周期摘要：{summary.get("summary", "")}
+角色状态：{json.dumps(summary.get("character_status", {}), ensure_ascii=False)}
+敌人状态：{json.dumps(summary.get("enemy_status", {}), ensure_ascii=False)}
+世界变更：{json.dumps(summary.get("world_changes", {}), ensure_ascii=False)}
+规则触发：{", ".join(summary.get("rules_triggered", []))}
+discrepancies：{json.dumps(summary.get("discrepancies", []), ensure_ascii=False)}
+
+请基于以上状态继续推进叙事。"""
+
+
+def _inject_base_rules(prompt: str) -> str:
+    marker = "硬性规则："
+    if marker in prompt:
+        return prompt.replace(marker, f"{BASE_RULES}\n\n{marker}", 1)
+    return f"{BASE_RULES}\n\n{prompt}"
+
+
+def _inject_ra_summary(prompt: str, session: GameSession) -> str:
+    block = _build_ra_summary_block(session)
+    if not block:
+        return prompt
+    marker = "当前会话状态快照："
+    if marker in prompt:
+        return prompt.replace(marker, f"{block}\n\n{marker}", 1)
+    return f"{prompt}\n\n{block}"
+
+
+def _build_ra_summary_block(session: GameSession) -> str:
+    if not session.environment_summaries:
+        return ""
+    summary = session.environment_summaries[-1]
+    lines = ["【上一周期 RA 总结】"]
+    if summary.get("summary"):
+        lines.append(f"周期摘要：{summary['summary']}")
+    if summary.get("discrepancies"):
+        lines.append(f" discrepancies（需在叙事中圆回）：{json.dumps(summary['discrepancies'], ensure_ascii=False)}")
+    if summary.get("character_status"):
+        lines.append(f"角色状态：{json.dumps(summary['character_status'], ensure_ascii=False)}")
+    if summary.get("enemy_status"):
+        lines.append(f"敌人状态：{json.dumps(summary['enemy_status'], ensure_ascii=False)}")
+    return "\n".join(lines)
+
+
 def build_system_prompt(
     session: GameSession,
     mode: GameMode,
@@ -52,7 +123,7 @@ def build_system_prompt(
             "但允许你按玩家要求生成、补全或整理背景本身，并用 update_world_tags 写入 genre/tone/starting_premise/location/factions/ruleset 等背景要素。"
         )
     )
-    return f"""你是 AstrBot 内的全自动 TRPG DM 智能体。你必须以自然语言理解玩家输入，并用工具推进确定性状态。
+    prompt = f"""你是 AstrBot 内的全自动 TRPG DM 智能体。你必须以自然语言理解玩家输入，并用工具推进确定性状态。
 
 硬性规则：
 1. 不允许要求玩家使用 /车卡、/开团、/move 等命令；所有输入都当作自然语言。
@@ -178,6 +249,9 @@ def build_system_prompt(
 长期记忆压缩摘要：
 {session.memory_summary or "暂无"}
 """
+    prompt = _inject_base_rules(prompt)
+    prompt = _inject_ra_summary(prompt, session)
+    return prompt
 
 
 def build_user_prompt(message: str, security_notes: list[str] | None = None) -> str:
