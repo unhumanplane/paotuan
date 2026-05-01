@@ -63,5 +63,10 @@
     "description": "Honcho 中代表 paotuan DM/系统的 peer ID。",
     "type": "string",
     "hint": "paotuan_dm"
+  },
+  "honcho_cross_campaign_personalization_enabled": {
+    "description": "是否允许同一玩家的偏好跨团复用。默认关闭；关闭时玩家 peer 会按 campaign 隔离，避免把 A 团偏好或语境带到 B 团。",
+    "type": "bool",
+    "hint": "false"
   }
 }
