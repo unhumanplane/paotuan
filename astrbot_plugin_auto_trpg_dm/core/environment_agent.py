@@ -15,21 +15,28 @@ LlmGenerate = Callable[..., Awaitable[Any]]
 class RecorderAgent:
     """Runs the RA cycle summarizer without importing AstrBot APIs."""
 
-    def __init__(self, llm_generate: LlmGenerate, chat_provider_id: str):
+    def __init__(self, llm_generate: LlmGenerate, chat_provider_id: str, max_tokens: int = 0):
         self.llm_generate = llm_generate
         self.chat_provider_id = chat_provider_id
+        self.max_tokens = max_tokens
 
     async def run_cycle_resolution(self, session: GameSession) -> dict[str, Any]:
         ra_input = build_ra_input_view(session)
         authority_snapshot = build_ra_authority_snapshot(session)
         prompt = build_ra_cycle_prompt(ra_input, authority_snapshot)
+        llm_kwargs: dict[str, Any] = {
+            "chat_provider_id": self.chat_provider_id,
+            "prompt": prompt,
+            "contexts": [],
+            "system_prompt": build_ra_system_prompt(),
+        }
+        # TODO: verify that the underlying AstrBot provider actually passes
+        # max_tokens through to the model request payload. Some provider
+        # adapters may silently drop unknown kwargs.
+        if self.max_tokens > 0:
+            llm_kwargs["max_tokens"] = self.max_tokens
         try:
-            response = await self.llm_generate(
-                chat_provider_id=self.chat_provider_id,
-                prompt=prompt,
-                contexts=[],
-                system_prompt=build_ra_system_prompt(),
-            )
+            response = await self.llm_generate(**llm_kwargs)
         except Exception as exc:
             return {
                 "ok": False,
