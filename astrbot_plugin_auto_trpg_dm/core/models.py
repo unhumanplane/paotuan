@@ -10,12 +10,25 @@ def utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _parse_cycle_state(value: Any) -> CycleState:
+    try:
+        return CycleState(str(value))
+    except (ValueError, TypeError):
+        return CycleState.CYCLE_ACTIVE
+
+
 class GameMode(str, Enum):
     NARRATIVE = "narrative"
     CHARACTER_CREATION = "character_creation"
     RULE_AUTHORING = "rule_authoring"
     TACTICAL = "tactical"
     RESOLUTION = "resolution"
+
+
+class CycleState(str, Enum):
+    CYCLE_ACTIVE = "cycle_active"
+    CYCLE_RESOLVING = "cycle_resolving"
+    CYCLE_TRANSITION = "cycle_transition"
 
 
 @dataclass
@@ -67,6 +80,63 @@ class Character:
 
 
 @dataclass
+class CycleAction:
+    player_id: str
+    character_id: str
+    player_message: str
+    dm_narrative: str
+    tools_called: list[dict[str, Any]] = field(default_factory=list)
+    timestamp: str = field(default_factory=utc_now_iso)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "CycleAction":
+        return cls(
+            player_id=str(data.get("player_id", "")),
+            character_id=str(data.get("character_id", "")),
+            player_message=str(data.get("player_message", "")),
+            dm_narrative=str(data.get("dm_narrative", "")),
+            tools_called=list(data.get("tools_called", [])),
+            timestamp=str(data.get("timestamp", utc_now_iso())),
+        )
+
+    def to_ra_dict(self) -> dict[str, Any]:
+        return {
+            "dm_narrative": self.dm_narrative,
+            "tools_called": self.tools_called,
+        }
+
+
+@dataclass
+class AuditBuffer:
+    cycle_id: int = 0
+    actions: list[CycleAction] = field(default_factory=list)
+    started_at: str = ""
+    ended_at: str = ""
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "AuditBuffer":
+        return cls(
+            cycle_id=int(data.get("cycle_id", 0)),
+            actions=[CycleAction.from_dict(item) for item in data.get("actions", [])],
+            started_at=str(data.get("started_at", "")),
+            ended_at=str(data.get("ended_at", "")),
+        )
+
+
+@dataclass
+class RACycleInput:
+    cycle_id: int = 0
+    actions: list[dict[str, Any]] = field(default_factory=list)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "RACycleInput":
+        return cls(
+            cycle_id=int(data.get("cycle_id", 0)),
+            actions=list(data.get("actions", [])),
+        )
+
+
+@dataclass
 class RuleRef:
     name: str
     version: int
@@ -109,6 +179,13 @@ class GameSession:
     battle: dict[str, Any] = field(default_factory=dict)
     created_at: str = field(default_factory=utc_now_iso)
     updated_at: str = field(default_factory=utc_now_iso)
+    # --- cycle state machine fields (PR 1) ---
+    cycle_state: CycleState = CycleState.CYCLE_ACTIVE
+    audit_buffer: AuditBuffer = field(default_factory=AuditBuffer)
+    ra_cycle_input: RACycleInput = field(default_factory=RACycleInput)
+    current_cycle_id: int = 0
+    environment_summaries: list[dict[str, Any]] = field(default_factory=list)
+    rule_sets: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
     def new(cls, session_id: str) -> "GameSession":
@@ -150,11 +227,19 @@ class GameSession:
             battle=dict(data.get("battle", {"active": False})),
             created_at=str(data.get("created_at", utc_now_iso())),
             updated_at=str(data.get("updated_at", utc_now_iso())),
+            # cycle fields with safe defaults for backward compatibility
+            cycle_state=_parse_cycle_state(data.get("cycle_state")),
+            audit_buffer=AuditBuffer.from_dict(data.get("audit_buffer", {})),
+            ra_cycle_input=RACycleInput.from_dict(data.get("ra_cycle_input", {})),
+            current_cycle_id=int(data.get("current_cycle_id", 0)),
+            environment_summaries=list(data.get("environment_summaries", [])),
+            rule_sets=dict(data.get("rule_sets", {})),
         )
 
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self)
         data["mode"] = self.mode.value
+        data["cycle_state"] = self.cycle_state.value
         return data
 
     def compact_snapshot(self) -> dict[str, Any]:
