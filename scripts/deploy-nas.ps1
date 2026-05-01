@@ -150,7 +150,7 @@ $remote = "$userName@$hostName"
 Run "git" @("archive", "--format=tar", "--output", $archive, "HEAD", "astrbot_plugin_auto_trpg_dm")
 
 $sshArgs = @("-p", "$port", "-i", $identityFile) + $sshOptions
-$scpArgs = @("-P", "$port", "-i", $identityFile) + $sshOptions
+$scpArgs = @("-O", "-P", "$port", "-i", $identityFile) + $sshOptions
 
 $qRemotePluginDir = Remote-Quote $remotePluginDir
 $qRemoteBackupDir = Remote-Quote $remoteBackupDir
