@@ -15,9 +15,14 @@
     "hint": "false"
   },
   "honcho_enabled": {
-    "description": "是否启用 Honcho 外置记忆增强。默认关闭；未安装 honcho-ai 或未配置 API key 时会自动降级为本地记忆。",
+    "description": "是否启用 Honcho 外置记忆增强。总开关；关闭时即使配置了云端或自托管地址也不会调用 Honcho。",
     "type": "bool",
     "hint": "false"
+  },
+  "honcho_target": {
+    "description": "Honcho 目标。auto=有自托管地址时使用 self_hosted，否则使用 cloud；cloud=强制云端；self_hosted=强制自托管/Docker。",
+    "type": "string",
+    "hint": "auto"
   },
   "honcho_workspace_id": {
     "description": "Honcho workspace ID。建议一个机器人环境一个 workspace，例如 paotuan-prod 或 paotuan-dev。",
@@ -25,12 +30,27 @@
     "hint": "paotuan-prod"
   },
   "honcho_api_key_env": {
-    "description": "保存 Honcho API key 的环境变量名。不要把真实 key 写进插件配置。",
+    "description": "兼容旧配置的默认 API key 环境变量名。云端优先用 honcho_cloud_api_key_env，自托管优先用 honcho_self_hosted_api_key_env。",
     "type": "string",
     "hint": "HONCHO_API_KEY"
   },
+  "honcho_cloud_api_key_env": {
+    "description": "Honcho Cloud API key 的环境变量名。留空时回退到 honcho_api_key_env。",
+    "type": "string",
+    "hint": ""
+  },
   "honcho_base_url": {
-    "description": "Honcho 自托管服务地址；使用 Honcho Cloud 时留空。",
+    "description": "Honcho 自托管/Docker 服务地址。honcho_target=cloud 时会被忽略；honcho_target=self_hosted 时必须填写。",
+    "type": "string",
+    "hint": ""
+  },
+  "honcho_self_hosted_auth_enabled": {
+    "description": "自托管 Honcho 是否启用 API key 鉴权。默认关闭，适配本地 Docker 无鉴权测试环境。",
+    "type": "bool",
+    "hint": "false"
+  },
+  "honcho_self_hosted_api_key_env": {
+    "description": "自托管 Honcho API key 的环境变量名。仅在 honcho_self_hosted_auth_enabled=true 时读取；留空时回退到 honcho_api_key_env。",
     "type": "string",
     "hint": ""
   },

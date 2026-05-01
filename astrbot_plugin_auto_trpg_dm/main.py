@@ -52,9 +52,16 @@ class AutoTrpgDmPlugin(Star):
         rule_runtime = PythonRuleRuntime(data_dir / "rules")
         honcho_config = HonchoMemoryConfig(
             enabled=self._config_bool("honcho_enabled", False),
+            target=self._config_str("honcho_target", "auto"),
             workspace_id=self._config_str("honcho_workspace_id", ""),
             api_key_env=self._config_str("honcho_api_key_env", "HONCHO_API_KEY"),
+            cloud_api_key_env=self._config_str("honcho_cloud_api_key_env", ""),
             base_url=self._config_str("honcho_base_url", ""),
+            self_hosted_api_key_env=self._config_str("honcho_self_hosted_api_key_env", ""),
+            self_hosted_auth_enabled=self._config_bool(
+                "honcho_self_hosted_auth_enabled",
+                False,
+            ),
             environment=self._config_str("honcho_environment", "production"),
             timeout_seconds=self._config_int("honcho_timeout_seconds", 8),
             max_context_chars=self._config_int("honcho_max_context_chars", 1600),

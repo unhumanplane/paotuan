@@ -7,11 +7,13 @@ import re
 import time
 from dataclasses import dataclass
 from typing import Any, Mapping
+from urllib.parse import urlparse
 
 from .models import GameSession, utc_now_iso
 
 
 HONCHO_MEMORY_SCHEMA_VERSION = "paotuan.external_memory.v1"
+HONCHO_CLOUD_BASE_URL = "https://api.honcho.dev"
 HONCHO_MEMORY_KINDS = frozenset(
     {
         "key_event",
@@ -108,9 +110,13 @@ _CAMPAIGN_LIFECYCLE_PHASES = frozenset(
 @dataclass(frozen=True)
 class HonchoMemoryConfig:
     enabled: bool = False
+    target: str = "auto"
     workspace_id: str = ""
     api_key_env: str = "HONCHO_API_KEY"
+    cloud_api_key_env: str = ""
     base_url: str = ""
+    self_hosted_api_key_env: str = ""
+    self_hosted_auth_enabled: bool = False
     environment: str = "production"
     timeout_seconds: int = 8
     max_context_chars: int = 1600
@@ -342,15 +348,31 @@ class HonchoExternalMemory:
             return {"ok": True, "available": False, "reason": "honcho_write_disabled"}
         if not self.config.workspace_id.strip():
             return {"ok": False, "available": False, "error": "honcho_workspace_missing"}
-        if self.honcho_factory is None:
-            api_key_env = self.config.api_key_env.strip() or "HONCHO_API_KEY"
-            if not str(self.environ.get(api_key_env, "")).strip():
-                return {
-                    "ok": False,
-                    "available": False,
-                    "error": "honcho_api_key_missing",
-                    "api_key_env": api_key_env,
-                }
+        target, target_error = _resolve_honcho_target(self.config)
+        if target_error:
+            return {
+                "ok": False,
+                "available": False,
+                "error": target_error,
+                "target": redact_external_memory_text(self.config.target, limit=40),
+            }
+        if target == "self_hosted" and not self.config.base_url.strip():
+            return {
+                "ok": False,
+                "available": False,
+                "error": "honcho_base_url_missing",
+                "target": target,
+            }
+        api_key_env = _honcho_api_key_env(self.config, target)
+        api_key = str(self.environ.get(api_key_env, "")).strip() if api_key_env else ""
+        if _honcho_api_key_required(self.config, target) and not api_key:
+            return {
+                "ok": False,
+                "available": False,
+                "error": "honcho_api_key_missing",
+                "api_key_env": api_key_env,
+                "target": target,
+            }
         return None
 
     def _client_or_raise(self) -> Any:
@@ -367,12 +389,17 @@ class HonchoExternalMemory:
             "environment": self.config.environment.strip() or "production",
             "timeout": max(1, int(self.config.timeout_seconds)),
         }
-        api_key_env = self.config.api_key_env.strip() or "HONCHO_API_KEY"
-        api_key = str(self.environ.get(api_key_env, "")).strip()
+        target, target_error = _resolve_honcho_target(self.config)
+        if target_error:
+            raise HonchoUnavailable(target_error)
+        api_key_env = _honcho_api_key_env(self.config, target)
+        api_key = str(self.environ.get(api_key_env, "")).strip() if api_key_env else ""
         if api_key:
             kwargs["api_key"] = api_key
-        if self.config.base_url.strip():
-            kwargs["base_url"] = self.config.base_url.strip()
+        if target == "cloud":
+            kwargs["base_url"] = HONCHO_CLOUD_BASE_URL
+        elif base_url := _normalize_honcho_base_url(self.config.base_url):
+            kwargs["base_url"] = base_url
         self._client = factory(**kwargs)
         return self._client
 
@@ -423,6 +450,54 @@ class HonchoExternalMemory:
 
 class HonchoUnavailable(RuntimeError):
     pass
+
+
+def _resolve_honcho_target(config: HonchoMemoryConfig) -> tuple[str, str]:
+    raw = str(config.target or "auto").strip().lower().replace("-", "_")
+    if not raw or raw == "auto":
+        return ("self_hosted" if str(config.base_url or "").strip() else "cloud", "")
+    if raw in {"cloud", "honcho_cloud"}:
+        return "cloud", ""
+    if raw in {"self_hosted", "selfhosted", "local", "docker"}:
+        return "self_hosted", ""
+    return "", "honcho_target_invalid"
+
+
+def _honcho_api_key_required(config: HonchoMemoryConfig, target: str) -> bool:
+    if target == "cloud":
+        return True
+    if target == "self_hosted":
+        return bool(config.self_hosted_auth_enabled)
+    return False
+
+
+def _honcho_api_key_env(config: HonchoMemoryConfig, target: str) -> str:
+    legacy = str(config.api_key_env or "").strip()
+    if target == "cloud":
+        return str(config.cloud_api_key_env or "").strip() or legacy or "HONCHO_API_KEY"
+    if target == "self_hosted":
+        if not config.self_hosted_auth_enabled:
+            return ""
+        return str(config.self_hosted_api_key_env or "").strip() or legacy or "HONCHO_API_KEY"
+    return legacy or "HONCHO_API_KEY"
+
+
+def _normalize_honcho_base_url(raw_base_url: str) -> str:
+    raw = str(raw_base_url or "").strip()
+    if not raw:
+        return ""
+    base_url = raw
+    if "://" not in base_url:
+        base_url = f"http://{base_url}"
+    parsed = urlparse(base_url)
+    # `urlparse` accepts URLs like `https://` and may keep a trailing `/`.
+    # The SDK already resolves endpoint paths internally; removing only trailing
+    # slashes avoids common user misconfiguration.
+    normalized_path = parsed.path.rstrip("/")
+    if normalized_path != parsed.path:
+        parsed = parsed._replace(path=normalized_path)
+        base_url = parsed.geturl()
+    return base_url
 
 
 def build_honcho_ids(

@@ -63,12 +63,20 @@ Honcho 官方文档入口：
 - [Honcho SDK Reference](https://docs.honcho.dev/v3/documentation/reference/sdk)
 - [Honcho self-hosting](https://docs.honcho.dev/v3/contributing/self-hosting)
 
+本文配置矩阵基于这些官方语义：
+
+- Python SDK 支持 `workspace_id`、`api_key`、`environment`、`base_url`、`timeout` 等初始化参数。
+- Honcho Cloud 使用官方 API 地址 `https://api.honcho.dev`。
+- self-hosting / Docker 默认不启用鉴权，对应官方环境变量 `AUTH_USE_AUTH=false`；开启鉴权后才需要 key。
+- 官方本地服务示例默认监听 `http://localhost:8000`，健康检查是 `/health`，API 文档页是 `/docs`。
+
 需要准备：
 
-- 一个 Honcho API key。
 - 一个 Honcho workspace ID，例如 `paotuan-prod` 或 `paotuan-dev`。
+- 一个目标：Honcho Cloud，或一个自建 Honcho 服务地址。
+- Honcho API key：使用 Honcho Cloud 时需要；自建服务只有在开启鉴权时需要。
 - AstrBot 运行时能安装 Python 依赖。
-- AstrBot 进程能读取保存 API key 的环境变量。
+- 需要 API key 时，AstrBot 进程能读取保存 API key 的环境变量。
 
 推荐命名约定：
 
@@ -88,39 +96,86 @@ Honcho 官方文档入口：
 
    如果 AstrBot 运行在容器、虚拟环境或 NAS 服务里，必须在那个环境里安装，而不是只在本机全局 Python 里安装。
 
-2. 设置 API key 环境变量
+2. 选择目标并设置 API key
 
    不要把真实 API key 写进仓库或插件配置文件。插件配置里只保存环境变量名。
+
+   使用 Honcho Cloud 时，请设置云端 API key：
 
    Windows PowerShell 当前窗口临时设置：
 
    ```powershell
-   $env:HONCHO_API_KEY="your-honcho-api-key"
+   $env:HONCHO_CLOUD_API_KEY="your-honcho-cloud-api-key"
    ```
 
    Windows 持久设置：
 
    ```powershell
-   setx HONCHO_API_KEY "your-honcho-api-key"
+   setx HONCHO_CLOUD_API_KEY "your-honcho-cloud-api-key"
    ```
 
    Linux / macOS shell：
 
    ```bash
-   export HONCHO_API_KEY="your-honcho-api-key"
+   export HONCHO_CLOUD_API_KEY="your-honcho-cloud-api-key"
    ```
 
    使用 `setx`、系统服务配置、Docker 环境变量或 NAS 面板配置后，需要重启 AstrBot，让新环境变量进入进程。
 
+   自建 Honcho Docker 默认无鉴权（官方 self-hosting 文档写明 `AUTH_USE_AUTH=false`）。这种场景可不设置 API key。若你在自建服务里开启了 `AUTH_USE_AUTH=true`，请另设一个自托管专用变量，例如：
+
+   ```powershell
+   $env:HONCHO_SELF_HOSTED_API_KEY="your-self-hosted-key"
+   ```
+
+   不建议让云端和自建服务共用同一个环境变量名。这样同时配置两套服务时，更容易明确知道当前 key 会发给哪一个目标。
+
 3. 配置插件
 
-   在 AstrBot 插件配置里设置：
+   Honcho Cloud 示例：
 
    ```text
    honcho_enabled=true
+   honcho_target=cloud
    honcho_workspace_id=paotuan-prod
-   honcho_api_key_env=HONCHO_API_KEY
+   honcho_cloud_api_key_env=HONCHO_CLOUD_API_KEY
    honcho_base_url=
+   honcho_environment=production
+   honcho_timeout_seconds=8
+   honcho_read_enabled=true
+   honcho_write_enabled=true
+   honcho_max_context_chars=1600
+   honcho_assistant_peer_id=paotuan_dm
+   honcho_cross_campaign_personalization_enabled=false
+   ```
+
+   自建 Docker 无鉴权示例：
+
+   ```text
+   honcho_enabled=true
+   honcho_target=self_hosted
+   honcho_workspace_id=paotuan-local
+   honcho_base_url=http://localhost:8000
+   honcho_self_hosted_auth_enabled=false
+   honcho_self_hosted_api_key_env=
+   honcho_environment=production
+   honcho_timeout_seconds=8
+   honcho_read_enabled=true
+   honcho_write_enabled=true
+   honcho_max_context_chars=1600
+   honcho_assistant_peer_id=paotuan_dm
+   honcho_cross_campaign_personalization_enabled=false
+   ```
+
+   自建 Docker 开启鉴权示例：
+
+   ```text
+   honcho_enabled=true
+   honcho_target=self_hosted
+   honcho_workspace_id=paotuan-prod
+   honcho_base_url=https://honcho.example.com
+   honcho_self_hosted_auth_enabled=true
+   honcho_self_hosted_api_key_env=HONCHO_SELF_HOSTED_API_KEY
    honcho_environment=production
    honcho_timeout_seconds=8
    honcho_read_enabled=true
@@ -148,9 +203,13 @@ Honcho 官方文档入口：
 | 配置项 | 默认值 | 作用 | 建议 |
 | --- | --- | --- | --- |
 | `honcho_enabled` | `false` | 总开关。关闭时不会读取或写入 Honcho。 | 第一次部署前保持关闭；确认 SDK、API key 和 workspace 后再打开。 |
+| `honcho_target` | `auto` | 选择 Honcho 目标：`auto`、`cloud`、`self_hosted`。 | 同时配置云端和 Docker 时显式设置为 `cloud` 或 `self_hosted`。 |
 | `honcho_workspace_id` | 空 | Honcho workspace ID。 | 一个机器人环境一个 workspace，例如 `paotuan-prod`、`paotuan-dev`。 |
-| `honcho_api_key_env` | `HONCHO_API_KEY` | 保存 API key 的环境变量名。 | 只写变量名，不写真实 key。 |
-| `honcho_base_url` | 空 | 自托管 Honcho API 地址。 | 使用 Honcho Cloud 时留空；自托管时填写完整 base URL。 |
+| `honcho_api_key_env` | `HONCHO_API_KEY` | 兼容旧配置的默认 API key 环境变量名。 | 新配置优先使用下面两个专用变量。 |
+| `honcho_cloud_api_key_env` | 空 | Honcho Cloud API key 环境变量名。 | 建议设置为 `HONCHO_CLOUD_API_KEY`；留空时回退到 `honcho_api_key_env`。 |
+| `honcho_base_url` | 空 | 自托管 Honcho API 地址。 | Docker 本地默认通常是 `http://localhost:8000`；`honcho_target=cloud` 时忽略。 |
+| `honcho_self_hosted_auth_enabled` | `false` | 自托管服务是否启用 API key 鉴权。 | 对应官方 `AUTH_USE_AUTH`。本地 Docker 默认无鉴权，保持 `false`。 |
+| `honcho_self_hosted_api_key_env` | 空 | 自托管 Honcho API key 环境变量名。 | 仅在 `honcho_self_hosted_auth_enabled=true` 时读取；建议不要和云端变量共用。 |
 | `honcho_environment` | `production` | 传给 Honcho SDK 的 environment。 | 生产环境用 `production`。测试环境建议用单独 workspace 区分。 |
 | `honcho_timeout_seconds` | `8` | 单次 Honcho 读写最长等待时间。 | 网络慢可调大。超时只影响本轮外置记忆，不影响本地跑团。 |
 | `honcho_read_enabled` | `true` | 是否在 prompt 前读取 Honcho context。 | 排查 prompt 预算或内容污染时可单独关闭。 |
@@ -158,6 +217,31 @@ Honcho 官方文档入口：
 | `honcho_max_context_chars` | `1600` | 每轮注入 prompt 的 Honcho context 最大字符数。 | 小模型或高频群聊可调低；需要更多 recap 时可调高。 |
 | `honcho_assistant_peer_id` | `paotuan_dm` | Honcho 里代表 paotuan DM 的 peer ID。 | 多个机器人共用 workspace 时应使用不同 ID。 |
 | `honcho_cross_campaign_personalization_enabled` | `false` | 是否允许同一玩家的偏好跨团复用。 | 默认关闭。打开后只复用玩家级偏好，不复用角色事实或剧情事实。 |
+
+## 配置状态矩阵
+
+Honcho 配置按四个维度判断：总开关、目标选择、目标地址、鉴权变量。
+
+| 状态 | `honcho_enabled` | `honcho_target` | `honcho_base_url` | 鉴权配置 | 行为 |
+| --- | --- | --- | --- | --- | --- |
+| 未启用 | `false` | 任意 | 任意 | 任意 | 总开关优先，不导入 SDK，不调用云端或本地服务，返回 `honcho_disabled`。 |
+| 未配置 workspace | `true` | 任意 | 任意 | 任意 | 返回 `honcho_workspace_missing`，本地跑团继续。 |
+| `auto` + 未填本地地址 | `true` | `auto` | 空 | `honcho_cloud_api_key_env` 或 `honcho_api_key_env` 存在 | 选择 Honcho Cloud，传 `https://api.honcho.dev` 和云端 key。 |
+| `auto` + 已填本地地址 | `true` | `auto` | 自建地址 | 无鉴权 | 选择 self-hosted，传自建地址，不传 `api_key`。 |
+| 强制 Cloud | `true` | `cloud` | 空或自建地址 | 云端 key 存在 | 使用 Honcho Cloud；即使填了 Docker 地址也忽略本地地址。 |
+| Cloud 缺 key | `true` | `cloud` 或 `auto` 选中 Cloud | 空 | key 不存在 | 返回 `honcho_api_key_missing`，不会尝试自建地址。 |
+| 强制 self-hosted 无鉴权 | `true` | `self_hosted` | 自建地址 | `honcho_self_hosted_auth_enabled=false` | 使用自建地址，不读取也不发送云端 key。 |
+| 强制 self-hosted 但缺地址 | `true` | `self_hosted` | 空 | 任意 | 返回 `honcho_base_url_missing`。 |
+| self-hosted 开启鉴权且有 key | `true` | `self_hosted` 或 `auto` 选中 self-hosted | 自建地址 | `honcho_self_hosted_auth_enabled=true` 且 key 存在 | 使用自建地址，同时传自托管 key。 |
+| self-hosted 开启鉴权但缺 key | `true` | `self_hosted` 或 `auto` 选中 self-hosted | 自建地址 | `honcho_self_hosted_auth_enabled=true` 但 key 不存在 | 返回 `honcho_api_key_missing`。 |
+| 同时配置云端和 Docker，但未启用 | `false` | 任意 | 自建地址 | 云端/本地 key 可同时存在 | 总开关优先，不调用任何目标。 |
+| 同时配置云端和 Docker，启用 Cloud | `true` | `cloud` | 自建地址 | 云端 key 存在 | 只用 Cloud；不会把自建地址传给 SDK。 |
+| 同时配置云端和 Docker，启用 self-hosted | `true` | `self_hosted` | 自建地址 | 本地鉴权按开关决定 | 只用 self-hosted；无鉴权时不会把云端 key 发给本地服务。 |
+| 非法目标值 | `true` | 其它字符串 | 任意 | 任意 | 返回 `honcho_target_invalid`。 |
+
+`honcho_base_url` 会做轻量规范化：`localhost:8000/` 会按 `http://localhost:8000` 传给 SDK，尾部斜杠会去掉。官方 Docker Compose 示例默认把 API 绑定到本机 `127.0.0.1:8000`，常用健康检查是 `http://localhost:8000/health`，API 文档页是 `http://localhost:8000/docs`。
+
+从旧配置升级时注意：旧的 `honcho_api_key_env` 仍然作为 fallback 保留，但 self-hosted 是否发送 key 由 `honcho_self_hosted_auth_enabled` 决定。如果你原来用自建 Honcho 且开启了鉴权，需要显式设置 `honcho_self_hosted_auth_enabled=true`；如果是 Docker 默认无鉴权，保持默认 `false`，避免把 Cloud key 发给本地服务。
 
 ## 如何使用
 
@@ -213,12 +297,21 @@ Honcho 官方文档入口：
 | `honcho_read_disabled` | 读取开关关闭。 | 打开 `honcho_read_enabled`。 |
 | `honcho_write_disabled` | 写入开关关闭。 | 打开 `honcho_write_enabled`。 |
 | `honcho_workspace_missing` | 没有配置 workspace。 | 设置 `honcho_workspace_id`。 |
-| `honcho_api_key_missing` | 环境变量不存在或 AstrBot 进程读不到。 | 确认 `honcho_api_key_env` 指向的变量存在；重启 AstrBot。 |
+| `honcho_target_invalid` | `honcho_target` 不是 `auto`、`cloud`、`self_hosted`。 | 改成三者之一。需要明确使用云端或本地时，不要留给隐式推断。 |
+| `honcho_base_url_missing` | 已选择 `self_hosted`，但没有填写自建服务地址。 | 设置 `honcho_base_url`，例如 `http://localhost:8000`。 |
+| `honcho_api_key_missing` | Cloud 模式，或开启鉴权的 self-hosted 模式下环境变量不存在。 | Cloud 检查 `honcho_cloud_api_key_env`；self-hosted 检查 `honcho_self_hosted_api_key_env`；确认后重启 AstrBot。 |
 | `honcho_sdk_missing` | AstrBot Python 环境里没有安装 `honcho-ai`。 | 在同一个 Python 环境执行 `python -m pip install honcho-ai`。 |
 | `honcho_timeout` | Honcho 调用超过 `honcho_timeout_seconds`。 | 检查网络或调大超时；本轮跑团会继续走本地状态。 |
-| `honcho_call_failed` | SDK 或 Honcho 服务返回异常。 | 检查 `honcho_base_url`、workspace、API key 权限和 Honcho 服务状态。 |
+| `honcho_call_failed` | SDK 或 Honcho 服务返回异常。 | 检查 `honcho_target`、`honcho_base_url`、workspace、API key 权限和 Honcho 服务状态。 |
 | context 太长或效果不稳定 | 外置记忆占用 prompt 预算或返回内容太多。 | 调低 `honcho_max_context_chars`，或临时关闭 `honcho_read_enabled`。 |
 | 记忆“串团” | 跨团个性化或 workspace/session 规划不当。 | 保持 `honcho_cross_campaign_personalization_enabled=false`；按环境拆 workspace，按团/章节拆 session。 |
+
+自建 Docker 排障建议：
+
+- 先访问 `http://localhost:8000/health`。如果 AstrBot 不在同一台机器或同一容器网络里，`localhost` 可能指向 AstrBot 自己，而不是 Honcho。
+- 再访问 `http://localhost:8000/docs`，确认 API 服务已经启动。
+- 如果自建服务未开启鉴权，保持 `honcho_self_hosted_auth_enabled=false`，避免把云端 key 发给本地服务。
+- 如果同时填了 Cloud key 和 Docker 地址，请显式设置 `honcho_target=cloud` 或 `honcho_target=self_hosted`，不要依赖 `auto` 做长期生产配置。
 
 ## 回滚方式
 

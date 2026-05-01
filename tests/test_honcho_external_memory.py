@@ -175,6 +175,26 @@ def test_honcho_disabled_returns_no_context_without_importing_sdk():
     assert result == {"ok": True, "available": False, "reason": "honcho_disabled"}
 
 
+def test_honcho_disabled_ignores_cloud_and_self_hosted_configuration():
+    session = GameSession.new("group-1")
+    factory = FakeHonchoFactory()
+    memory = HonchoExternalMemory(
+        HonchoMemoryConfig(
+            enabled=False,
+            workspace_id="paotuan-prod",
+            api_key_env="HONCHO_CLOUD_KEY",
+            base_url="localhost:8000",
+        ),
+        environ={"HONCHO_CLOUD_KEY": "cloud-key"},
+        honcho_factory=factory,
+    )
+
+    result = asyncio.run(memory.context_for_prompt(session, {"player_id": "u-1"}, "调查门"))
+
+    assert result == {"ok": True, "available": False, "reason": "honcho_disabled"}
+    assert factory.kwargs == {}
+
+
 def test_honcho_missing_api_key_degrades_without_exception():
     session = GameSession.new("group-1")
     memory = HonchoExternalMemory(
@@ -201,6 +221,230 @@ def test_honcho_workspace_missing_degrades_without_exception():
     assert result["ok"] is False
     assert result["available"] is False
     assert result["error"] == "honcho_workspace_missing"
+
+
+def test_honcho_cloud_configuration_uses_api_key_without_base_url():
+    session = GameSession.new("group-1")
+    factory = FakeHonchoFactory()
+    memory = HonchoExternalMemory(
+        HonchoMemoryConfig(
+            enabled=True,
+            workspace_id="paotuan-cloud",
+            api_key_env="HONCHO_CLOUD_KEY",
+            base_url="",
+        ),
+        environ={"HONCHO_CLOUD_KEY": "cloud-key"},
+        honcho_factory=factory,
+    )
+
+    result = asyncio.run(memory.context_for_prompt(session, {"player_id": "u-1"}, "调查门"))
+
+    assert result["ok"] is True
+    assert result["operation"] == "context"
+    assert factory.kwargs["workspace_id"] == "paotuan-cloud"
+    assert factory.kwargs["api_key"] == "cloud-key"
+    assert factory.kwargs["base_url"] == "https://api.honcho.dev"
+
+
+def test_honcho_target_cloud_ignores_self_hosted_base_url():
+    session = GameSession.new("group-1")
+    factory = FakeHonchoFactory()
+    memory = HonchoExternalMemory(
+        HonchoMemoryConfig(
+            enabled=True,
+            target="cloud",
+            workspace_id="paotuan-cloud",
+            cloud_api_key_env="HONCHO_CLOUD_KEY",
+            base_url="localhost:8000",
+        ),
+        environ={"HONCHO_CLOUD_KEY": "cloud-key"},
+        honcho_factory=factory,
+    )
+
+    result = asyncio.run(memory.context_for_prompt(session, {"player_id": "u-1"}, "调查门"))
+
+    assert result["ok"] is True
+    assert result["operation"] == "context"
+    assert factory.kwargs["api_key"] == "cloud-key"
+    assert factory.kwargs["base_url"] == "https://api.honcho.dev"
+
+
+def test_honcho_target_cloud_requires_cloud_key_even_when_base_url_is_set():
+    session = GameSession.new("group-1")
+    memory = HonchoExternalMemory(
+        HonchoMemoryConfig(
+            enabled=True,
+            target="cloud",
+            workspace_id="paotuan-cloud",
+            cloud_api_key_env="HONCHO_CLOUD_KEY",
+            base_url="localhost:8000",
+        ),
+        environ={},
+    )
+
+    result = asyncio.run(memory.context_for_prompt(session, {"player_id": "u-1"}, "调查门"))
+
+    assert result["ok"] is False
+    assert result["available"] is False
+    assert result["error"] == "honcho_api_key_missing"
+    assert result["api_key_env"] == "HONCHO_CLOUD_KEY"
+    assert result["target"] == "cloud"
+
+
+def test_honcho_target_self_hosted_requires_base_url():
+    session = GameSession.new("group-1")
+    memory = HonchoExternalMemory(
+        HonchoMemoryConfig(
+            enabled=True,
+            target="self_hosted",
+            workspace_id="paotuan-docker",
+        ),
+        environ={"HONCHO_API_KEY": "cloud-key"},
+    )
+
+    result = asyncio.run(memory.context_for_prompt(session, {"player_id": "u-1"}, "调查门"))
+
+    assert result["ok"] is False
+    assert result["available"] is False
+    assert result["error"] == "honcho_base_url_missing"
+    assert result["target"] == "self_hosted"
+
+
+def test_honcho_invalid_target_returns_stable_error():
+    session = GameSession.new("group-1")
+    memory = HonchoExternalMemory(
+        HonchoMemoryConfig(
+            enabled=True,
+            target="both",
+            workspace_id="paotuan-test",
+            base_url="localhost:8000",
+        ),
+        environ={"HONCHO_API_KEY": "cloud-key"},
+    )
+
+    result = asyncio.run(memory.context_for_prompt(session, {"player_id": "u-1"}, "调查门"))
+
+    assert result["ok"] is False
+    assert result["available"] is False
+    assert result["error"] == "honcho_target_invalid"
+    assert result["target"] == "both"
+
+
+def test_honcho_self_hosted_base_url_without_api_key_is_attempted():
+    session = GameSession.new("group-1")
+    factory = FakeHonchoFactory()
+    memory = HonchoExternalMemory(
+        HonchoMemoryConfig(
+            enabled=True,
+            workspace_id="paotuan-test",
+            base_url="localhost:8000/",
+        ),
+        environ={},
+        honcho_factory=factory,
+    )
+
+    result = asyncio.run(memory.context_for_prompt(session, {"player_id": "u-1"}, "调查门"))
+
+    assert result["ok"] is True
+    assert result["operation"] == "context"
+    assert result["available"] is False
+    assert factory.kwargs["workspace_id"] == "paotuan-test"
+    assert factory.kwargs["base_url"] == "http://localhost:8000"
+    assert "api_key" not in factory.kwargs
+
+
+def test_honcho_self_hosted_without_api_key_does_not_fail_before_sdk_import(monkeypatch):
+    session = GameSession.new("group-1")
+    factory = FakeHonchoFactory()
+    fake_honcho_module = types.ModuleType("honcho")
+    fake_honcho_module.Honcho = factory
+    monkeypatch.setitem(sys.modules, "honcho", fake_honcho_module)
+    memory = HonchoExternalMemory(
+        HonchoMemoryConfig(
+            enabled=True,
+            workspace_id="paotuan-docker",
+            base_url="localhost:8000",
+        ),
+        environ={},
+    )
+
+    result = asyncio.run(memory.context_for_prompt(session, {"player_id": "u-1"}, "调查门"))
+
+    assert result["ok"] is True
+    assert result["operation"] == "context"
+    assert factory.kwargs["base_url"] == "http://localhost:8000"
+    assert "api_key" not in factory.kwargs
+
+
+def test_honcho_self_hosted_base_url_with_api_key_supports_auth():
+    session = GameSession.new("group-1")
+    factory = FakeHonchoFactory()
+    memory = HonchoExternalMemory(
+        HonchoMemoryConfig(
+            enabled=True,
+            workspace_id="paotuan-docker",
+            target="self_hosted",
+            base_url="https://honcho.internal/api/",
+            self_hosted_auth_enabled=True,
+            self_hosted_api_key_env="HONCHO_DOCKER_KEY",
+        ),
+        environ={"HONCHO_DOCKER_KEY": "docker-key"},
+        honcho_factory=factory,
+    )
+
+    result = asyncio.run(memory.context_for_prompt(session, {"player_id": "u-1"}, "调查门"))
+
+    assert result["ok"] is True
+    assert result["operation"] == "context"
+    assert factory.kwargs["base_url"] == "https://honcho.internal/api"
+    assert factory.kwargs["api_key"] == "docker-key"
+
+
+def test_honcho_self_hosted_auth_enabled_requires_self_hosted_key():
+    session = GameSession.new("group-1")
+    memory = HonchoExternalMemory(
+        HonchoMemoryConfig(
+            enabled=True,
+            target="self_hosted",
+            workspace_id="paotuan-docker",
+            base_url="localhost:8000",
+            self_hosted_auth_enabled=True,
+            self_hosted_api_key_env="HONCHO_DOCKER_KEY",
+        ),
+        environ={"HONCHO_CLOUD_KEY": "cloud-key"},
+    )
+
+    result = asyncio.run(memory.context_for_prompt(session, {"player_id": "u-1"}, "调查门"))
+
+    assert result["ok"] is False
+    assert result["available"] is False
+    assert result["error"] == "honcho_api_key_missing"
+    assert result["api_key_env"] == "HONCHO_DOCKER_KEY"
+    assert result["target"] == "self_hosted"
+
+
+def test_honcho_target_self_hosted_does_not_send_cloud_key_when_auth_disabled():
+    session = GameSession.new("group-1")
+    factory = FakeHonchoFactory()
+    memory = HonchoExternalMemory(
+        HonchoMemoryConfig(
+            enabled=True,
+            target="self_hosted",
+            workspace_id="paotuan-docker",
+            cloud_api_key_env="HONCHO_CLOUD_KEY",
+            base_url="localhost:8000",
+            self_hosted_auth_enabled=False,
+        ),
+        environ={"HONCHO_CLOUD_KEY": "cloud-key", "HONCHO_API_KEY": "legacy-cloud-key"},
+        honcho_factory=factory,
+    )
+
+    result = asyncio.run(memory.context_for_prompt(session, {"player_id": "u-1"}, "调查门"))
+
+    assert result["ok"] is True
+    assert result["operation"] == "context"
+    assert factory.kwargs["base_url"] == "http://localhost:8000"
+    assert "api_key" not in factory.kwargs
 
 
 def test_honcho_read_and_write_switches_skip_provider_calls():
