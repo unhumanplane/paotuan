@@ -15,6 +15,7 @@
 - 新增 DND 2024 本地核心规则书检索层，用于按需查询规则摘要，而不是把整本规则塞进 prompt。
 - 新增 DM guidance 规则检索，帮助 agent 在“怎么裁定、怎么描述、怎么控制节奏”上更稳。
 - 可选接入 Honcho 外置记忆，用受控摘要和关键事件增强长期回忆；默认关闭，不影响本地 JSON 存档。
+- 可选接入 TRPG 氛围图片生成，用剧情节奏触发的图片辅助理解场景；默认关闭，不接受玩家直接命令生图。
 
 ## 适合什么场景
 
@@ -63,6 +64,12 @@
 Honcho 接入是可选增强层，不替代本地 `GameSession` 和 `JsonGameRepository`。本地 JSON 仍然是 HP、物品、位置、回合、规则结果等强一致事实的权威来源；Honcho 只提供玩家偏好、角色倾向、幕间 recap、伏笔和关键事件这类辅助回忆。
 
 完整部署、配置、使用和排错说明见 [Honcho 外置记忆接入指南](docs/honcho-external-memory.md)。
+
+### 5. 氛围图片生成
+
+氛围图片是可选视觉辅助，和 SVG 战棋地图是两套功能。SVG 地图用于位置、距离、视线和战场示意；氛围图只用于渲染剧情气氛、帮助玩家理解关键场景，不会写入任何权威游戏事实。
+
+当前接入目标是 PackyAPI `gpt-image-2`，默认走 `/v1/images/generations`，也可以切换到 `/v1/chat/completions`。图片 API key、base URL、模型、尺寸、质量、返回格式、频率和 prompt 模板都通过 AstrBot 插件配置设置，默认关闭。完整配置、触发规则、隐私边界和费用风险见 [TRPG 氛围图片生成指南](docs/ambient-image-api.md)。
 
 ## 当前能力一览
 
@@ -171,6 +178,7 @@ data/plugin_data/astrbot_plugin_auto_trpg_dm/
   rules/
   audit/
   maps/
+  ambient_images/
   rulebooks/
 ```
 
@@ -244,6 +252,7 @@ powershell -ExecutionPolicy Bypass -File scripts/handle-pr.ps1 -PrNumber 123 -Me
 - 规则书工具调用。
 - DM guidance / 安全策略。
 - Honcho 外置记忆的可选降级、ID 映射、prompt 注入和受控写入 payload。
+- 氛围图片 API 的关闭、缺 key、双 endpoint 解析、触发门禁、prompt 保存和 pending 图片输出。
 
 如果本地环境可用，建议运行：
 
