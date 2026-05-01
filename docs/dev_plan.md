@@ -104,17 +104,20 @@
 
 | 文件 | 操作 | 说明 |
 |------|------|------|
-| `core/router.py` | 修改 | 每次行动后追加 `audit_buffer` 和 `ra_cycle_input`；检测周期结束信号 |
+| `core/router.py` | 修改 | **仅插入 2 行 hook 调用**：`_maybe_append_cycle_buffers()` 和 `_maybe_resolve_cycle()`。复杂逻辑下沉到 `CycleStateMachine`。 |
 | `tools/registry.py` | 修改 | 新增 `cycle_control` 工具 |
-| `main.py` | 修改 | `_handle_dm_event()` 增加 `cycle_state` 门控 |
+| `main.py` | 修改 | **仅插入 1 个 guard clause**：`_cycle_state_gate()`。周期门控逻辑封装在私有方法中。 |
 | `tests/` | 新建/修改 | Cycle buffer 累积测试、周期结束检测测试 |
 
 ### 核心变更
 
-- **Audit Buffer 累积**：`IntentRouter._handle_message_once()` 中，DM 工具循环结束后，若判定为"行动"（非查询），将完整数据追加到 `session.audit_buffer.actions`，同时生成过滤后的 `session.ra_cycle_input`（不含 `player_message`）
+- **Audit Buffer 累积**：`IntentRouter` 新增 `_maybe_append_cycle_buffers(session, result, tool_trace)` 私有方法。主流程 `handle_message()` 在 DM 工具循环结束后插入 **一行调用**。该方法内部：
+  - 判定是否为"行动"（复用 `_looks_like_stateful_player_message()`）
+  - 若是，追加完整数据到 `session.audit_buffer`
+  - 调用 `CycleStateMachine.build_ra_projection(session)` 生成过滤后的 `session.ra_cycle_input`
 - **Cycle Control 工具**：`cycle_control(action="end_cycle" / "start_cycle")`，仅 DM 可调用
 - **周期结束检测**：DM 显式调用 `cycle_control(action="end_cycle")` → `cycle_state` 变为 `CYCLE_RESOLVING`
-- **门控**：`main.py` 在 `cycle_state != CYCLE_ACTIVE` 时，向玩家返回"当前正在结算周期，请稍候"
+- **门控**：`main.py` 新增 `_cycle_state_gate(session) -> bool` 私有方法。`_handle_dm_event()` 插入 **一个 guard clause**（3 行）：若 `cycle_state != CYCLE_ACTIVE`，返回等待提示，不进入 LLM
 - **Feature Flag**：`ra_enabled` 配置项（默认 `false`），此 PR 合入后 RA 逻辑短路，不影响现有行为
 
 ### 验收标准
@@ -125,12 +128,14 @@
 - [ ] 周期结算期间，新 `/dm` 消息收到等待提示，不进入 LLM
 - [ ] `ra_enabled=false` 时，周期结束后直接切回 `CYCLE_ACTIVE`，不调用 RA
 - [ ] 回合系统（turn_control）不受周期状态影响，正常推进
+- [ ] `router.py` 主流程改动不超过 5 行（2 个 hook 调用 + 条件判断）
+- [ ] `main.py` 主流程改动不超过 3 行（1 个 guard clause）
 
 ### 风险
 
 | 风险 | 等级 | 缓解措施 |
 |------|------|----------|
-| router.py 改动触及核心 pipeline，引入回归 | 中 | 完整跑一遍现有测试；新增 cycle buffer 逻辑用独立函数封装，最小化侵入 |
+| router.py 改动触及核心 pipeline，引入回归 | 中 | **hook 模式**：主流程仅插入 2 行调用；复杂逻辑封装在独立私有方法和 `CycleStateMachine` 中。完整跑一遍现有测试。 |
 | 周期结束误判（查询被当行动） | 中 | 复用现有 `_looks_like_stateful_player_message()` 判断逻辑 |
 
 ---
@@ -144,8 +149,8 @@
 | 文件 | 操作 | 说明 |
 |------|------|------|
 | `core/environment_agent.py` | 新建 | `RecorderAgent` 类 |
-| `core/router.py` | 修改 | 周期结束后触发 RA；保存 RA 输出；推进状态机 |
-| `core/prompts.py` | 修改 | `build_system_prompt()` 正式接入上一周期 RA summary |
+| `core/router.py` | 修改 | **仅修改 `_maybe_resolve_cycle()` hook**：周期结束时触发 `RecorderAgent`，保存输出后推进状态机。主流程不变。 |
+| `core/prompts.py` | 修改 | **仅插入 2 行调用**：`_inject_base_rules()` + `_inject_ra_summary()`。`build_system_prompt()` 主逻辑不变。 |
 | `tests/test_environment_agent.py` | 新建 | RA 输出 schema 验证、失败处理测试 |
 
 ### 核心变更
@@ -162,7 +167,10 @@
   - 生成 `cycle_start_prompt`，推进到 `CYCLE_TRANSITION`
   - 清空 `audit_buffer` 和 `ra_cycle_input`，`current_cycle_id += 1`
   - 推进到 `CYCLE_ACTIVE`
-- **DM Prompt 接入**：`build_system_prompt()` 的 `{ra_summary}` 插槽正式填入 `session.environment_summaries[-1]`
+- **DM Prompt 接入**：`build_system_prompt()` 内部插入 **两行调用**：
+  - `_inject_base_rules(prompt)` — 在 prompt 头部注入 `BASE_RULES`
+  - `_inject_ra_summary(prompt, session)` — 在 prompt 尾部注入上一周期 RA summary + discrepancies
+  主 prompt 组装逻辑完全不变，仅通过 hook 拼接额外段落。
 
 ### 验收标准
 
@@ -273,6 +281,10 @@ main (保持稳定，可发布)
 3. **新字段必须有默认值**。`GameSession` 是核心数据模型，任何字段变更必须向后兼容旧存档。
 4. **工具返回格式不变**。保持 `{"ok": bool, ...}`，RA 不调用工具，但读取工具执行结果。
 5. **Audit Buffer 不清除历史**。周期结束后清空当前 buffer，但 `environment_summaries` 保留所有周期摘要（用于游戏结束统计和 debug）。失败的 RA 运行不得清空 `audit_buffer`。
+6. **现有文件只做最小化 hook**。`main.py` / `router.py` / `prompts.py` 的主流程只允许插入 **1–2 行调用**（如 `_maybe_append_cycle_buffers()`、` _inject_ra_summary()`）。所有复杂逻辑必须封装到：
+   - 新增文件（`cycle_state_machine.py`、`environment_agent.py`）
+   - 或现有类的私有方法中，且主流程不展开实现细节。
+   这条规则确保与 Honcho 等并行功能合并时冲突最小。
 
 ---
 

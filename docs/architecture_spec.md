@@ -89,26 +89,24 @@ IntentRouter.handle_message()  [DM Agent only]
   |-- mount DM tools per mode
   |-- _run_llm_tool_loop()  [DM Agent multi-hop]
   |-- tool execution + capture tool trace
-  |-- persist narrative trace  [NEW: append full action to audit_buffer; generate filtered ra_cycle_input projection if is_action]
-  |-- [NEW] detect_cycle_end() — DM signals or framework detects
+  |-- [NEW] delegate: _maybe_append_cycle_buffers()  (new file, minimal hook)
+  |-- [NEW] delegate: _maybe_resolve_cycle()  (new file, minimal hook; gated by ra_enabled)
   |-- return completion
   |
 Player sees DM response immediately
   |
-[NEW] if action: append to audit_buffer + generate ra_cycle_input projection
-  |
-[NEW] if cycle_end signal:
+[NEW] if cycle_end signal (from cycle_control tool):
   |
   CycleStateMachine.transition(CYCLE_ACTIVE -> CYCLE_RESOLVING)
   |
-  RecorderAgent.run()  [ONE LLM call]
+  [NEW] RecorderAgent.run()  [ONE LLM call; new module; no inline code in router.py]
     |-- read: ra_cycle_input projection, previous master state (authority snapshot), BASE_RULES
     |-- generate: structured JSON (cycle summary, character_status, enemy_status, world_changes)
     |-- save to session.environment_summaries, characters, scene
   |
   CycleStateMachine.transition(CYCLE_RESOLVING -> CYCLE_TRANSITION)
   |
-  [NEW] build_cycle_start_prompt()
+  [NEW] build_cycle_start_prompt()  (new function in prompts.py; injected via _inject_cycle_start_context)
   |
   CycleStateMachine.transition(CYCLE_TRANSITION -> CYCLE_ACTIVE)
   |
@@ -119,9 +117,9 @@ Player sees DM response immediately
 
 | Component | File | Responsibility |
 |-----------|------|---------------|
-| **Recorder Agent** | `core/environment_agent.py` | NEW. Runs once per cycle. LLM-based structured state normalizer. No tool access. |
-| **Cycle State Machine** | `core/cycle_state_machine.py` | NEW. Manages CYCLE_ACTIVE/RESOLVING/TRANSITION. Hooked into main.py and router. |
-| **Audit Buffer + RA Input** | `core/models.py` fields | NEW. audit_buffer (full, audit-only) + ra_cycle_input (filtered, RA-consumable) |
+| **Recorder Agent** | `core/environment_agent.py` | NEW. Runs once per cycle. LLM-based structured state normalizer. No tool access. Called via one-line hook from router. |
+| **Cycle State Machine** | `core/cycle_state_machine.py` | NEW. Manages CYCLE_ACTIVE/RESOLVING/TRANSITION. Owns buffer append + projection logic. Router/main call one-line delegates. |
+| **Audit Buffer + RA Input** | `core/models.py` fields | NEW. audit_buffer (full, audit-only) + ra_cycle_input (filtered, RA-consumable). |
 | **BASE_RULES** | `core/prompts.py` | NEW. Shared constant injected into both DM and RA system prompts. |
 | **RA Prompt Builder** | `core/prompts.py` | NEW. `build_ra_system_prompt()` + `build_ra_cycle_prompt()`. |
 
@@ -147,11 +145,11 @@ Player sees DM response immediately
 
 | Gap | Current | Target | Change |
 |-----|---------|--------|--------|
-| **G7: Single Agent** | `IntentRouter` = DM only | DM + RA orchestration | Split or extend router: DM loop stays, add RA trigger post-DM |
-| **G8: No Cycle End Detection** | Per-message processing | DM signals cycle end or framework detects | Add cycle-end signal detection in `_handle_message_once()` or via tool |
-| **G9: No Tool Trace Capture** | Tool results logged to audit only | Tool results must feed into audit_buffer and ra_cycle_input | Capture tool call + result in `CycleAction.tools_called` |
-| **G10: No RA Invocation** | None | Trigger RA after cycle end | Add `RecorderAgent` call after DM detects cycle completion |
-| **G11: No Cycle Start Prompt** | None | RA generates prompt for next cycle DM | Feed RA output back into DM system prompt on next turn |
+| **G7: Single Agent** | `IntentRouter` = DM only | DM + RA orchestration | DM loop stays unchanged. Add one-line `_maybe_resolve_cycle()` hook in `handle_message()` that delegates to `CycleStateMachine` + `RecorderAgent`. |
+| **G8: No Cycle End Detection** | Per-message processing | DM signals cycle end via tool | Add `cycle_control` tool. Router calls `CycleStateMachine.transition()` via one-line hook. No inline state logic in router. |
+| **G9: No Tool Trace Capture** | Tool results logged to audit only | Tool results must feed into audit_buffer and ra_cycle_input | `CycleStateMachine.append_action()` handles full capture + projection generation. Router calls it via one-line hook `_maybe_append_cycle_buffers()`. |
+| **G10: No RA Invocation** | None | Trigger RA after cycle end | `RecorderAgent.run_cycle_resolution()` is a standalone call. Router invokes it via `_maybe_resolve_cycle()` hook. No RA logic inlined in router. |
+| **G11: No Cycle Start Prompt** | None | RA summary feeds into next DM prompt | `prompts.py` adds `_inject_ra_summary()` and `_inject_base_rules()` helpers. `build_system_prompt()` calls them via 2-line hooks. |
 
 **Impact:** High. Core orchestration logic changes.
 
@@ -233,9 +231,9 @@ Player sees DM response immediately
 | File | Changes |
 |------|---------|
 | `core/models.py` | Add `CycleState`, `AuditBuffer`, `RACycleInput`, `CycleAction`, fields to `GameSession` |
-| `core/router.py` | Add cycle buffer append, cycle end detection, RA trigger hook |
-| `core/prompts.py` | Add `BASE_RULES`, `build_ra_system_prompt()`, `build_cycle_start_prompt()`, modify `build_system_prompt()` |
-| `main.py` | Add cycle state gate in `_handle_dm_event()` |
+| `core/router.py` | **Minimal hooks only**: add `_maybe_append_cycle_buffers()` and `_maybe_resolve_cycle()` private methods (3-5 lines each) that delegate to `CycleStateMachine` / `RecorderAgent`. Main `handle_message()` inserts 2 one-line calls. No inline cycle logic. |
+| `core/prompts.py` | **Minimal hooks only**: add `BASE_RULES`, `build_ra_system_prompt()`, `build_cycle_start_prompt()`, `_inject_base_rules()`, `_inject_ra_summary()`. `build_system_prompt()` inserts 2 one-line calls. No inline prompt assembly. |
+| `main.py` | **Minimal gate only**: add `_cycle_state_gate()` private method. `_handle_dm_event()` inserts 1 guard clause (3 lines). No inline state logic. |
 | `tools/registry.py` | Add `cycle_control` tool |
 | `storage/json_repository.py` | Add RA audit logging |
 | `_conf_schema.json` | Add RA configuration fields |
@@ -297,6 +295,28 @@ Reason: Sessions can be reloaded from disk; cycle must survive plugin restart.
 **DM narrative reconciliation**: When the DM Agent finds non-empty `discrepancies` in the next cycle, it MUST reconcile the conflict through plausible in-narrative explanations (e.g., "stumbling", "knocked back", "playing dead"). If the discrepancy cannot be rationalized, the DM should briefly correct the previous narrative so that player-visible narrative ultimately aligns with the authoritative structured state.
 
 This contract is the core boundary between the two agents. Violating it (RA overriding DM narration, or DM ignoring tool-based state) breaks the architecture.
+
+### D6: How do we minimize merge conflicts with concurrent features?
+
+**Problem**: Other PRs (e.g., external memory integrations like Honcho) modify the same files (`main.py`, `core/router.py`, `core/prompts.py`). Heavy inline changes create merge conflicts.
+
+**Solution — Modular Hook Architecture**:
+- **Existing files get minimal one-line hooks only**. No inline business logic.
+- **New code lives in new files or isolated private methods**.
+
+Concrete pattern:
+| File | Hook |
+|------|------|
+| `main.py` | `_handle_dm_event()` inserts `if self._cycle_state_gate(session): return wait_msg` (1 guard clause) |
+| `core/router.py` | `handle_message()` inserts `_maybe_append_cycle_buffers(session, result)` and `_maybe_resolve_cycle(session)` (2 one-line calls) |
+| `core/prompts.py` | `build_system_prompt()` inserts `_inject_base_rules(prompt)` and `_inject_ra_summary(prompt, session)` (2 one-line calls) |
+
+All complex logic (buffer generation, projection redaction, RA invocation, state transitions) lives in `core/cycle_state_machine.py` and `core/environment_agent.py`.
+
+**Benefits**:
+- Merge conflicts are reduced to isolated one-line additions.
+- Feature flags (`ra_enabled`) naturally short-circuit at the hook boundary.
+- Future features can add their own hooks without touching existing dual-agent code.
 
 ---
 
