@@ -18,6 +18,12 @@ class GameMode(str, Enum):
     RESOLUTION = "resolution"
 
 
+class CycleState(str, Enum):
+    CYCLE_ACTIVE = "cycle_active"
+    CYCLE_RESOLVING = "cycle_resolving"
+    CYCLE_TRANSITION = "cycle_transition"
+
+
 @dataclass
 class TagValue:
     key: str
@@ -94,9 +100,65 @@ class RuleRef:
 
 
 @dataclass
+class CycleAction:
+    player_id: str = ""
+    character_id: str = ""
+    player_message: str = ""
+    dm_narrative: str = ""
+    tools_called: list[dict[str, Any]] = field(default_factory=list)
+    timestamp: str = field(default_factory=utc_now_iso)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "CycleAction":
+        return cls(
+            player_id=str(data.get("player_id", "")),
+            character_id=str(data.get("character_id", "")),
+            player_message=str(data.get("player_message", "")),
+            dm_narrative=str(data.get("dm_narrative", "")),
+            tools_called=_list_of_dicts(data.get("tools_called", [])),
+            timestamp=str(data.get("timestamp", utc_now_iso())),
+        )
+
+
+@dataclass
+class AuditBuffer:
+    cycle_id: int = 0
+    actions: list[CycleAction] = field(default_factory=list)
+    started_at: str = field(default_factory=utc_now_iso)
+    ended_at: str = ""
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "AuditBuffer":
+        return cls(
+            cycle_id=_safe_int(data.get("cycle_id", 0)),
+            actions=[
+                CycleAction.from_dict(item)
+                for item in _list_of_dicts(data.get("actions", []))
+                if isinstance(item, dict)
+            ],
+            started_at=str(data.get("started_at", utc_now_iso())),
+            ended_at=str(data.get("ended_at", "")),
+        )
+
+
+@dataclass
+class RACycleInput:
+    cycle_id: int = 0
+    actions: list[dict[str, Any]] = field(default_factory=list)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "RACycleInput":
+        return cls(
+            cycle_id=_safe_int(data.get("cycle_id", 0)),
+            actions=_list_of_dicts(data.get("actions", [])),
+        )
+
+
+@dataclass
 class GameSession:
     session_id: str
     mode: GameMode = GameMode.NARRATIVE
+    cycle_state: CycleState = CycleState.CYCLE_ACTIVE
     title: str = "未命名团"
     active_character_id: str = ""
     participants: dict[str, dict[str, Any]] = field(default_factory=dict)
@@ -106,7 +168,12 @@ class GameSession:
     memory_summary: str = ""
     characters: dict[str, Character] = field(default_factory=dict)
     rules: dict[str, RuleRef] = field(default_factory=dict)
+    rule_sets: dict[str, Any] = field(default_factory=dict)
     battle: dict[str, Any] = field(default_factory=dict)
+    current_cycle_id: int = 0
+    audit_buffer: AuditBuffer = field(default_factory=AuditBuffer)
+    ra_cycle_input: RACycleInput = field(default_factory=RACycleInput)
+    environment_summaries: list[dict[str, Any]] = field(default_factory=list)
     created_at: str = field(default_factory=utc_now_iso)
     updated_at: str = field(default_factory=utc_now_iso)
 
@@ -129,9 +196,15 @@ class GameSession:
             mode = GameMode(mode_value)
         except ValueError:
             mode = GameMode.NARRATIVE
+        cycle_state_value = data.get("cycle_state", CycleState.CYCLE_ACTIVE.value)
+        try:
+            cycle_state = CycleState(cycle_state_value)
+        except ValueError:
+            cycle_state = CycleState.CYCLE_ACTIVE
         return cls(
             session_id=str(data.get("session_id", "")),
             mode=mode,
+            cycle_state=cycle_state,
             title=str(data.get("title", "未命名团")),
             active_character_id=str(data.get("active_character_id", "")),
             participants=dict(data.get("participants", {})),
@@ -147,7 +220,12 @@ class GameSession:
                 key: RuleRef.from_dict(value)
                 for key, value in dict(data.get("rules", {})).items()
             },
+            rule_sets=_dict_or_empty(data.get("rule_sets", {})),
             battle=dict(data.get("battle", {"active": False})),
+            current_cycle_id=_safe_int(data.get("current_cycle_id", 0)),
+            audit_buffer=AuditBuffer.from_dict(_dict_or_empty(data.get("audit_buffer", {}))),
+            ra_cycle_input=RACycleInput.from_dict(_dict_or_empty(data.get("ra_cycle_input", {}))),
+            environment_summaries=_list_of_dicts(data.get("environment_summaries", [])),
             created_at=str(data.get("created_at", utc_now_iso())),
             updated_at=str(data.get("updated_at", utc_now_iso())),
         )
@@ -155,6 +233,7 @@ class GameSession:
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self)
         data["mode"] = self.mode.value
+        data["cycle_state"] = self.cycle_state.value
         return data
 
     def compact_snapshot(self) -> dict[str, Any]:
@@ -184,6 +263,10 @@ class GameSession:
             "scene": self.scene,
             "memory_summary": self.memory_summary,
             "rules": compact_rules(self.rules),
+            "rule_sets": self.rule_sets,
+            "cycle_state": self.cycle_state.value,
+            "current_cycle_id": self.current_cycle_id,
+            "environment_summaries": self.environment_summaries[-3:],
             "battle": self._compact_battle(),
         }
 
@@ -254,6 +337,23 @@ class GameSession:
             if bound_id == character_id or bound_id == entity_id:
                 return player_id
         return ""
+
+
+def _safe_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _dict_or_empty(value: Any) -> dict[str, Any]:
+    return dict(value) if isinstance(value, dict) else {}
+
+
+def _list_of_dicts(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    return [dict(item) for item in value if isinstance(item, dict)]
 
 
 def _compact_character(character: Character) -> dict[str, Any]:

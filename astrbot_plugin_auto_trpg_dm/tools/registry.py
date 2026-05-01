@@ -12,6 +12,7 @@ from astrbot.core.astr_agent_context import AstrAgentContext
 from ..core.models import GameMode
 from ..rules.python_runtime import PythonRuleRuntime
 from ..storage.json_repository import JsonGameRepository
+from .cycle_tools import CycleControlArgs, CycleTools
 from .diagnostic_tools import DiagnosticTools, EstimateTokenUsageArgs
 from .map_tools import GenerateMapSvgArgs, MapTools
 from .memory_tools import (
@@ -141,6 +142,7 @@ class ToolRegistry:
         memory_tools = MemoryTools(self.repository, session_id, actor=actor, message=message)
         spatial_tools = SpatialTools(self.repository, session_id, actor=actor)
         turn_tools = TurnTools(self.repository, session_id, actor=actor)
+        cycle_tools = CycleTools(self.repository, session_id, actor=actor)
         diagnostic_tools = DiagnosticTools(self.repository, session_id)
         rulebook_tools = RulebookTools(self.repository, session_id)
         map_tools = MapTools(
@@ -253,6 +255,12 @@ class ToolRegistry:
                 model=TurnControlArgs,
                 handler=turn_tools.turn_control,
             ),
+            "cycle_control": make_tool(
+                name="cycle_control",
+                description='显式结束当前叙事周期。MVP 仅支持 action="end_cycle"；不要用完成文本或猜测来结束周期。',
+                model=CycleControlArgs,
+                handler=cycle_tools.cycle_control,
+            ),
             "generate_map_svg": make_tool(
                 name="generate_map_svg",
                 description="当玩家明确或上下文明显需要视觉地图、战场示意、地形草图或 SVG 输出时使用；用独立 LLM 子上下文生成 SVG 并保存为文件。只生成视觉层，不改变物理网格、坐标、移动或视线事实。",
@@ -288,6 +296,8 @@ class ToolRegistry:
             allowed = self._with_llm_decided_tools(_post_game_tool_names(message), message=message)
         if not has_campaign_background(session):
             allowed = self._background_first_tool_names(allowed, message=message)
+        if "cycle_control" not in allowed:
+            allowed.append("cycle_control")
         selected = {name: catalog[name] for name in allowed}
         specs = [
             {

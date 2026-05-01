@@ -19,7 +19,7 @@ from astrbot.core.utils.astrbot_path import get_astrbot_data_path
 from .core.plugin_log import configure_plugin_logging
 from .core.router import IntentRouter
 from .core.security import security_precheck
-from .core.models import GameMode
+from .core.models import CycleState, GameMode
 from .rules.python_runtime import PythonRuleRuntime
 from .storage.json_repository import JsonGameRepository
 from .tools.diagnostic_tools import DiagnosticTools
@@ -54,6 +54,7 @@ class AutoTrpgDmPlugin(Star):
             astr_context=context,
             repository=self.repository,
             tool_registry=tool_registry,
+            ra_enabled=self._config_bool("ra_enabled", False),
         )
         migrated = self._migrate_legacy_turn_fields()
         if migrated:
@@ -264,6 +265,22 @@ class AutoTrpgDmPlugin(Star):
         normalized = text.lower()
         session = self.repository.load_session(session_id)
         paused = bool((session.scene or {}).get("_dm_paused", False))
+
+        if session.cycle_state != CycleState.CYCLE_ACTIVE:
+            readonly_reply = await self._cycle_readonly_fast_path(session_id, session, actor, text, normalized)
+            if readonly_reply:
+                return readonly_reply
+            self.repository.append_audit(
+                session_id,
+                {
+                    "type": "local_fast_path",
+                    "action": "cycle_state_block",
+                    "actor": actor,
+                    "cycle_state": session.cycle_state.value,
+                    "text": text[:240],
+                },
+            )
+            return "当前叙事周期正在结算或过渡中。我可以回答 `/dm status`、`/dm token`、`/dm 当前轮次` 这类只读查询；新的行动、重置、备份恢复或推进轮次请稍候。"
 
         if _looks_like_dm_autopilot_takeover(text):
             self.repository.append_audit(
@@ -481,6 +498,97 @@ class AutoTrpgDmPlugin(Star):
                 "请至少给两类要素：题材/基调/开场前提/地点/势力/规则。"
                 "例：废土科幻，荒诞危险，众人被异常求救信号引到旧中继站。"
             )
+
+        return ""
+
+    async def _cycle_readonly_fast_path(
+        self,
+        session_id: str,
+        session,
+        actor: dict[str, str],
+        text: str,
+        normalized: str,
+    ) -> str:
+        if normalized in {"status", "状态", "当前状态"}:
+            self.repository.append_audit(
+                session_id,
+                {
+                    "type": "local_fast_path",
+                    "action": "status",
+                    "actor": actor,
+                    "cycle_state": session.cycle_state.value,
+                },
+            )
+            return self._format_local_status(session)
+
+        if normalized in {"token", "tokens", "token消耗", "上下文", "上下文消耗"}:
+            usage = await DiagnosticTools(self.repository, session_id).estimate_token_usage("summary")
+            current = usage.get("current", {})
+            rough = usage.get("rough_token_estimate", {})
+            compression = usage.get("compression", {})
+            self.repository.append_audit(
+                session_id,
+                {
+                    "type": "local_fast_path",
+                    "action": "token",
+                    "actor": actor,
+                    "cycle_state": session.cycle_state.value,
+                },
+            )
+            return (
+                "Token 粗算："
+                f"快照 {current.get('compact_snapshot_chars', 0)} 字，约 {rough.get('heuristic', 0)} token；"
+                f"完整存档 {current.get('full_save_chars', 0)} 字。"
+                f"距自动压缩约 {compression.get('snapshot_chars_remaining_before_compression', 0)} 字。"
+            )
+
+        if normalized in {"当前轮次", "当前回合", "轮次", "回合", "谁行动", "轮到谁", "行动顺序", "战斗顺序", "轮动顺序"} or _looks_like_turn_status_request(text):
+            self.repository.append_audit(
+                session_id,
+                {
+                    "type": "local_fast_path",
+                    "action": "turn_status",
+                    "actor": actor,
+                    "cycle_state": session.cycle_state.value,
+                },
+            )
+            return self._format_turn_status(session, include_order=_looks_like_turn_order_request(text))
+
+        if _looks_like_player_roster_request(text):
+            self.repository.append_audit(
+                session_id,
+                {
+                    "type": "local_fast_path",
+                    "action": "player_roster",
+                    "actor": actor,
+                    "cycle_state": session.cycle_state.value,
+                },
+            )
+            return self._format_player_roster(session)
+
+        if _looks_like_backup_list_request(text):
+            result = await MemoryTools(self.repository, session_id, actor=actor, message=text).session_control(
+                "list_backups",
+                reason=text,
+            )
+            self.repository.append_audit(
+                session_id,
+                {
+                    "type": "local_fast_path",
+                    "action": "backup_list",
+                    "actor": actor,
+                    "cycle_state": session.cycle_state.value,
+                    "result": result,
+                },
+            )
+            backups = result.get("backups") or []
+            if not backups:
+                return "当前还没有自动备份。"
+            lines = ["最近备份："]
+            for item in backups[:5]:
+                size = int(item.get("size") or 0)
+                lines.append(f"- {item.get('mtime', '')}；{size // 1024}K；{item.get('reason', '') or item.get('name', '')}")
+            return "\n".join(lines)
 
         return ""
 
