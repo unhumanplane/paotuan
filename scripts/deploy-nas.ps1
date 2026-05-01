@@ -14,9 +14,9 @@ function Fail([string]$Message) {
     exit 1
 }
 
-function Run([string]$File, [string[]]$Args) {
-    Write-Host ">> $File $($Args -join ' ')"
-    & $File @Args
+function Run([string]$File, [string[]]$ArgumentList) {
+    Write-Host ">> $File $($ArgumentList -join ' ')"
+    & $File @ArgumentList
     if ($LASTEXITCODE -ne 0) {
         Fail "Command failed with exit code ${LASTEXITCODE}: ${File}"
     }
