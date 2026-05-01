@@ -124,9 +124,9 @@ export PACKYAPI_SORA_API_KEY="你的 PackyAPI Sora 分组令牌"
 
 1. 内部触发条件选中一个故事时刻。
 2. 用 `ambient_image_prompt_template` 填充当前场景、记忆摘要、角色、世界标签、故事时刻和故事级视觉风格。
-3. 使用配置的 `ambient_image_prompt_model` 生成最终图片 prompt。
+3. 使用配置的 `ambient_image_prompt_model` 生成结构化 JSON：`title`、`prompt`、`style`。
 4. 如果 `ambient_image_prompt_model` 为空，则使用当前 AstrBot 对话 provider。
-5. 最终发送给图片 API 的 prompt 会保存到 metadata。
+5. 插件把 `title`、`prompt`、`style` 拼合成最终发送给图片 API 的 prompt，并保存到 metadata。
 
 内置模板采用结构化 prompt：先说明图片目的和单图约束，再提供故事时刻、触发理由、场景、角色、世界标签、故事级风格和输出默认值。这样做是为了让图片模型获得足够具体的主题、地点、人物轮廓、情绪、光线、构图、镜头、材质和色彩信息，同时显式排除文字、UI、战棋地图、规则表、海报标题、logo 和多张图。
 
@@ -157,6 +157,8 @@ prompt 系统约束要求：
 
 风格稳定只作用于同一个跑团故事。插件会用开场时间、开场引导或标题/摘要推导当前故事 key，并把第一次成功生成时的风格描述保存在 `scene["ambient_image_style"]`。如果进入新故事，故事 key 会变化，旧故事的风格不会继续约束新故事。
 
+同一故事已有风格时，最终发送给图片 API 的 prompt 会使用已保存的故事级风格，而不是让 prompt 模型在每次返回 JSON 时随意改写画风。这样 `style` 既能作为后续故事的风格种子，也会直接参与当次 `gpt-image-2` 生图请求。
+
 ## 输出与保存
 
 生成成功后，文件保存到 AstrBot 插件数据目录：
@@ -170,6 +172,7 @@ data/plugin_data/astrbot_plugin_auto_trpg_dm/ambient_images/
 - 生成时间。
 - 图片文件名。
 - 最终生图 prompt。
+- prompt 模型原始返回中的 `prompt` 字段。
 - prompt 模型/provider。
 - 故事时刻和触发理由。
 - API mode、图片模型、尺寸、质量、来源。

@@ -69,7 +69,7 @@ Honcho 接入是可选增强层，不替代本地 `GameSession` 和 `JsonGameRep
 
 氛围图片是可选视觉辅助，和 SVG 战棋地图是两套功能。SVG 地图用于位置、距离、视线和战场示意；氛围图只用于渲染剧情气氛、帮助玩家理解关键场景，不会写入任何权威游戏事实。
 
-当前接入目标是 PackyAPI `gpt-image-2`，默认走 `/v1/images/generations`，也可以切换到 `/v1/chat/completions`。图片 API key、base URL、模型、尺寸、质量、返回格式、频率和 prompt 模板都通过 AstrBot 插件配置设置，默认关闭。完整配置、触发规则、隐私边界和费用风险见 [TRPG 氛围图片生成指南](docs/ambient-image-api.md)。
+当前接入目标是 PackyAPI `gpt-image-2`，默认走 `/v1/images/generations`，也可以切换到 `/v1/chat/completions`。图片 API key、base URL、模型、尺寸、质量、返回格式、频率和 prompt 模板都通过 AstrBot 插件配置设置，默认关闭。prompt 模型会先返回 `title`、`prompt`、`style`，插件再拼合成最终生图 prompt。完整配置、触发规则、隐私边界和费用风险见 [TRPG 氛围图片生成指南](docs/ambient-image-api.md)。
 
 ## 当前能力一览
 

@@ -225,11 +225,22 @@ class AmbientImageTools:
         if not parsed.get("prompt"):
             return {"ok": False, "available": False, "error": "ambient_image_prompt_empty"}
         locked_story_style = _ambient_existing_story_style(session)
+        title = parsed.get("title", "氛围图")
+        prompt_model_prompt = parsed["prompt"]
+        style_seed = locked_story_style or parsed.get("style") or style_seed
+        image_prompt = compose_ambient_image_prompt(
+            title=title,
+            prompt=prompt_model_prompt,
+            style=style_seed,
+        )
+        if not image_prompt:
+            return {"ok": False, "available": False, "error": "ambient_image_prompt_empty"}
         return {
             "ok": True,
-            "prompt": parsed["prompt"],
-            "title": parsed.get("title", "氛围图"),
-            "style_seed": locked_story_style or parsed.get("style") or style_seed,
+            "prompt": image_prompt,
+            "prompt_model_prompt": prompt_model_prompt,
+            "title": title,
+            "style_seed": style_seed,
             "story_key": story_key,
             "prompt_model": prompt_model,
             "raw_excerpt": redact_ambient_image_text(raw_text, limit=300),
@@ -259,6 +270,7 @@ class AmbientImageTools:
             "created_at": utc_now_iso(),
             "file_name": image_path.name,
             "prompt": image_prompt,
+            "prompt_model_prompt": prompt_result.get("prompt_model_prompt", ""),
             "prompt_model": prompt_result.get("prompt_model", ""),
             "story_key": prompt_result.get("story_key", ""),
             "style_seed": prompt_result.get("style_seed", ""),
@@ -550,6 +562,21 @@ def parse_prompt_model_output(text: str) -> dict[str, str]:
             pass
     cleaned = _short_text(text, 2400)
     return {"prompt": cleaned, "title": "氛围图"} if cleaned else {}
+
+
+def compose_ambient_image_prompt(*, title: str, prompt: str, style: str) -> str:
+    prompt_text = _short_text(prompt, 2400)
+    if not prompt_text:
+        return ""
+    title_text = _short_text(title or "氛围图", 80)
+    style_text = _short_text(style, 500)
+    sections = [
+        f"Image title: {title_text}",
+        f"Scene prompt:\n{prompt_text}",
+    ]
+    if style_text:
+        sections.append(f"Story visual style:\n{style_text}")
+    return _short_text("\n\n".join(sections), 3200)
 
 
 def audit_safe_ambient_image_result(result: dict[str, Any]) -> dict[str, Any]:

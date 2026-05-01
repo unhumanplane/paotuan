@@ -17,6 +17,7 @@ from astrbot_plugin_auto_trpg_dm.tools.ambient_image_tools import (
     _ambient_style_seed,
     ambient_image_gate,
     build_ambient_image_prompt_request,
+    compose_ambient_image_prompt,
     explicit_ambient_image_trigger,
     render_ambient_image_prompt_template,
     should_offer_ambient_image,
@@ -350,6 +351,18 @@ def test_render_prompt_template_does_not_treat_json_braces_as_placeholders():
     assert rendered == '{"title":"黑塔城夜雾","prompt":"keep {missing}"}'
 
 
+def test_final_image_prompt_combines_title_prompt_and_style():
+    prompt = compose_ambient_image_prompt(
+        title="黑塔城夜雾",
+        prompt="cinematic 1.5k dark tower city fog",
+        style="low-key cinematic fog, restrained fantasy realism",
+    )
+
+    assert "Image title: 黑塔城夜雾" in prompt
+    assert "Scene prompt:\ncinematic 1.5k dark tower city fog" in prompt
+    assert "Story visual style:\nlow-key cinematic fog, restrained fantasy realism" in prompt
+
+
 def test_ambient_image_tool_missing_key_skips_prompt_model():
     runtime_dir = _test_runtime_dir("missing_key")
     repo = JsonGameRepository(runtime_dir)
@@ -410,7 +423,9 @@ def test_ambient_image_tool_saves_prompt_metadata_and_pending_output():
 
     class FakeProvider:
         async def generate(self, prompt):
-            assert prompt == "cinematic 1.5k dark tower city fog"
+            assert "Image title: 黑塔城夜雾" in prompt
+            assert "Scene prompt:\ncinematic 1.5k dark tower city fog" in prompt
+            assert "Story visual style:\nlow-key cinematic fog, restrained fantasy realism" in prompt
             return {
                 "ok": True,
                 "available": True,
@@ -439,9 +454,11 @@ def test_ambient_image_tool_saves_prompt_metadata_and_pending_output():
         )
     )
     saved = repo.load_session("group")
+    metadata = json.loads(Path(saved.scene["last_ambient_image"]["metadata_path"]).read_text(encoding="utf-8"))
 
     assert result["ok"] is True
-    assert saved.scene["last_ambient_image"]["prompt"] == "cinematic 1.5k dark tower city fog"
+    assert saved.scene["last_ambient_image"]["prompt"].startswith("Image title: 黑塔城夜雾")
+    assert metadata["prompt_model_prompt"] == "cinematic 1.5k dark tower city fog"
     assert saved.scene["ambient_image_style"]["description"] == "low-key cinematic fog, restrained fantasy realism"
     assert saved.scene["_pending_outputs"][0]["type"] == "ambient_image"
     assert (runtime_dir / "ambient_images").exists()
