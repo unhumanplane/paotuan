@@ -5,6 +5,7 @@ import json
 import re
 from typing import Any
 
+from .ambient_image import AmbientImageConfig, AmbientImageProvider
 from .cycle_buffer import append_cycle_action, complete_cycle_without_ra, cycle_end_requested
 from .environment_agent import RecorderAgent, complete_cycle_with_ra, recover_cycle_after_ra_failure
 from .external_memory import (
@@ -18,6 +19,11 @@ from .models import GameMode, utc_now_iso
 from .plugin_log import get_plugin_logger
 from .prompts import build_system_prompt, build_user_prompt
 from ..storage.json_repository import JsonGameRepository
+from ..tools.ambient_image_tools import (
+    AmbientImageTools,
+    should_offer_ambient_image,
+    update_ambient_image_activity_state,
+)
 from ..tools.registry import ToolRegistry
 from ..tools.turn_tools import TurnTools
 
@@ -56,6 +62,8 @@ class IntentRouter:
         repository: JsonGameRepository,
         tool_registry: ToolRegistry,
         external_memory: HonchoExternalMemory | None = None,
+        ambient_image_config: AmbientImageConfig | None = None,
+        ambient_image_provider: AmbientImageProvider | None = None,
         max_steps: int = 8,
         ra_enabled: bool = False,
     ):
@@ -63,6 +71,8 @@ class IntentRouter:
         self.repository = repository
         self.tool_registry = tool_registry
         self.external_memory = external_memory
+        self.ambient_image_config = ambient_image_config or AmbientImageConfig(enabled=False)
+        self.ambient_image_provider = ambient_image_provider or AmbientImageProvider(self.ambient_image_config)
         self.mode_machine = GameModeStateMachine()
         self.memory_compressor = MemoryCompressor()
         self.max_steps = max_steps
@@ -375,6 +385,8 @@ class IntentRouter:
                 player_message=message,
                 completion=completion,
             )
+            if trace_record:
+                update_ambient_image_activity_state(latest_session)
             cycle_action_record = None
             if trace_record:
                 cycle_action_record = append_cycle_action(
@@ -515,6 +527,17 @@ class IntentRouter:
                                 "result": audit_safe_external_memory_result(external_summary),
                             },
                         )
+            ambient_result = await self._maybe_generate_ambient_image(
+                session=latest_session,
+                mode=mode,
+                actor=actor,
+                player_message=message,
+                completion=completion,
+                provider_id=provider_id,
+                trace_record=trace_record,
+            )
+            if ambient_result.get("recorded"):
+                latest_session = self.repository.load_session(session_id)
             get_plugin_logger().info(
                 "message_handled session=%s mode=%s actor=%s completion_chars=%s",
                 session_id,
@@ -581,6 +604,69 @@ class IntentRouter:
             "turn_control_result": result,
             "reply_suffix": suffix,
         }
+
+    async def _maybe_generate_ambient_image(
+        self,
+        *,
+        session: Any,
+        mode: GameMode,
+        actor: dict[str, str],
+        player_message: str,
+        completion: str,
+        provider_id: str,
+        trace_record: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        if not should_offer_ambient_image(
+            session,
+            self.ambient_image_config,
+            mode,
+            player_message=player_message,
+        ):
+            return {"recorded": False}
+        if not trace_record:
+            return {"recorded": False, "reason": "ambient_image_no_narrative_trace"}
+        story_moment = _ambient_story_moment(player_message, completion, trace_record)
+        if not story_moment:
+            return {"recorded": False, "reason": "ambient_image_empty_story_moment"}
+        tools = AmbientImageTools(
+            self.repository,
+            session.session_id,
+            self.ambient_image_config,
+            self.ambient_image_provider,
+            actor=actor,
+            message=player_message,
+            llm_generate=self._llm_generate,
+            chat_provider_id=provider_id,
+        )
+        result = await tools.generate_ambient_image(
+            story_moment=story_moment,
+            rationale="叙事推进后内部条件触发氛围图。",
+            send_to_chat=True,
+        )
+        if result.get("ok") and result.get("available"):
+            self.repository.append_audit(
+                session.session_id,
+                {
+                    "type": "ambient_image_auto_generated",
+                    "actor": actor,
+                    "result": {
+                        key: value
+                        for key, value in result.items()
+                        if key not in {"file_path", "metadata_path"}
+                    },
+                },
+            )
+            return {"recorded": True, "result": result}
+        if result.get("reason") not in {"ambient_image_frequency_wait", "ambient_image_disabled"}:
+            self.repository.append_audit(
+                session.session_id,
+                {
+                    "type": "ambient_image_auto_skipped",
+                    "actor": actor,
+                    "result": result,
+                },
+            )
+        return {"recorded": False, "result": result}
 
     @staticmethod
     def _persist_narrative_trace(
@@ -2620,6 +2706,15 @@ def _compact_text(value: object, limit: int) -> str:
     if len(text) <= limit:
         return text
     return text[: max(1, limit - 1)].rstrip() + "…"
+
+
+def _ambient_story_moment(player_message: str, completion: str, trace_record: dict[str, Any] | None = None) -> str:
+    trace_record = trace_record or {}
+    pieces = [
+        str(trace_record.get("message", "") or player_message or ""),
+        str(trace_record.get("outcome", "") or completion or ""),
+    ]
+    return _compact_text(" => ".join(piece for piece in pieces if piece.strip()), 720)
 
 
 def _matched_terms(text: str, terms: tuple[str, ...]) -> list[str]:

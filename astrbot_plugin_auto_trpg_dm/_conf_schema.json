@@ -93,5 +93,75 @@
     "description": "是否启用 Recorder Agent 周期结算。默认关闭；关闭时保持现有单 DM 行为。",
     "type": "bool",
     "hint": "false"
+  },
+  "ambient_image_enabled": {
+    "description": "是否启用 TRPG 氛围图片生成。默认关闭；关闭时不会生成 prompt、不会调用图片 API。",
+    "type": "bool",
+    "hint": "false"
+  },
+  "ambient_image_api_mode": {
+    "description": "氛围图片 API 路径。images=/v1/images/generations；chat_completions=/v1/chat/completions。",
+    "type": "string",
+    "hint": "images"
+  },
+  "ambient_image_base_url": {
+    "description": "氛围图片 API base URL。会自动拼接 /v1/images/generations 或 /v1/chat/completions。",
+    "type": "string",
+    "hint": "https://www.packyapi.com"
+  },
+  "ambient_image_api_key_env": {
+    "description": "PackyAPI Sora 分组令牌所在的环境变量名。不要把真实 API key 写进配置。",
+    "type": "string",
+    "hint": "PACKYAPI_SORA_API_KEY"
+  },
+  "ambient_image_model": {
+    "description": "图片生成模型名。",
+    "type": "string",
+    "hint": "gpt-image-2"
+  },
+  "ambient_image_prompt_model": {
+    "description": "用于生成图片 prompt 的对话模型/provider ID。留空时使用当前对话模型。",
+    "type": "string",
+    "hint": ""
+  },
+  "ambient_image_size": {
+    "description": "图片尺寸。默认横向 4K。",
+    "type": "string",
+    "hint": "3840x2160"
+  },
+  "ambient_image_quality": {
+    "description": "图片质量。默认 high。",
+    "type": "string",
+    "hint": "high"
+  },
+  "ambient_image_output_format": {
+    "description": "图片输出格式。",
+    "type": "string",
+    "hint": "png"
+  },
+  "ambient_image_response_format": {
+    "description": "Images API 响应格式。url=返回图片 URL；b64_json=返回 base64 图片。",
+    "type": "string",
+    "hint": "url"
+  },
+  "ambient_image_timeout_seconds": {
+    "description": "氛围图片 API 单次最长等待时间。超时只跳过本轮图片，不影响跑团。",
+    "type": "int",
+    "hint": "60"
+  },
+  "ambient_image_send_to_chat": {
+    "description": "生成成功后是否把图片随本轮回复发送。",
+    "type": "bool",
+    "hint": "true"
+  },
+  "ambient_image_frequency": {
+    "description": "普通氛围图触发频率：low=30轮或40分钟；medium=10轮或20分钟；high=5轮或5分钟；二者先满足即可。",
+    "type": "string",
+    "hint": "medium"
+  },
+  "ambient_image_prompt_template": {
+    "description": "生成生图 prompt 前发送给 prompt 模型的模板。留空时使用内置模板；可使用 {story_style}、{story_moment}、{rationale}、{scene}、{memory_summary}、{characters}、{world_tags}、{player_message}、{output_defaults} 等占位符。",
+    "type": "string",
+    "hint": ""
   }
 }

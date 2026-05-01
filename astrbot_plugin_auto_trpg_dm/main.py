@@ -16,6 +16,7 @@ from astrbot.core.message.components import Image as ImageComponent, Plain, Repl
 from astrbot.core.message.message_event_result import MessageChain
 from astrbot.core.utils.astrbot_path import get_astrbot_data_path
 
+from .core.ambient_image import AmbientImageConfig, AmbientImageProvider
 from .core.external_memory import HonchoExternalMemory, HonchoMemoryConfig
 from .core.plugin_log import configure_plugin_logging
 from .core.router import IntentRouter
@@ -23,6 +24,7 @@ from .core.security import security_precheck
 from .core.models import CycleState, GameMode
 from .rules.python_runtime import PythonRuleRuntime
 from .storage.json_repository import JsonGameRepository
+from .tools.ambient_image_tools import AmbientImageTools
 from .tools.diagnostic_tools import DiagnosticTools
 from .tools.memory_tools import MemoryTools, has_campaign_background
 from .tools.registry import ToolRegistry
@@ -75,6 +77,24 @@ class AutoTrpgDmPlugin(Star):
         )
         self.honcho_config = honcho_config
         external_memory = HonchoExternalMemory(honcho_config)
+        ambient_image_config = AmbientImageConfig(
+            enabled=self._config_bool("ambient_image_enabled", False),
+            api_mode=self._config_str("ambient_image_api_mode", "images"),
+            base_url=self._config_str("ambient_image_base_url", "https://www.packyapi.com"),
+            api_key_env=self._config_str("ambient_image_api_key_env", "PACKYAPI_SORA_API_KEY"),
+            model=self._config_str("ambient_image_model", "gpt-image-2"),
+            prompt_model=self._config_str("ambient_image_prompt_model", ""),
+            size=self._config_str("ambient_image_size", "3840x2160"),
+            quality=self._config_str("ambient_image_quality", "high"),
+            output_format=self._config_str("ambient_image_output_format", "png"),
+            response_format=self._config_str("ambient_image_response_format", "url"),
+            timeout_seconds=self._config_int("ambient_image_timeout_seconds", 60),
+            send_to_chat=self._config_bool("ambient_image_send_to_chat", True),
+            frequency=self._config_str("ambient_image_frequency", "medium"),
+            prompt_template=self._config_str("ambient_image_prompt_template", ""),
+        )
+        self.ambient_image_config = ambient_image_config
+        ambient_image_provider = AmbientImageProvider(ambient_image_config)
         tool_registry = ToolRegistry(
             repository=self.repository,
             rule_runtime=rule_runtime,
@@ -87,6 +107,8 @@ class AutoTrpgDmPlugin(Star):
             repository=self.repository,
             tool_registry=tool_registry,
             external_memory=external_memory,
+            ambient_image_config=ambient_image_config,
+            ambient_image_provider=ambient_image_provider,
             ra_enabled=self._config_bool("ra_enabled", False),
         )
         migrated = self._migrate_legacy_turn_fields()
@@ -101,10 +123,12 @@ class AutoTrpgDmPlugin(Star):
         self._heartbeat_task: asyncio.Task | None = None
         self._start_heartbeat_task()
         self.plugin_logger.info(
-            "plugin_initialized version=0.1.73 data_dir=%s honcho_enabled=%s honcho_workspace=%s",
+            "plugin_initialized version=0.1.73 data_dir=%s honcho_enabled=%s honcho_workspace=%s ambient_image_enabled=%s ambient_image_mode=%s",
             data_dir,
             honcho_config.enabled,
             bool(honcho_config.workspace_id),
+            ambient_image_config.enabled,
+            ambient_image_config.api_mode,
         )
         logger.info("Auto TRPG DM plugin initialized.")
 
@@ -155,7 +179,7 @@ class AutoTrpgDmPlugin(Star):
         session_id = IntentRouter.session_id_for_event(event)
         actor = self.router.actor_context_for_event(event)
         sender_id = actor.get("player_id", "")
-        fast_reply = await self._local_fast_path(session_id, actor, routed_message)
+        fast_reply = await self._local_fast_path(event, session_id, actor, routed_message)
         if fast_reply:
             self.plugin_logger.info(
                 "dm_fast_path session=%s sender=%s text=%s",
@@ -163,7 +187,8 @@ class AutoTrpgDmPlugin(Star):
                 sender_id,
                 self._dedupe_text(routed_message)[:160],
             )
-            yield self._quoted_result(event, fast_reply)
+            pending_outputs = self._pop_pending_outputs(session_id)
+            yield self._quoted_result(event, fast_reply, pending_outputs=pending_outputs)
             event.stop_event()
             return
         duplicate_reply = self._duplicate_reply(session_id, sender_id, routed_message)
@@ -298,7 +323,13 @@ class AutoTrpgDmPlugin(Star):
         if sent_any:
             event.stop_event()
 
-    async def _local_fast_path(self, session_id: str, actor: dict[str, str], routed_message: str) -> str:
+    async def _local_fast_path(
+        self,
+        event: AstrMessageEvent,
+        session_id: str,
+        actor: dict[str, str],
+        routed_message: str,
+    ) -> str:
         text = self._dedupe_text(routed_message)
         normalized = text.lower()
         session = self.repository.load_session(session_id)
@@ -342,6 +373,14 @@ class AutoTrpgDmPlugin(Star):
             session.scene["_dm_paused_at"] = _utc_now_iso()
             self.repository.save_session(session)
             self.repository.append_audit(session_id, {"type": "local_fast_path", "action": "pause", "actor": actor})
+            await self._maybe_generate_pause_resume_ambient_image(
+                event,
+                session_id,
+                actor,
+                text,
+                story_moment="跑团流程暂停，角色和场景进入短暂静止。",
+                rationale="暂停是特殊剧情节奏事件，按 2 小时冷却尝试氛围图。",
+            )
             return "流程已暂停。我不会推进轮次、替人行动或调用模型；需要继续时发 `/dm resume` 或 `/dm 恢复`。"
 
         if normalized in {"resume", "unpause", "恢复", "继续流程", "解除暂停"} or (paused and normalized == "继续"):
@@ -351,6 +390,14 @@ class AutoTrpgDmPlugin(Star):
                 session.scene["_dm_resumed_at"] = _utc_now_iso()
                 self.repository.save_session(session)
             self.repository.append_audit(session_id, {"type": "local_fast_path", "action": "resume", "actor": actor})
+            await self._maybe_generate_pause_resume_ambient_image(
+                event,
+                session_id,
+                actor,
+                text,
+                story_moment="跑团流程从暂停中恢复，镜头重新回到当前场景。",
+                rationale="暂停恢复是特殊剧情节奏事件，按 2 小时冷却尝试氛围图。",
+            )
             return "流程已恢复。下一句 `/dm` 会按当前存档继续裁定。"
 
         if _looks_like_backup_list_request(text):
@@ -1595,6 +1642,15 @@ class AutoTrpgDmPlugin(Star):
             components.append(Reply(id=message_id))
         components.append(Plain(text=text))
         for item in pending_outputs[:2]:
+            if item.get("type") == "ambient_image":
+                file_path = str(item.get("path", ""))
+                name = str(item.get("name", "") or "ambient_image.png")
+                if file_path and Path(file_path).exists():
+                    components.append(ImageComponent.fromFileSystem(file_path))
+                    self.plugin_logger.info("ambient_image_attached path=%s", file_path)
+                else:
+                    components.append(Plain(text=f"\n氛围图已生成但无法附加：{name}"))
+                continue
             if item.get("type") != "svg_map":
                 continue
             file_path = str(item.get("path", ""))
@@ -1857,6 +1913,62 @@ class AutoTrpgDmPlugin(Star):
         except Exception as exc:
             self.plugin_logger.warning("pending_outputs_pop_failed session=%s error=%s", session_id, exc)
             return []
+
+    async def _maybe_generate_pause_resume_ambient_image(
+        self,
+        event: AstrMessageEvent,
+        session_id: str,
+        actor: dict[str, str],
+        message: str,
+        *,
+        story_moment: str,
+        rationale: str,
+    ) -> None:
+        if not self.ambient_image_config.enabled:
+            return
+        try:
+            provider_id = await self.astr_context.get_current_chat_provider_id(
+                umo=event.unified_msg_origin,
+            )
+        except TypeError:
+            provider_id = ""
+        except Exception as exc:
+            self.plugin_logger.warning("ambient_image_provider_id_failed session=%s error=%s", session_id, exc)
+            provider_id = ""
+        tools = AmbientImageTools(
+            self.repository,
+            session_id,
+            self.ambient_image_config,
+            self.router.ambient_image_provider,
+            actor=actor,
+            message=message,
+            llm_generate=self.router._llm_generate,
+            chat_provider_id=provider_id,
+        )
+        result = await tools.generate_ambient_image(
+            story_moment=story_moment,
+            rationale=rationale,
+            send_to_chat=True,
+            trigger_override="pause_resume",
+        )
+        self.repository.append_audit(
+            session_id,
+            {
+                "type": "ambient_image_pause_resume_attempt",
+                "actor": actor,
+                "result": {
+                    key: value
+                    for key, value in result.items()
+                    if key not in {"file_path", "metadata_path"}
+                },
+            },
+        )
+        if result.get("ok") and result.get("available"):
+            self.plugin_logger.info(
+                "ambient_image_pause_resume_generated session=%s actor=%s",
+                session_id,
+                actor.get("player_id", ""),
+            )
 
     def _duplicate_reply(self, session_id: str, sender_id: str, routed_message: str) -> str:
         now = monotonic()
