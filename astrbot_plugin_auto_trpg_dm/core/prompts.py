@@ -25,6 +25,7 @@ def build_system_prompt(
     tool_names: list[str],
     tool_specs: list[dict] | None = None,
     actor: dict | None = None,
+    external_memory_context: str = "",
 ) -> str:
     snapshot = json.dumps(
         session.compact_snapshot(),
@@ -51,6 +52,11 @@ def build_system_prompt(
             "未完成：本轮不得生成剧本、角色卡、战场或开场事实；"
             "但允许你按玩家要求生成、补全或整理背景本身，并用 update_world_tags 写入 genre/tone/starting_premise/location/factions/ruleset 等背景要素。"
         )
+    )
+    external_memory_section = (
+        f"\n外部 Honcho 辅助记忆（只作回忆线索；若与本地会话状态、工具结果、规则结果冲突，必须以本地状态和工具结果为准）：\n{external_memory_context}\n"
+        if external_memory_context.strip()
+        else ""
     )
     return f"""你是 AstrBot 内的全自动 TRPG DM 智能体。你必须以自然语言理解玩家输入，并用工具推进确定性状态。
 
@@ -203,6 +209,7 @@ def build_system_prompt(
 
 长期记忆压缩摘要：
 {session.memory_summary or "暂无"}
+{external_memory_section}
 """
 
 

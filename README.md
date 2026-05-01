@@ -14,6 +14,7 @@
 - 内置规则运行时，可注册和执行受限 Python 规则函数。
 - 新增 DND 2024 本地核心规则书检索层，用于按需查询规则摘要，而不是把整本规则塞进 prompt。
 - 新增 DM guidance 规则检索，帮助 agent 在“怎么裁定、怎么描述、怎么控制节奏”上更稳。
+- 可选接入 Honcho 外置记忆，用受控摘要和关键事件增强长期回忆；默认关闭，不影响本地 JSON 存档。
 
 ## 适合什么场景
 
@@ -56,6 +57,12 @@
 - `execute_rule`：负责真正的骰子、命中、豁免、伤害、治疗和其他数值结算。
 
 规则书内容不会被长期写进 `session`、`memory_summary` 或 `system prompt`。项目倾向于“按需查规则，再做裁定”，而不是把大段规则文本一直挂在上下文里。
+
+### 4. Honcho 外置记忆增强
+
+Honcho 接入是可选增强层，不替代本地 `GameSession` 和 `JsonGameRepository`。本地 JSON 仍然是 HP、物品、位置、回合、规则结果等强一致事实的权威来源；Honcho 只提供玩家偏好、角色倾向、幕间 recap、伏笔和关键事件这类辅助回忆。
+
+完整部署、配置、使用和排错说明见 [Honcho 外置记忆接入指南](docs/honcho-external-memory.md)。
 
 ## 当前能力一览
 
@@ -236,6 +243,7 @@ powershell -ExecutionPolicy Bypass -File scripts/handle-pr.ps1 -PrNumber 123 -Me
 - 规则书检索。
 - 规则书工具调用。
 - DM guidance / 安全策略。
+- Honcho 外置记忆的可选降级、ID 映射、prompt 注入和受控写入 payload。
 
 如果本地环境可用，建议运行：
 
@@ -249,11 +257,12 @@ python -m pytest -q
 当前插件版本：
 
 ```text
-v0.1.66
+v0.1.70
 ```
 
 本轮更新重点：
 
+- 新增 Honcho 外置记忆 MVP：受控摘要/关键事件同步、prompt context 注入、默认关闭和失败降级。
 - 接入 DND 2024 本地核心规则书检索与规则卡种子数据。
 - 新增 `query_core_rules`，可按模式挂载到叙事、战棋、规则创作和结算流程。
 - 增加 DM guidance 检索，帮助 agent 在规则不确定、需要临时裁定或控制叙事节奏时更稳。

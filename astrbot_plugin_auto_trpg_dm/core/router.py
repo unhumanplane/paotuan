@@ -5,6 +5,11 @@ import json
 import re
 from typing import Any
 
+from .external_memory import (
+    HonchoExternalMemory,
+    audit_safe_external_memory_result,
+    external_memory_observation,
+)
 from .memory import MemoryCompressor
 from .modes import GameModeStateMachine
 from .models import GameMode, utc_now_iso
@@ -48,11 +53,13 @@ class IntentRouter:
         astr_context: Any,
         repository: JsonGameRepository,
         tool_registry: ToolRegistry,
+        external_memory: HonchoExternalMemory | None = None,
         max_steps: int = 8,
     ):
         self.astr_context = astr_context
         self.repository = repository
         self.tool_registry = tool_registry
+        self.external_memory = external_memory
         self.mode_machine = GameModeStateMachine()
         self.memory_compressor = MemoryCompressor()
         self.max_steps = max_steps
@@ -221,10 +228,41 @@ class IntentRouter:
                 message=message,
                 provider_id=provider_id,
             )
-            system_prompt = build_system_prompt(session, mode, tool_names, tool_specs, actor=actor)
+            external_memory_context = ""
+            external_memory_context_chars = 0
+            if self.external_memory:
+                external_result = await self.external_memory.context_for_prompt(session, actor, message)
+                if external_result.get("ok") and external_result.get("available"):
+                    external_memory_context = str(external_result.get("context", "") or "")
+                    external_memory_context_chars = len(external_memory_context)
+                    self.repository.append_audit(
+                        session_id,
+                        {
+                            "type": "external_memory_context_observed",
+                            "provider": "honcho",
+                            "result": external_memory_observation(external_result),
+                        },
+                    )
+                elif not external_result.get("ok", True):
+                    self.repository.append_audit(
+                        session_id,
+                        {
+                            "type": "external_memory_context_failed",
+                            "provider": "honcho",
+                            "result": audit_safe_external_memory_result(external_result),
+                        },
+                    )
+            system_prompt = build_system_prompt(
+                session,
+                mode,
+                tool_names,
+                tool_specs,
+                actor=actor,
+                external_memory_context=external_memory_context,
+            )
             tool_schema_text = json.dumps(tool_specs, ensure_ascii=False, separators=(",", ":"))
             get_plugin_logger().info(
-                "router_prepared session=%s mode=%s actor=%s tools=%s snapshot_chars=%s system_prompt_chars=%s tool_schema_chars=%s rough_total_tokens=%s",
+                "router_prepared session=%s mode=%s actor=%s tools=%s snapshot_chars=%s system_prompt_chars=%s tool_schema_chars=%s external_memory_chars=%s rough_total_tokens=%s",
                 session_id,
                 mode.value,
                 actor.get("player_id", ""),
@@ -232,6 +270,7 @@ class IntentRouter:
                 self.memory_compressor.snapshot_chars(session),
                 len(system_prompt),
                 len(tool_schema_text),
+                external_memory_context_chars,
                 max(1, (len(system_prompt) + len(tool_schema_text)) // 2),
             )
 
@@ -346,6 +385,27 @@ class IntentRouter:
                     actor.get("player_id", ""),
                     trace_record.get("character_id", ""),
                 )
+                if self.external_memory:
+                    external_write = await self.external_memory.write_key_event(
+                        latest_session,
+                        actor,
+                        trace_record,
+                    )
+                    if external_write.get("synced"):
+                        self.repository.save_session(latest_session)
+                    if (
+                        external_write.get("available")
+                        or not external_write.get("ok", True)
+                        or external_write.get("reason") == "duplicate_external_memory_event"
+                    ):
+                        self.repository.append_audit(
+                            session_id,
+                            {
+                                "type": "external_memory_write_key_event",
+                                "provider": "honcho",
+                                "result": audit_safe_external_memory_result(external_write),
+                            },
+                        )
             self.repository.append_audit(
                 session_id,
                 {
@@ -370,6 +430,27 @@ class IntentRouter:
                         "summary_chars": len(latest_session.memory_summary),
                     },
                 )
+                if self.external_memory:
+                    external_summary = await self.external_memory.write_memory_summary(
+                        latest_session,
+                        actor,
+                        reason="post_message_compression",
+                    )
+                    if external_summary.get("synced"):
+                        self.repository.save_session(latest_session)
+                    if (
+                        external_summary.get("available")
+                        or not external_summary.get("ok", True)
+                        or external_summary.get("reason") == "duplicate_external_memory_event"
+                    ):
+                        self.repository.append_audit(
+                            session_id,
+                            {
+                                "type": "external_memory_write_summary",
+                                "provider": "honcho",
+                                "result": audit_safe_external_memory_result(external_summary),
+                            },
+                        )
             get_plugin_logger().info(
                 "message_handled session=%s mode=%s actor=%s completion_chars=%s",
                 session_id,
@@ -628,7 +709,7 @@ class IntentRouter:
             audit_record = {
                 "type": "llm_tool_step",
                 "step": step + 1,
-                "tool_results": tool_results,
+                "tool_results": _audit_safe_tool_results(tool_results),
             }
             if audit_lock is None:
                 self.repository.append_audit(session_id, audit_record)
@@ -2364,6 +2445,17 @@ def _tool_result_ok(result: Any) -> bool:
     if isinstance(result, dict):
         return bool(result.get("ok", True))
     return result is not None
+
+
+def _audit_safe_tool_results(tool_results: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    safe_results: list[dict[str, Any]] = []
+    for item in tool_results:
+        safe_item = dict(item)
+        result = safe_item.get("result")
+        if item.get("tool") == "search_external_memory" and isinstance(result, dict):
+            safe_item["result"] = audit_safe_external_memory_result(result)
+        safe_results.append(safe_item)
+    return safe_results
 
 
 def _contains_any_term(text: str, terms: tuple[str, ...]) -> bool:

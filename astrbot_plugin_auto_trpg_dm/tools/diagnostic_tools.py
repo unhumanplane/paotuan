@@ -6,6 +6,7 @@ from typing import Any, Callable, Dict
 
 from pydantic import BaseModel, Field
 
+from ..core.external_memory import audit_safe_external_memory_result
 from ..core.memory import MemoryCompressor
 from ..core.prompts import build_system_prompt, build_user_prompt
 from ..storage.json_repository import JsonGameRepository
@@ -22,11 +23,22 @@ ToolSpecsProvider = Callable[[Any], tuple[list[str], list[dict[str, Any]]]]
 
 
 class DiagnosticTools:
-    def __init__(self, repository: JsonGameRepository, session_id: str):
+    def __init__(
+        self,
+        repository: JsonGameRepository,
+        session_id: str,
+        *,
+        external_memory_enabled: bool = False,
+        external_memory_read_enabled: bool = False,
+        external_memory_max_context_chars: int = 0,
+    ):
         self.repository = repository
         self.session_id = session_id
         self.compressor = MemoryCompressor()
         self.tool_specs_provider: ToolSpecsProvider | None = None
+        self.external_memory_enabled = bool(external_memory_enabled)
+        self.external_memory_read_enabled = bool(external_memory_read_enabled)
+        self.external_memory_max_context_chars = max(0, _safe_int(external_memory_max_context_chars))
 
     def set_tool_specs_provider(self, provider: ToolSpecsProvider) -> None:
         self.tool_specs_provider = provider
@@ -69,6 +81,10 @@ class DiagnosticTools:
                 "battle_active": bool(session.battle.get("active", False)),
             },
             "rough_token_estimate": _rough_token_estimate(len(snapshot_text)),
+            "external_memory": {
+                **self._external_memory_config_summary(),
+                "observability": self._external_memory_observability(),
+            },
             "prompt_budget": self._prompt_budget(session),
             "compression": {
                 "would_compress_now": self.compressor.snapshot_chars(session)
@@ -102,7 +118,10 @@ class DiagnosticTools:
 
     def _prompt_budget(self, session: Any) -> Dict[str, Any]:
         if not self.tool_specs_provider:
-            return {"available": False}
+            return {
+                "available": False,
+                "external_memory": self._external_memory_config_summary(),
+            }
         actor = {
             "player_id": "<diagnostic>",
             "display_name": "<diagnostic>",
@@ -113,8 +132,12 @@ class DiagnosticTools:
         tool_names, tool_specs = self.tool_specs_provider(session.mode)
         tool_schema_text = json.dumps(tool_specs, ensure_ascii=False, separators=(",", ":"))
         system_prompt = build_system_prompt(session, session.mode, tool_names, tool_specs, actor=actor)
+        external_memory_budget = self._external_memory_budget(session, tool_names, tool_specs, actor)
         sample_user_prompt = build_user_prompt("示例玩家输入")
         total_chars = len(system_prompt) + len(sample_user_prompt) + len(tool_schema_text)
+        total_with_external_memory_chars = (
+            total_chars + external_memory_budget["estimated_section_chars"]
+        )
         by_mode: Dict[str, Any] = {}
         try:
             from ..core.models import GameMode
@@ -137,13 +160,132 @@ class DiagnosticTools:
             "sample_user_prompt_chars": len(sample_user_prompt),
             "tool_schema_chars": len(tool_schema_text),
             "total_request_chars_excluding_chat_history": total_chars,
+            "total_request_chars_with_external_memory_budget": total_with_external_memory_chars,
             "rough_total_request_tokens": _rough_token_estimate(total_chars),
+            "rough_total_request_tokens_with_external_memory_budget": _rough_token_estimate(
+                total_with_external_memory_chars
+            ),
+            "external_memory": external_memory_budget,
             "mode_tool_schema_costs": by_mode,
         }
+
+    def _external_memory_budget(
+        self,
+        session: Any,
+        tool_names: list[str],
+        tool_specs: list[dict[str, Any]],
+        actor: dict[str, str],
+    ) -> dict[str, Any]:
+        configured_max = self.external_memory_max_context_chars
+        included = (
+            self.external_memory_enabled
+            and self.external_memory_read_enabled
+            and configured_max > 0
+        )
+        if not included:
+            return {
+                "enabled": self.external_memory_enabled,
+                "read_enabled": self.external_memory_read_enabled,
+                "configured_max_context_chars": configured_max,
+                "included_in_budget": False,
+                "estimated_section_chars": 0,
+            }
+        base_prompt = build_system_prompt(session, session.mode, tool_names, tool_specs, actor=actor)
+        placeholder_context = "x" * configured_max
+        prompt_with_external_memory = build_system_prompt(
+            session,
+            session.mode,
+            tool_names,
+            tool_specs,
+            actor=actor,
+            external_memory_context=placeholder_context,
+        )
+        return {
+            "enabled": True,
+            "read_enabled": True,
+            "configured_max_context_chars": configured_max,
+            "included_in_budget": True,
+            "estimated_section_chars": max(0, len(prompt_with_external_memory) - len(base_prompt)),
+        }
+
+    def _external_memory_config_summary(self) -> dict[str, Any]:
+        return {
+            "enabled": self.external_memory_enabled,
+            "read_enabled": self.external_memory_read_enabled,
+            "configured_max_context_chars": self.external_memory_max_context_chars,
+            "budget_note": "configured_max_context_chars is a budget ceiling, not the actual Honcho context fetched for this turn.",
+        }
+
+    def _external_memory_observability(self) -> dict[str, Any]:
+        records = self.repository.last_audit_records(self.session_id, limit=80)
+        summary: dict[str, Any] = {
+            "safe_fields_only": True,
+            "audit_window_records": len(records),
+            "read_attempts": 0,
+            "read_successes": 0,
+            "read_failures": 0,
+            "write_attempts": 0,
+            "write_successes": 0,
+            "write_failures": 0,
+            "skipped_duplicate_writes": 0,
+            "failures_by_error": {},
+            "skips_by_reason": {},
+            "latest_context_chars": 0,
+            "max_context_chars": 0,
+            "state_sensitive_context_observed": False,
+        }
+        for record in records:
+            record_type = str(record.get("type") or "")
+            if not record_type.startswith("external_memory_"):
+                continue
+            raw_result = record.get("result") if isinstance(record.get("result"), dict) else {}
+            result = audit_safe_external_memory_result(raw_result)
+            if record_type in {"external_memory_context_observed", "external_memory_context_failed"}:
+                summary["read_attempts"] += 1
+                if result.get("ok", True):
+                    summary["read_successes"] += 1
+                else:
+                    summary["read_failures"] += 1
+            elif record_type in {
+                "external_memory_write_key_event",
+                "external_memory_write_summary",
+            }:
+                summary["write_attempts"] += 1
+                if result.get("available"):
+                    summary["write_successes"] += 1
+                elif not result.get("ok", True):
+                    summary["write_failures"] += 1
+            error = str(result.get("error") or "")
+            if error:
+                failures = summary["failures_by_error"]
+                failures[error] = failures.get(error, 0) + 1
+            reason = str(result.get("reason") or "")
+            status = str(result.get("status") or "")
+            if reason and result.get("ok", True) and (
+                not result.get("available") or status.startswith("skipped")
+            ):
+                skips = summary["skips_by_reason"]
+                skips[reason] = skips.get(reason, 0) + 1
+                if reason == "duplicate_external_memory_event":
+                    summary["skipped_duplicate_writes"] += 1
+            if "context_chars" in result:
+                context_chars = max(0, _safe_int(result.get("context_chars")))
+                summary["latest_context_chars"] = context_chars
+                summary["max_context_chars"] = max(summary["max_context_chars"], context_chars)
+            if result.get("state_sensitive_context"):
+                summary["state_sensitive_context_observed"] = True
+        return summary
 
 
 def _path_size(path: Path) -> int:
     return path.stat().st_size if path.exists() else 0
+
+
+def _safe_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
 
 
 def _rough_token_estimate(chars: int) -> Dict[str, int]:

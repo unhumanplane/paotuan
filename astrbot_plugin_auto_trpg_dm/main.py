@@ -16,6 +16,7 @@ from astrbot.core.message.components import Image as ImageComponent, Plain, Repl
 from astrbot.core.message.message_event_result import MessageChain
 from astrbot.core.utils.astrbot_path import get_astrbot_data_path
 
+from .core.external_memory import HonchoExternalMemory, HonchoMemoryConfig
 from .core.plugin_log import configure_plugin_logging
 from .core.router import IntentRouter
 from .core.security import security_precheck
@@ -49,11 +50,43 @@ class AutoTrpgDmPlugin(Star):
         self.repository = JsonGameRepository(data_dir)
         self.plugin_logger = configure_plugin_logging(self.repository.plugin_log_path())
         rule_runtime = PythonRuleRuntime(data_dir / "rules")
-        tool_registry = ToolRegistry(repository=self.repository, rule_runtime=rule_runtime, astr_context=context)
+        honcho_config = HonchoMemoryConfig(
+            enabled=self._config_bool("honcho_enabled", False),
+            target=self._config_str("honcho_target", "auto"),
+            workspace_id=self._config_str("honcho_workspace_id", ""),
+            api_key_env=self._config_str("honcho_api_key_env", "HONCHO_API_KEY"),
+            cloud_api_key_env=self._config_str("honcho_cloud_api_key_env", ""),
+            base_url=self._config_str("honcho_base_url", ""),
+            self_hosted_api_key_env=self._config_str("honcho_self_hosted_api_key_env", ""),
+            self_hosted_auth_enabled=self._config_bool(
+                "honcho_self_hosted_auth_enabled",
+                False,
+            ),
+            environment=self._config_str("honcho_environment", "production"),
+            timeout_seconds=self._config_int("honcho_timeout_seconds", 8),
+            max_context_chars=self._config_int("honcho_max_context_chars", 1600),
+            write_enabled=self._config_bool("honcho_write_enabled", True),
+            read_enabled=self._config_bool("honcho_read_enabled", True),
+            assistant_peer_id=self._config_str("honcho_assistant_peer_id", "paotuan_dm"),
+            cross_campaign_personalization_enabled=self._config_bool(
+                "honcho_cross_campaign_personalization_enabled",
+                False,
+            ),
+        )
+        self.honcho_config = honcho_config
+        external_memory = HonchoExternalMemory(honcho_config)
+        tool_registry = ToolRegistry(
+            repository=self.repository,
+            rule_runtime=rule_runtime,
+            astr_context=context,
+            external_memory_config=honcho_config,
+            external_memory=external_memory,
+        )
         self.router = IntentRouter(
             astr_context=context,
             repository=self.repository,
             tool_registry=tool_registry,
+            external_memory=external_memory,
         )
         migrated = self._migrate_legacy_turn_fields()
         if migrated:
@@ -66,7 +99,12 @@ class AutoTrpgDmPlugin(Star):
             self.plugin_logger.info("legacy_live_scene_state_migrated saves=%s", live_scene_migrations)
         self._heartbeat_task: asyncio.Task | None = None
         self._start_heartbeat_task()
-        self.plugin_logger.info("plugin_initialized version=0.1.70 data_dir=%s", data_dir)
+        self.plugin_logger.info(
+            "plugin_initialized version=0.1.70 data_dir=%s honcho_enabled=%s honcho_workspace=%s",
+            data_dir,
+            honcho_config.enabled,
+            bool(honcho_config.workspace_id),
+        )
         logger.info("Auto TRPG DM plugin initialized.")
 
     @filter.command("dm")
@@ -396,16 +434,30 @@ class AutoTrpgDmPlugin(Star):
             return self._format_local_status(session)
 
         if normalized in {"token", "tokens", "token消耗", "上下文", "上下文消耗"}:
-            usage = await DiagnosticTools(self.repository, session_id).estimate_token_usage("summary")
+            usage = await DiagnosticTools(
+                self.repository,
+                session_id,
+                external_memory_enabled=self.honcho_config.enabled,
+                external_memory_read_enabled=self.honcho_config.read_enabled,
+                external_memory_max_context_chars=self.honcho_config.max_context_chars,
+            ).estimate_token_usage("summary")
             current = usage.get("current", {})
             rough = usage.get("rough_token_estimate", {})
             compression = usage.get("compression", {})
+            external_memory = usage.get("external_memory", {})
+            external_note = ""
+            if external_memory.get("enabled") and external_memory.get("read_enabled"):
+                external_note = (
+                    f"Honcho 外置记忆本轮预算上限 {external_memory.get('configured_max_context_chars', 0)} 字；"
+                    "实际读取字符数以 router 日志为准。"
+                )
             self.repository.append_audit(session_id, {"type": "local_fast_path", "action": "token", "actor": actor})
             return (
                 "Token 粗算："
                 f"快照 {current.get('compact_snapshot_chars', 0)} 字，约 {rough.get('heuristic', 0)} token；"
                 f"完整存档 {current.get('full_save_chars', 0)} 字。"
                 f"距自动压缩约 {compression.get('snapshot_chars_remaining_before_compression', 0)} 字。"
+                f"{external_note}"
             )
 
         if normalized in {"当前轮次", "当前回合", "轮次", "回合", "谁行动", "轮到谁", "行动顺序", "战斗顺序", "轮动顺序"} or _looks_like_turn_status_request(text):
@@ -1748,7 +1800,36 @@ class AutoTrpgDmPlugin(Star):
             value = self.config.get(key, default)
         except AttributeError:
             value = getattr(self.config, key, default)
+        if isinstance(value, str):
+            normalized = value.strip().lower()
+            if normalized in {"false", "0", "no", "off", "否", "关闭"}:
+                return False
+            if normalized in {"true", "1", "yes", "on", "是", "开启"}:
+                return True
         return bool(value)
+
+    def _config_str(self, key: str, default: str = "") -> str:
+        if not self.config:
+            return default
+        try:
+            value = self.config.get(key, default)
+        except AttributeError:
+            value = getattr(self.config, key, default)
+        if value is None:
+            return default
+        return str(value).strip()
+
+    def _config_int(self, key: str, default: int) -> int:
+        if not self.config:
+            return default
+        try:
+            value = self.config.get(key, default)
+        except AttributeError:
+            value = getattr(self.config, key, default)
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return default
 
 
 def _svg_local_name(tag: str) -> str:
