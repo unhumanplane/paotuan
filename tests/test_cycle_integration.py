@@ -358,6 +358,36 @@ class TestEndToEndWithRa:
         assert session.current_cycle_id == 1
         assert session.environment_summaries[-1]["summary"] == "击退兽人。"
 
+    def test_ra_retries_without_max_tokens_when_provider_rejects_it(self):
+        session = GameSession.new("ra_max_tokens_fallback")
+        session.cycle_state = CycleState.CYCLE_RESOLVING
+        response = json.dumps({
+            "cycle_id": 0,
+            "summary": "记录完成。",
+            "character_status": [],
+            "enemy_status": [],
+            "world_changes": [],
+            "rules_triggered": [],
+            "dm_narrative_aligned": True,
+            "discrepancies": [],
+        }, ensure_ascii=False)
+
+        class RejectsMaxTokens(FakeLlm):
+            async def __call__(self, **kwargs):
+                self.calls.append(kwargs)
+                if "max_tokens" in kwargs:
+                    raise TypeError("unexpected keyword argument 'max_tokens'")
+                return FakeResponse(self.text)
+
+        fake_llm = RejectsMaxTokens(response)
+        ra_result = asyncio.run(
+            RecorderAgent(fake_llm, "provider", max_tokens=1024).run_cycle_resolution(session)
+        )
+        assert ra_result["ok"] is True
+        assert len(fake_llm.calls) == 2
+        assert fake_llm.calls[0].get("max_tokens") == 1024
+        assert "max_tokens" not in fake_llm.calls[1]
+
     def test_ra_invalid_json_fallback(self):
         session = GameSession.new("ra_fail")
         session.cycle_state = CycleState.CYCLE_RESOLVING
@@ -395,5 +425,3 @@ class TestEndToEndWithRa:
         validation = validate_ra_patch_candidates(session, summary)
         assert validation["accepted"] == []
         assert {item["reason"] for item in validation["rejected"]} == {"missing_tool_backing"}
-
-

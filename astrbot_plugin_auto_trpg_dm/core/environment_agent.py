@@ -30,13 +30,29 @@ class RecorderAgent:
             "contexts": [],
             "system_prompt": build_ra_system_prompt(),
         }
-        # TODO: verify that the underlying AstrBot provider actually passes
-        # max_tokens through to the model request payload. Some provider
-        # adapters may silently drop unknown kwargs.
         if self.max_tokens > 0:
             llm_kwargs["max_tokens"] = self.max_tokens
         try:
             response = await self.llm_generate(**llm_kwargs)
+        except TypeError as exc:
+            if "max_tokens" not in llm_kwargs:
+                return {
+                    "ok": False,
+                    "error": "ra_llm_exception",
+                    "message": str(exc)[:240],
+                    "cycle_id": session.ra_cycle_input.cycle_id,
+                }
+            fallback_kwargs = dict(llm_kwargs)
+            fallback_kwargs.pop("max_tokens", None)
+            try:
+                response = await self.llm_generate(**fallback_kwargs)
+            except Exception as fallback_exc:
+                return {
+                    "ok": False,
+                    "error": "ra_llm_exception",
+                    "message": str(fallback_exc)[:240],
+                    "cycle_id": session.ra_cycle_input.cycle_id,
+                }
         except Exception as exc:
             return {
                 "ok": False,
