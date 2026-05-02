@@ -63,6 +63,8 @@ class IntentRouter:
         external_memory: HonchoExternalMemory | None = None,
         max_steps: int = 8,
         ra_enabled: bool = False,
+        ra_model_provider: str = "default",
+        ra_max_tokens: int = 2048,
     ):
         self.astr_context = astr_context
         self.repository = repository
@@ -72,6 +74,8 @@ class IntentRouter:
         self.memory_compressor = MemoryCompressor()
         self.max_steps = max_steps
         self.ra_enabled = ra_enabled
+        self.ra_model_provider = ra_model_provider
+        self.ra_max_tokens = ra_max_tokens
         self._session_locks: dict[str, asyncio.Lock] = {}
         self._session_turn_locks: dict[str, asyncio.Lock] = {}
 
@@ -482,7 +486,10 @@ class IntentRouter:
                 )
             if cycle_end_requested(tool_trace):
                 if self.ra_enabled:
-                    ra_result = await RecorderAgent(self._llm_generate, provider_id).run_cycle_resolution(latest_session)
+                    ra_chat_provider = provider_id if (self.ra_model_provider or "default") == "default" else self.ra_model_provider
+                    ra_result = await RecorderAgent(
+                        self._llm_generate, ra_chat_provider, max_tokens=self.ra_max_tokens
+                    ).run_cycle_resolution(latest_session)
                     if ra_result.get("ok"):
                         completion_record = complete_cycle_with_ra(latest_session, ra_result["summary"])
                         self.repository.save_session(latest_session)

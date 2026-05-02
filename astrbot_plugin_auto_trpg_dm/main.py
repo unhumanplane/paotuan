@@ -91,6 +91,8 @@ class AutoTrpgDmPlugin(Star):
             tool_registry=tool_registry,
             external_memory=external_memory,
             ra_enabled=self._config_bool("ra_enabled", False),
+            ra_model_provider=self._config_str("ra_model_provider", "default") or "default",
+            ra_max_tokens=self._config_int("ra_max_tokens", 2048),
         )
         migrated = self._migrate_legacy_turn_fields()
         if migrated:
