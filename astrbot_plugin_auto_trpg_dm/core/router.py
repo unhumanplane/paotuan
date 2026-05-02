@@ -4,7 +4,7 @@ import asyncio
 import hashlib
 import json
 import re
-from collections.abc import Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from typing import Any
 
 from .ambient_image import AmbientImageConfig, AmbientImageProvider
@@ -269,6 +269,7 @@ class IntentRouter:
         external_memory: HonchoExternalMemory | None = None,
         ambient_image_config: AmbientImageConfig | None = None,
         ambient_image_provider: AmbientImageProvider | None = None,
+        ambient_image_sender: Callable[[str, dict[str, Any]], Awaitable[bool]] | None = None,
         max_steps: int = 8,
         ra_enabled: bool = False,
         ra_model_provider: str = "default",
@@ -280,6 +281,7 @@ class IntentRouter:
         self.external_memory = external_memory
         self.ambient_image_config = ambient_image_config or AmbientImageConfig(enabled=False)
         self.ambient_image_provider = ambient_image_provider or AmbientImageProvider(self.ambient_image_config)
+        self.ambient_image_sender = ambient_image_sender
         self.mode_machine = GameModeStateMachine()
         self.memory_compressor = MemoryCompressor()
         self.max_steps = max_steps
@@ -657,7 +659,11 @@ class IntentRouter:
                 completion=completion,
             )
             if trace_record:
-                update_ambient_image_activity_state(latest_session)
+                update_ambient_image_activity_state(
+                    latest_session,
+                    actor=actor,
+                    player_message=message,
+                )
             cycle_action_record = None
             if trace_record:
                 cycle_action_record = append_cycle_action(
@@ -801,7 +807,7 @@ class IntentRouter:
                                 "result": audit_safe_external_memory_result(external_summary),
                             },
                         )
-            ambient_result = await self._maybe_generate_ambient_image(
+            ambient_result = self._schedule_ambient_image_generation(
                 session=latest_session,
                 mode=mode,
                 actor=actor,
@@ -810,8 +816,16 @@ class IntentRouter:
                 provider_id=provider_id,
                 trace_record=trace_record,
             )
-            if ambient_result.get("recorded"):
-                latest_session = self.repository.load_session(session_id)
+            if ambient_result.get("scheduled"):
+                self.repository.append_audit(
+                    session_id,
+                    {
+                        "type": "ambient_image_auto_scheduled",
+                        "actor": actor,
+                        "trigger": ambient_result.get("trigger", ""),
+                        "story_moment": ambient_result.get("story_moment", ""),
+                    },
+                )
             get_plugin_logger().info(
                 "message_handled session=%s mode=%s actor=%s completion_chars=%s",
                 session_id,
@@ -879,6 +893,56 @@ class IntentRouter:
             "reply_suffix": suffix,
         }
 
+    def _schedule_ambient_image_generation(
+        self,
+        *,
+        session: Any,
+        mode: GameMode,
+        actor: dict[str, str],
+        player_message: str,
+        completion: str,
+        provider_id: str,
+        trace_record: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        if not should_offer_ambient_image(
+            session,
+            self.ambient_image_config,
+            mode,
+            player_message=player_message,
+        ):
+            return {"scheduled": False}
+        if not trace_record:
+            return {"scheduled": False, "reason": "ambient_image_no_narrative_trace"}
+        story_moment = _ambient_story_moment(player_message, completion, trace_record)
+        if not story_moment:
+            return {"scheduled": False, "reason": "ambient_image_empty_story_moment"}
+        self._mark_ambient_image_generation_started(session)
+        task = asyncio.create_task(
+            self._maybe_generate_ambient_image(
+                session=session,
+                mode=mode,
+                actor=actor,
+                player_message=player_message,
+                completion=completion,
+                provider_id=provider_id,
+                trace_record=trace_record,
+            )
+        )
+        task.add_done_callback(
+            lambda completed: self._ambient_image_task_done(session.session_id, completed)
+        )
+        get_plugin_logger().info(
+            "ambient_image_auto_scheduled session=%s actor=%s story_moment=%s",
+            session.session_id,
+            actor.get("player_id", ""),
+            story_moment[:120].replace("\n", "\\n"),
+        )
+        return {
+            "scheduled": True,
+            "trigger": "auto",
+            "story_moment": story_moment,
+        }
+
     async def _maybe_generate_ambient_image(
         self,
         *,
@@ -895,6 +959,7 @@ class IntentRouter:
             self.ambient_image_config,
             mode,
             player_message=player_message,
+            ignore_generation_in_progress=True,
         ):
             return {"recorded": False}
         if not trace_record:
@@ -916,8 +981,13 @@ class IntentRouter:
             story_moment=story_moment,
             rationale="叙事推进后内部条件触发氛围图。",
             send_to_chat=True,
+            ignore_generation_in_progress=True,
         )
         if result.get("ok") and result.get("available"):
+            send_result = await self._send_ambient_image_if_configured(
+                session.session_id,
+                result,
+            )
             self.repository.append_audit(
                 session.session_id,
                 {
@@ -928,6 +998,7 @@ class IntentRouter:
                         for key, value in result.items()
                         if key not in {"file_path", "metadata_path"}
                     },
+                    "send_result": send_result,
                 },
             )
             return {"recorded": True, "result": result}
@@ -941,6 +1012,71 @@ class IntentRouter:
                 },
             )
         return {"recorded": False, "result": result}
+
+    async def _send_ambient_image_if_configured(
+        self,
+        session_id: str,
+        result: dict[str, Any],
+    ) -> dict[str, Any]:
+        if not result.get("send_to_chat"):
+            return {"sent": False, "reason": "ambient_image_send_disabled"}
+        if self.ambient_image_sender is None:
+            return {"sent": False, "reason": "ambient_image_sender_missing"}
+        try:
+            sent = await self.ambient_image_sender(session_id, result)
+        except Exception as exc:
+            get_plugin_logger().exception(
+                "ambient_image_independent_send_failed session=%s error=%s",
+                session_id,
+                exc,
+            )
+            return {"sent": False, "reason": "ambient_image_send_failed"}
+        return {"sent": bool(sent)}
+
+    def _mark_ambient_image_generation_started(self, session: Any) -> None:
+        scene = getattr(session, "scene", {}) or {}
+        state = dict(scene.get("ambient_image_state") or {})
+        state["generation_started_at"] = utc_now_iso()
+        scene["ambient_image_state"] = state
+        self.repository.save_session(session)
+
+    def _clear_ambient_image_generation_started(self, session_id: str) -> None:
+        try:
+            session = self.repository.load_session(session_id)
+            scene = getattr(session, "scene", {}) or {}
+            state = dict(scene.get("ambient_image_state") or {})
+            if "generation_started_at" not in state:
+                return
+            state.pop("generation_started_at", None)
+            scene["ambient_image_state"] = state
+            self.repository.save_session(session)
+        except Exception as exc:
+            get_plugin_logger().warning(
+                "ambient_image_generation_clear_failed session=%s error=%s",
+                session_id,
+                exc,
+            )
+
+    def _ambient_image_task_done(self, session_id: str, task: asyncio.Task) -> None:
+        self._clear_ambient_image_generation_started(session_id)
+        if task.cancelled():
+            get_plugin_logger().warning("ambient_image_task_cancelled session=%s", session_id)
+            return
+        try:
+            exc = task.exception()
+        except Exception as task_exc:
+            get_plugin_logger().warning(
+                "ambient_image_task_status_failed session=%s error=%s",
+                session_id,
+                task_exc,
+            )
+            return
+        if exc:
+            get_plugin_logger().error(
+                "ambient_image_task_failed session=%s error=%s",
+                session_id,
+                exc,
+            )
 
     @staticmethod
     def _persist_narrative_trace(
