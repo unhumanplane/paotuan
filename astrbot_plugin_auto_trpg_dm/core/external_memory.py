@@ -407,7 +407,7 @@ class HonchoExternalMemory:
         started_at = time.monotonic()
         try:
             result = await asyncio.wait_for(
-                asyncio.to_thread(func),
+                _run_sync_in_thread(func),
                 timeout=max(1, int(self.config.timeout_seconds)),
             )
             if isinstance(result, dict):
@@ -450,6 +450,14 @@ class HonchoExternalMemory:
 
 class HonchoUnavailable(RuntimeError):
     pass
+
+
+async def _run_sync_in_thread(func: Any) -> Any:
+    to_thread = getattr(asyncio, "to_thread", None)
+    if callable(to_thread):
+        return await to_thread(func)
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(None, func)
 
 
 def _resolve_honcho_target(config: HonchoMemoryConfig) -> tuple[str, str]:

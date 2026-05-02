@@ -54,7 +54,11 @@ class LocalFunctionTool(FunctionTool[AstrAgentContext]):
     handler: ToolHandler
 
     def __post_init__(self) -> None:
-        self.validate_parameters()
+        validate = getattr(self, "validate_parameters", None)
+        if callable(validate):
+            validate()
+            return
+        _validate_tool_parameters(self.parameters)
 
     async def call(
         self,
@@ -82,6 +86,19 @@ def make_tool(
         parameters=model_schema(model),
         handler=handler,
     )
+
+
+def _validate_tool_parameters(parameters: dict[str, Any]) -> None:
+    if not isinstance(parameters, dict):
+        raise TypeError("tool parameters must be a JSON schema object")
+    if parameters.get("type", "object") != "object":
+        raise ValueError("tool parameters schema type must be object")
+    properties = parameters.get("properties", {})
+    if not isinstance(properties, dict):
+        raise TypeError("tool parameters properties must be a mapping")
+    required = parameters.get("required", [])
+    if not isinstance(required, list):
+        raise TypeError("tool parameters required must be a list")
 
 
 class LocalToolExecutor:
@@ -355,7 +372,7 @@ class ToolRegistry:
             }
             for tool in selected.values()
         ]
-        return ToolSet(list(selected.values())), allowed, LocalToolExecutor(selected), specs
+        return _make_tool_set(list(selected.values())), allowed, LocalToolExecutor(selected), specs
 
     @staticmethod
     def _allowed_tool_names(mode: GameMode, message: str = "") -> list[str]:
@@ -1189,3 +1206,12 @@ def model_schema(model: type[BaseModel]) -> dict[str, Any]:
     schema.setdefault("properties", {})
     schema.setdefault("required", [])
     return schema
+
+
+def _make_tool_set(tools: list[LocalFunctionTool]) -> ToolSet:
+    try:
+        return ToolSet(tools)
+    except TypeError:
+        tool_set = ToolSet()
+        setattr(tool_set, "tools", tools)
+        return tool_set

@@ -2,6 +2,21 @@
 
 所有已经合入 `main` 的用户可见变更都记录在这里。日期使用香港时区对应的开发日期。
 
+## [0.1.79] - 2026-05-03
+
+### Fixed
+
+- 修复 `LocalFunctionTool` 在部分 AstrBot 版本或测试替身中缺少 `validate_parameters()` 时导致工具注册失败的问题。
+- 兼容部分 AstrBot `ToolSet` 测试替身不接受构造参数的情况，避免工具集合创建失败。
+- 为 Honcho 外置记忆调用补上 Python 3.8 兼容线程执行路径，避免旧运行环境缺少 `asyncio.to_thread()`。
+- 恢复 GitHub Actions 中 `tests/test_tool_registry.py` 对普通请求和 token 诊断请求工具裁剪逻辑的验证能力。
+
+### Verified
+
+- `python -m compileall -q astrbot_plugin_auto_trpg_dm tests scripts`
+- `python -m pytest -q`
+- `git diff --check`
+
 ## [0.1.78] - 2026-05-02
 
 ### Added
