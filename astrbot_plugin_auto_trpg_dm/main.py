@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import asyncio
 from contextlib import suppress
 from datetime import datetime, timedelta, timezone
@@ -29,7 +31,7 @@ from .tools.registry import ToolRegistry
 from .tools.turn_tools import TurnTools
 
 
-PLUGIN_VERSION = "0.1.75"
+PLUGIN_VERSION = "0.1.77"
 
 
 @register(
@@ -406,6 +408,8 @@ class AutoTrpgDmPlugin(Star):
             return str(result.get("message") or "恢复请求已处理。")
 
         reset_token = _extract_reset_confirmation_token(text)
+        if not reset_token and _looks_like_reset_confirmation_request(text):
+            reset_token = _pending_reset_confirmation_token(session, actor)
         if reset_token:
             result = await MemoryTools(self.repository, session_id, actor=actor, message=text).session_control(
                 "confirm_reset",
@@ -419,7 +423,10 @@ class AutoTrpgDmPlugin(Star):
                 result.get("ok"),
                 result.get("action"),
             )
-            return str(result.get("message") or "存档未改动。")
+            message = str(result.get("message") or "存档未改动。")
+            if result.get("ok"):
+                message += "\n新团可以直接给一句方向，我会先补背景再引导建卡/开场。例：`/dm 来一个战锤40K底巢清剿剧本，我是极限战士喷火兵`。"
+            return message
 
         if _looks_like_reset_request(text):
             result = await MemoryTools(self.repository, session_id, actor=actor, message=text).session_control(
@@ -451,6 +458,31 @@ class AutoTrpgDmPlugin(Star):
             )
             message = str(result.get("message") or "重开需要二次确认，存档暂未改动。")
             return "当前群已有一场跑团存档；同群只能同时保留一场。若要把这句作为新团开场，需先清空旧团。\n" + message
+
+        if not has_campaign_background(session):
+            background_patch = _guided_background_patch_from_text(text)
+            if background_patch:
+                result = await MemoryTools(self.repository, session_id, actor=actor, message=text).update_world_tags(background_patch)
+                self.repository.append_audit(
+                    session_id,
+                    {
+                        "type": "local_fast_path",
+                        "action": "guided_background_bootstrap",
+                        "actor": actor,
+                        "text": text[:240],
+                        "result": result,
+                    },
+                )
+                self.plugin_logger.info(
+                    "guided_background_bootstrap session=%s sender=%s ok=%s keys=%s",
+                    session_id,
+                    actor.get("player_id", ""),
+                    result.get("ok"),
+                    ",".join(str(key) for key in background_patch.keys()),
+                )
+                if result.get("ok"):
+                    return ""
+                return str(result.get("message") or "背景写入失败；请换一句更明确的背景方向。")
 
         if normalized in {"status", "状态", "当前状态"}:
             self.repository.append_audit(session_id, {"type": "local_fast_path", "action": "status", "actor": actor})
@@ -552,9 +584,8 @@ class AutoTrpgDmPlugin(Star):
                 },
             )
             return (
-                "先定背景，再写剧本、角色卡或战场。"
-                "请至少给两类要素：题材/基调/开场前提/地点/势力/规则。"
-                "例：废土科幻，荒诞危险，众人被异常求救信号引到旧中继站。"
+                "我先需要一句背景方向，之后会自动补细节并引导建卡/开场。"
+                "可以直接说：`/dm 来一个战锤40K底巢清剿剧本`，或 `/dm 你来定一个废土科幻开局`。"
             )
 
         return ""
@@ -2886,6 +2917,30 @@ def _extract_reset_confirmation_token(text: str) -> str:
     return token
 
 
+def _looks_like_reset_confirmation_request(text: str) -> bool:
+    lowered = str(text or "").strip().lower()
+    return bool(lowered) and any(
+        term in lowered
+        for term in ("确认重开", "确认清空", "确认重置", "确认新团", "确认", "confirm reset", "confirm-reset")
+    )
+
+
+def _pending_reset_confirmation_token(session, actor: dict[str, str]) -> str:
+    scene = dict(getattr(session, "scene", {}) or {})
+    pending = dict(scene.get("_pending_reset_confirmation") or {})
+    token = str(pending.get("token") or "").strip().upper()
+    if not token:
+        return ""
+    requester = str(pending.get("requester_player_id") or "").strip()
+    current = str((actor or {}).get("player_id") or "").strip()
+    if requester and current and requester != current:
+        return ""
+    expires_at = _parse_datetime(pending.get("expires_at"))
+    if expires_at and datetime.now(timezone.utc) > expires_at:
+        return ""
+    return token
+
+
 def _looks_like_reset_request(text: str) -> bool:
     lowered = str(text or "").strip().lower()
     if not lowered:
@@ -2951,21 +3006,126 @@ def _looks_like_manual_backup_request(text: str) -> bool:
     return any(term in lowered for term in create_terms) and not any(term in lowered for term in list_terms)
 
 
+def _guided_background_patch_from_text(text: str) -> dict:
+    lowered = str(text or "").strip().lower()
+    if not lowered:
+        return {}
+    if not (
+        _looks_like_background_authoring_request(text)
+        or _looks_like_enough_background_seed(text)
+        or _looks_like_new_campaign_seed_request(text)
+    ):
+        return {}
+    character_only = any(term in lowered for term in ("角色卡", "人物卡", "建卡", "随机创建角色", "随机建卡"))
+    delegated_background = any(
+        term in lowered
+        for term in (
+            "你来定",
+            "你定吧",
+            "你决定",
+            "随便定",
+            "自动生成",
+            "智能补完",
+            "不用多问",
+            "直接开始",
+            "故事",
+            "剧本",
+            "副本",
+            "背景",
+            "世界观",
+        )
+    )
+    if character_only and not (_looks_like_enough_background_seed(text) or delegated_background):
+        return {}
+    if any(term in lowered for term in ("战锤", "40k", "warhammer", "极限战士", "阿斯塔特", "基因窃取者", "底巢", "巢都")):
+        location = "底巢（Underhive）" if any(term in lowered for term in ("底巢", "巢都", "下巢")) else "帝国边境战区"
+        return {
+            "genre": "grimdark_sci_fi",
+            "tone": "哥特军事恐怖、克制高压、重视火力与代价",
+            "factions": ["Ultramarines（极限战士）", "Genestealer Cult（基因窃取者教派）"],
+            "starting_premise": _compact_text(text, 240),
+            "location": location,
+            "ruleset": "homebrew_warhammer40k_adaptation；风险、命中、伤害和资源消耗用 d20/伤害骰裁定",
+            "campaign_background": _compact_text(text, 320),
+        }
+    patch: dict = {}
+    genre_terms = _terms_found(
+        lowered,
+        (
+            "末世",
+            "废土",
+            "核战",
+            "科幻",
+            "奇幻",
+            "玄幻",
+            "异世界",
+            "穿越",
+            "现代",
+            "赛博",
+            "克苏鲁",
+            "悬疑",
+            "武侠",
+            "太空",
+            "蒸汽",
+            "中世纪",
+            "历史",
+            "低魔",
+            "无魔",
+            "dnd",
+            "coc",
+        ),
+    )
+    if genre_terms:
+        patch["genre"] = "、".join(genre_terms)
+    tone_terms = _terms_found(lowered, ("严肃", "荒诞", "宏大", "危险", "恐怖", "轻松", "黑暗", "求生", "调查", "热血", "压抑", "幽默", "温馨"))
+    if tone_terms:
+        patch["tone"] = "、".join(tone_terms)
+    location_terms = _terms_found(lowered, ("地球", "海上", "港口", "王国", "城市", "村庄", "荒野", "废墟", "空间站", "中继站", "地下城", "酒馆", "学院", "宗门", "领地"))
+    if location_terms:
+        patch["location"] = "、".join(location_terms)
+    if any(term in lowered for term in ("势力", "组织", "公司", "教团", "军团", "帮派", "敌人", "怪物", "派系", "贵族", "朝廷")):
+        patch["factions"] = _compact_text(text, 180)
+    if any(term in lowered for term in ("规则", "系统", "检定", "骰", "d20", "dnd", "coc", "无魔", "没有魔")):
+        patch["ruleset"] = "以 d20 检定为基础；概率、风险和对抗行动必须投骰。"
+    if any(term in lowered for term in ("开始游戏", "开场", "开局", "故事", "剧本", "副本", "任务", "求救", "来到", "醒来", "我是", "我们是", "扮演", "担任")):
+        patch["starting_premise"] = _compact_text(text, 240)
+    if patch:
+        patch.setdefault("tone", "由 DM 补全细节，保持可裁定、可推进、不过度追问")
+        patch.setdefault("ruleset", "以 d20 检定为基础；概率、风险和对抗行动必须投骰。")
+        patch.setdefault("campaign_background", _compact_text(text, 320))
+        return patch
+    if delegated_background:
+        return {
+            "genre": "低魔边境冒险",
+            "tone": "克制、危险、重选择后果",
+            "starting_premise": "玩家授权 DM 自动生成：一份异常委托把角色带到边境港镇，第一幕从失踪货船与封锁码头开始。",
+            "location": "边境港镇与近海航道",
+            "factions": "港务行会、旧贵族私兵、海盗残党、沉默教团",
+            "ruleset": "以 d20 检定为基础；概率、风险和对抗行动必须投骰。",
+            "campaign_background": "玩家未指定细节，DM 自动生成一个易开场、可裁定的低魔边境冒险背景。",
+        }
+    return {}
+
+
+def _terms_found(text: str, terms: tuple[str, ...]) -> list[str]:
+    return [term for term in terms if term and term in text]
+
+
 def _looks_like_enough_background_seed(text: str) -> bool:
     lowered = str(text or "").strip().lower()
     if not lowered:
         return False
     explicit = any(token in lowered for token in ("背景", "世界观", "设定", "题材", "类型", "风格", "环境", "premise", "setting"))
     buckets = 0
-    if any(token in lowered for token in ("末世", "废土", "核战", "修仙", "仙侠", "文明", "文明重建", "科幻", "奇幻", "玄幻", "异界", "异世界", "穿越", "重生", "现代", "赛博", "克苏鲁", "悬疑", "武侠", "太空", "蒸汽", "欧洲", "中世纪", "历史", "低魔", "无魔", "纯剑", "dnd", "coc", "d20")):
+    if any(token in lowered for token in ("末世", "废土", "核战", "修仙", "仙侠", "文明", "文明重建", "科幻", "奇幻", "玄幻", "异界", "异世界", "穿越", "重生", "现代", "赛博", "克苏鲁", "悬疑", "武侠", "太空", "蒸汽", "欧洲", "中世纪", "历史", "低魔", "无魔", "纯剑", "dnd", "coc", "d20", "战锤", "40k", "warhammer", "grimdark", "暗黑科幻", "哥特科幻")):
         buckets += 1
     if any(token in lowered for token in ("严肃", "荒诞", "宏大", "悲剧", "失败", "危险", "恐怖", "轻松", "日常", "经营", "种田", "后宫", "宫斗", "黑暗", "求生", "调查", "热血", "压抑", "幽默", "温馨")):
         buckets += 1
     if any(token in lowered for token in ("开始游戏", "正式开始", "开场", "开局", "第一幕", "故事", "剧本", "副本", "因为", "为了", "想要", "最终", "任务", "求救", "聚集", "来到", "醒来", "退休", "我是", "我们是", "担任", "扮演")):
         buckets += 1
-    if any(token in lowered for token in ("地点", "城市", "村庄", "荒野", "废墟", "船上", "游艇", "空间站", "中继站", "塔", "地下城", "酒馆", "咖啡馆", "店", "学院", "宗门", "宫廷", "领地", "地球", "海上", "海战", "港口", "王国")):
+    if any(token in lowered for token in ("地点", "城市", "村庄", "荒野", "废墟", "船上", "游艇", "空间站", "中继站", "塔", "地下城", "酒馆", "咖啡馆", "店", "学院", "宗门", "宫廷", "领地", "地球", "海上", "海战", "港口", "王国", "底巢", "巢都", "星球", "战区")):
         buckets += 1
-    if any(token in lowered for token in ("势力", "组织", "公司", "教团", "军团", "帮派", "敌人", "怪物", "派系", "店员", "猫娘", "贵族", "朝廷")):
+    if any(token in lowered for token in ("势力", "组织", "公司", "教团", "军团", "帮派", "敌人", "怪物", "派系", "店员", "猫娘", "贵族", "朝廷", "极限战士", "基因窃取者", "阿斯塔特", "星际战士")):
         buckets += 1
     if any(token in lowered for token in ("规则", "系统", "检定", "骰", "属性", "等级", "没有魔", "没有魔法", "不存在超自然", "无超自然", "超自然力量")):
         buckets += 1
@@ -3028,6 +3188,9 @@ def _looks_like_background_authoring_request(text: str) -> bool:
         "帮我定",
         "替我定",
         "直接定",
+        "你来补充",
+        "你来完善",
+        "补充更多细节",
         "自动生成",
         "智能补完",
         "不用多问",

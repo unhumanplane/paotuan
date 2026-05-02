@@ -149,6 +149,7 @@ class MemoryTools:
                 balance,
             )
             return balance
+        previous_character_id = _terminal_rejoin_previous_character_id(session, owner_id, safe_id)
         character = Character(
             id=safe_id,
             name=name,
@@ -162,7 +163,15 @@ class MemoryTools:
             self._touch_participant(session, owner_id)
         if owner_id or not session.active_character_id:
             session.active_character_id = safe_id
-        session.mode = GameMode.CHARACTER_CREATION
+        if not _campaign_game_started(session):
+            session.mode = GameMode.CHARACTER_CREATION
+        rejoin_record = record_terminal_character_rejoin(
+            session,
+            owner_id=owner_id,
+            previous_character_id=previous_character_id,
+            new_character_id=safe_id,
+            source="create_character",
+        )
         self.repository.save_session(session)
         result = {
             "ok": True,
@@ -170,6 +179,8 @@ class MemoryTools:
             "bound_player_id": owner_id,
             "player_character_map": session.player_character_map,
         }
+        if rejoin_record:
+            result["rejoin_replacement"] = rejoin_record
         self._audit(
             "create_character",
             {
@@ -249,12 +260,32 @@ class MemoryTools:
                 or summary
                 or (name and name.strip() and name.strip() != character.name)
             )
-            if not same_binding or wants_card_change:
+            replacement_allowed = _post_start_terminal_rebind_allowed(
+                session,
+                owner_id=owner_id,
+                current_bound_id=bound_id,
+                target_character_id=safe_id,
+                target_character=character,
+            )
+            if wants_card_change:
                 result = character_card_locked_after_start_result(
                     "bind_player_character",
                     safe_id,
                     owner_id,
-                    message="游戏已经开场，既有角色卡锁定；老玩家不能在开场后改名、改摘要、补能力、补装备或重绑到已有角色。新玩家请创建一张新的合理角色卡。",
+                    message="游戏已经开场，既有角色卡锁定；重新加入只能绑定合理的新角色，不能顺手改名、改摘要、补能力或补装备。",
+                )
+                self._audit(
+                    "bind_player_character",
+                    {"character_id": character_id, "resolved_character_id": safe_id, "player_id": owner_id, "name": name, "summary": summary, "tags": tags or []},
+                    result,
+                )
+                return result
+            if not same_binding and not replacement_allowed:
+                result = character_card_locked_after_start_result(
+                    "bind_player_character",
+                    safe_id,
+                    owner_id,
+                    message="游戏已经开场，既有角色卡锁定；老玩家只有在原绑定角色已死亡、退休或永久退场时，才能绑定新的合理后继角色。",
                 )
                 self._audit(
                     "bind_player_character",
@@ -294,6 +325,7 @@ class MemoryTools:
             )
             return owner_guard
         created = False
+        previous_character_id = _terminal_rejoin_previous_character_id(session, owner_id, safe_id)
         if not character:
             character = Character(
                 id=safe_id,
@@ -315,6 +347,13 @@ class MemoryTools:
         session.player_character_map[owner_id] = safe_id
         session.active_character_id = safe_id
         self._touch_participant(session, owner_id)
+        rejoin_record = record_terminal_character_rejoin(
+            session,
+            owner_id=owner_id,
+            previous_character_id=previous_character_id,
+            new_character_id=safe_id,
+            source="bind_player_character",
+        )
         self.repository.save_session(session)
         result = {
             "ok": True,
@@ -323,6 +362,8 @@ class MemoryTools:
             "character": character_as_dict(character),
             "player_character_map": session.player_character_map,
         }
+        if rejoin_record:
+            result["rejoin_replacement"] = rejoin_record
         self._audit(
             "bind_player_character",
             {
@@ -533,8 +574,8 @@ class MemoryTools:
             }
             self._audit("start_game", {"opening_intro_chars": len(str(opening_intro or ""))}, result)
             return result
-        campaign_outline = campaign_outline if isinstance(campaign_outline, dict) else {}
-        scene_patch = scene_patch if isinstance(scene_patch, dict) else {}
+        campaign_outline = _coerce_campaign_outline_input(campaign_outline)
+        scene_patch = _coerce_scene_patch_input(scene_patch)
         missing = campaign_start_missing_requirements(session, opening_intro, campaign_outline, scene_patch)
         if missing:
             result = {
@@ -896,6 +937,12 @@ class MemoryTools:
         if self._is_generic_character_id(safe_id):
             bound_id = str(session.player_character_map.get(owner_id, "") or "")
             if owner_id and bound_id and bound_id in session.characters:
+                if (
+                    _campaign_game_started(session)
+                    and _character_is_terminal_for_rejoin(session, bound_id)
+                    and _looks_like_rejoin_request(self.message)
+                ):
+                    return _next_rejoin_character_id(session, owner_id)
                 return bound_id
             if owner_id:
                 return self._player_default_character_id(owner_id)
@@ -1355,9 +1402,6 @@ CARD_OVERPOWERED_TERMS = (
     "13个原体",
     "13名原体",
     "禁军",
-    "星际战士",
-    "阿斯塔特",
-    "战锤",
     "创世神",
     "造物主",
     "世界意志",
@@ -1397,6 +1441,119 @@ def _late_join_allowed(session: GameSession) -> bool:
     return bool(scene.get("_allow_late_join", True) or world_tags.get("_late_join_allowed", True))
 
 
+REJOIN_REQUEST_TERMS = (
+    "重新加入",
+    "重新进团",
+    "重新入团",
+    "再加入",
+    "重建角色",
+    "换新角色",
+    "换角色",
+    "新角色",
+    "新号",
+    "补位",
+    "替补",
+    "后继角色",
+    "角色死了",
+    "角色死亡",
+    "阵亡",
+    "已死",
+    "退场",
+    "退休",
+    "revive as new",
+    "new character",
+    "rejoin",
+)
+
+TERMINAL_STATUS_EXACT = {
+    "死亡",
+    "已死亡",
+    "阵亡",
+    "已死",
+    "死了",
+    "身亡",
+    "牺牲",
+    "永久退场",
+    "退场",
+    "退休",
+    "离队",
+    "dead",
+    "deceased",
+    "killed",
+    "retired",
+    "out_of_play",
+    "out of play",
+}
+
+TERMINAL_STATUS_TERMS = (
+    "已死亡",
+    "已经死亡",
+    "确认死亡",
+    "死亡确认",
+    "当场死亡",
+    "彻底死亡",
+    "永久死亡",
+    "不可复活",
+    "无法复活",
+    "阵亡",
+    "已死",
+    "死了",
+    "身亡",
+    "牺牲",
+    "遗体",
+    "尸体",
+    "永久退场",
+    "确认退场",
+    "退场",
+    "退休",
+    "永久离队",
+    "无法继续扮演",
+    "不再可扮演",
+    "dead",
+    "deceased",
+    "killed",
+    "retired",
+    "permanently removed",
+    "out of play",
+)
+
+TERMINAL_KEY_TERMS = (
+    "状态",
+    "生命状态",
+    "退场",
+    "死亡",
+    "结局",
+    "当前状态",
+    "status",
+    "state",
+    "condition",
+)
+
+NON_TERMINAL_DEATH_CONTEXT_TERMS = (
+    "死亡豁免",
+    "死亡豁免失败",
+    "死亡豁免成功",
+    "death save",
+    "death saving",
+    "濒死",
+    "昏迷",
+    "倒地但未死",
+    "稳定伤势",
+)
+
+TERMINAL_OVERRIDE_TERMS = (
+    "三次失败",
+    "失败三次",
+    "失败3次",
+    "3次失败",
+    "确认死亡",
+    "死亡确认",
+    "已经死亡",
+    "已死亡",
+    "永久退场",
+)
+
+
 def post_start_create_character_guard(session: GameSession, character_id: str, owner_id: str) -> Dict[str, Any] | None:
     if not _campaign_game_started(session):
         return None
@@ -1425,13 +1582,187 @@ def post_start_create_character_guard(session: GameSession, character_id: str, o
         }
     bound_id = str(session.player_character_map.get(owner_id, "") or "")
     if bound_id and bound_id in session.characters:
+        if bound_id != character_id and _character_is_terminal_for_rejoin(session, bound_id):
+            return None
         return character_card_locked_after_start_result(
             "create_character",
             character_id,
             owner_id,
-            message="游戏已经开场，该玩家已有绑定角色；老玩家不能在开场后重建、换卡或新增第二张角色卡。",
+            message="游戏已经开场，该玩家已有绑定角色；只有原角色已被状态或战棋事实确认死亡、退休或永久退场时，才允许创建新的合理后继角色。",
         )
     return None
+
+
+def _looks_like_rejoin_request(message: str) -> bool:
+    return _contains_any_text(str(message or ""), REJOIN_REQUEST_TERMS)
+
+
+def _terminal_rejoin_previous_character_id(session: GameSession, owner_id: str, new_character_id: str) -> str:
+    if not owner_id:
+        return ""
+    bound_id = str(session.player_character_map.get(owner_id, "") or "")
+    if not bound_id or bound_id == new_character_id or bound_id not in session.characters:
+        return ""
+    if _character_is_terminal_for_rejoin(session, bound_id):
+        return bound_id
+    return ""
+
+
+def _post_start_terminal_rebind_allowed(
+    session: GameSession,
+    *,
+    owner_id: str,
+    current_bound_id: str,
+    target_character_id: str,
+    target_character: Character,
+) -> bool:
+    if not owner_id or not current_bound_id or current_bound_id == target_character_id:
+        return False
+    if current_bound_id not in session.characters:
+        return False
+    if not _character_is_terminal_for_rejoin(session, current_bound_id):
+        return False
+    target_owner = str(target_character.player_id or "").strip()
+    return not target_owner or target_owner == owner_id
+
+
+def _character_is_terminal_for_rejoin(session: GameSession, character_id: str) -> bool:
+    character = session.characters.get(character_id)
+    if not character:
+        return False
+    for tag in character.tags or []:
+        key_text = str(tag.key or "")
+        value_text = _flatten_text(tag.value)
+        layer = str(tag.layer or infer_tag_layer(key_text)).lower()
+        if layer == "status" or _contains_any_text(key_text, TERMINAL_KEY_TERMS):
+            if _terminal_status_text_match(f"{key_text} {value_text}") or _terminal_status_text_match(value_text):
+                return True
+    return _battle_entity_is_terminal_for_rejoin(session, character_id)
+
+
+def _battle_entity_is_terminal_for_rejoin(session: GameSession, character_id: str) -> bool:
+    battle = session.battle or {}
+    grid = dict(battle.get("grid") or {})
+    raw_entities = grid.get("entities") or {}
+    if isinstance(raw_entities, dict):
+        entities = [{"id": str(entity_id), **dict(entity)} for entity_id, entity in raw_entities.items() if isinstance(entity, dict)]
+    elif isinstance(raw_entities, list):
+        entities = [dict(item) for item in raw_entities if isinstance(item, dict)]
+    else:
+        entities = []
+    for entity in entities:
+        tags = dict(entity.get("tags") or {})
+        entity_id = str(entity.get("id") or "")
+        tagged_character_id = str(tags.get("character_id") or "")
+        if character_id not in {entity_id, tagged_character_id}:
+            continue
+        if _terminal_status_text_match(_flatten_text([entity, tags])):
+            return True
+        for key in ("dead", "deceased", "retired", "removed", "out_of_play", "permanently_removed"):
+            if entity.get(key) is True or tags.get(key) is True:
+                return True
+    return False
+
+
+def _terminal_status_text_match(text: str) -> bool:
+    lowered = " ".join(str(text or "").lower().split())
+    if not lowered:
+        return False
+    stripped = lowered.strip(" ，,。.!！?？:：;；[]{}()（）\"'`")
+    if stripped in TERMINAL_STATUS_EXACT:
+        return True
+    if _contains_any_text(lowered, NON_TERMINAL_DEATH_CONTEXT_TERMS) and not _contains_any_text(lowered, TERMINAL_OVERRIDE_TERMS):
+        return False
+    if re.search(r"\b(dead|deceased|killed|retired)\b", lowered):
+        return True
+    return _contains_any_text(lowered, TERMINAL_STATUS_TERMS)
+
+
+def _next_rejoin_character_id(session: GameSession, owner_id: str) -> str:
+    base = f"{MemoryTools._player_default_character_id(owner_id)}_rejoin"
+    for index in range(1, 100):
+        candidate = f"{base}_{index}"
+        if candidate not in session.characters:
+            return candidate
+    return f"{base}_{secrets.token_hex(3)}"
+
+
+def record_terminal_character_rejoin(
+    session: GameSession,
+    *,
+    owner_id: str,
+    previous_character_id: str,
+    new_character_id: str,
+    source: str,
+) -> Dict[str, Any] | None:
+    if not owner_id or not previous_character_id or not new_character_id or previous_character_id == new_character_id:
+        return None
+    previous = session.characters.get(previous_character_id)
+    new = session.characters.get(new_character_id)
+    if not previous or not new:
+        return None
+    if not _character_is_terminal_for_rejoin(session, previous_character_id):
+        return None
+    now = utc_now_iso()
+    previous_label = previous.name or previous_character_id
+    new_label = new.name or new_character_id
+    previous.upsert_tags(
+        [
+            {
+                "key": "后继角色",
+                "value": new_character_id,
+                "type": "text",
+                "source": "system",
+                "layer": "relations",
+            },
+            {
+                "key": "退场绑定状态",
+                "value": f"玩家已以 {new_label} 重新加入；旧角色保持死亡/退场状态，不得覆盖、复活式重绑或改写结局。",
+                "type": "text",
+                "source": "system",
+                "layer": "status",
+            },
+        ]
+    )
+    new.upsert_tags(
+        [
+            {
+                "key": "前任角色",
+                "value": previous_character_id,
+                "type": "text",
+                "source": "system",
+                "layer": "relations",
+            },
+            {
+                "key": "入场原因",
+                "value": f"{previous_label} 死亡/退场后的后继角色；入场方式必须贴合当前场景、阵营、地点与时间压力。",
+                "type": "text",
+                "source": "system",
+                "layer": "notes",
+            },
+        ]
+    )
+    replacements = session.scene.get("_character_replacements")
+    if not isinstance(replacements, list):
+        replacements = []
+    record = {
+        "player_id": owner_id,
+        "previous_character_id": previous_character_id,
+        "new_character_id": new_character_id,
+        "source": source,
+        "created_at": now,
+        "policy": "terminal_character_rejoin",
+    }
+    if not any(
+        isinstance(item, dict)
+        and item.get("player_id") == owner_id
+        and item.get("previous_character_id") == previous_character_id
+        and item.get("new_character_id") == new_character_id
+        for item in replacements
+    ):
+        replacements.append(record)
+    session.scene["_character_replacements"] = replacements[-20:]
+    return record
 
 
 def character_card_locked_after_start_result(
@@ -2256,6 +2587,49 @@ def has_campaign_background(session: GameSession) -> bool:
     return False
 
 
+def _coerce_campaign_outline_input(value: Any) -> Dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, list):
+        acts = [str(item).strip() for item in value if str(item).strip()]
+        return {"acts": acts} if acts else {}
+    text = str(value or "").strip()
+    if not text:
+        return {}
+    try:
+        decoded = json.loads(text)
+    except (TypeError, ValueError):
+        decoded = None
+    if isinstance(decoded, dict):
+        return decoded
+    if isinstance(decoded, list):
+        acts = [str(item).strip() for item in decoded if str(item).strip()]
+        return {"acts": acts} if acts else {}
+    parts = [
+        part.strip(" \n\t-0123456789.、:：")
+        for part in re.split(r"[\n；;]+", text)
+        if part.strip(" \n\t-0123456789.、:：")
+    ]
+    if len(parts) >= 3:
+        return {"acts": parts[:6], "outline": _short_tag_value(text, 500)}
+    return {"outline": _short_tag_value(text, 500)}
+
+
+def _coerce_scene_patch_input(value: Any) -> Dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    text = str(value or "").strip()
+    if not text:
+        return {}
+    try:
+        decoded = json.loads(text)
+    except (TypeError, ValueError):
+        decoded = None
+    if isinstance(decoded, dict):
+        return decoded
+    return {"summary": _short_tag_value(text, 500)}
+
+
 def background_required_result(session: GameSession, tool_name: str) -> Dict[str, Any] | None:
     if has_campaign_background(session):
         return None
@@ -2527,8 +2901,14 @@ def _outline_has_dramatic_structure(outline: Dict[str, Any]) -> bool:
         "opening_pressure",
         "hook",
         "act1",
+        "act_1",
+        "act_1_inciting",
         "act2",
+        "act_2",
+        "act_2_escalation",
         "act3",
+        "act_3",
+        "act_3_climax",
         "escalation",
         "rising_action",
         "rising",

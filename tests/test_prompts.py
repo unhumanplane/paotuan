@@ -1,4 +1,4 @@
-from astrbot_plugin_auto_trpg_dm.core.models import GameMode, GameSession
+from astrbot_plugin_auto_trpg_dm.core.models import Character, GameMode, GameSession, TagValue
 from astrbot_plugin_auto_trpg_dm.core.prompts import (
     BASE_RULES,
     build_cycle_start_prompt,
@@ -6,6 +6,7 @@ from astrbot_plugin_auto_trpg_dm.core.prompts import (
     build_ra_system_prompt,
     build_system_prompt,
     prompt_component_chars,
+    snapshot_projection_shadow_stats,
 )
 
 
@@ -143,3 +144,119 @@ def test_prompt_component_chars_reports_standard_and_diagnostic_profiles():
     assert diagnostic["memory_summary_chars"] == 0
     assert diagnostic["external_memory_chars"] == 0
     assert "snapshot_chars" not in diagnostic
+
+
+def test_snapshot_projection_shadow_estimates_savings_without_changing_prompt():
+    session = GameSession.new("group")
+    session.mode = GameMode.TACTICAL
+    session.participants["player-1"] = {"display_name": "Player One"}
+    session.participants["player-2"] = {"display_name": "Player Two"}
+    session.player_character_map["player-1"] = "pc-1"
+    session.player_character_map["player-2"] = "pc-2"
+    session.active_character_id = "pc-1"
+    session.characters["pc-1"] = Character(
+        id="pc-1",
+        name="Scout",
+        player_id="player-1",
+        summary="frontline scout",
+        tags=[TagValue(key="wounded", value="light wound", layer="status")],
+    )
+    session.characters["pc-2"] = Character(
+        id="pc-2",
+        name="Mage",
+        player_id="player-2",
+        summary="ally mage with a long tactical preference note" * 8,
+        tags=[TagValue(key="spellbook", value="utility and control", layer="abilities")],
+    )
+    session.scene["_recent_narrative_events"] = [
+        {
+            "at": f"t-{index}",
+            "player_id": "player-1",
+            "character_id": "pc-1",
+            "message": "search the gate" * 20,
+            "outcome": "the patrol shifts near the gate" * 20,
+        }
+        for index in range(8)
+    ]
+    session.scene["last_map_svg"] = {
+        "type": "svg_map",
+        "title": "Gate fight",
+        "name": "gate.svg",
+        "path": "/internal/path/should/not/matter/in/projection",
+    }
+    session.battle = {
+        "active": True,
+        "turn": {
+            "active": True,
+            "round": 3,
+            "phase": "character_turn",
+            "turn_order": ["pc-1", "pc-2"],
+            "current_entity_id": "pc-1",
+            "actions_this_round": {},
+            "turn_log": [f"log entry {index}: " + ("long detail " * 20) for index in range(8)],
+        },
+        "grid": {
+            "entities": {
+                "pc-1": {"id": "pc-1", "name": "Scout", "x": 1, "y": 2},
+                "pc-2": {"id": "pc-2", "name": "Mage", "x": 2, "y": 2},
+            }
+        },
+    }
+
+    before_prompt = build_system_prompt(
+        session,
+        GameMode.TACTICAL,
+        ["get_battle_snapshot"],
+        actor={"player_id": "player-1"},
+    )
+    stats = snapshot_projection_shadow_stats(
+        session,
+        GameMode.TACTICAL,
+        "attack the closest enemy",
+        actor={"player_id": "player-1"},
+    )
+    after_prompt = build_system_prompt(
+        session,
+        GameMode.TACTICAL,
+        ["get_battle_snapshot"],
+        actor={"player_id": "player-1"},
+    )
+
+    assert before_prompt == after_prompt
+    assert stats["shadow_only"] is True
+    assert stats["profile"] == "tactical_action"
+    assert stats["projected_snapshot_chars"] < stats["full_snapshot_chars"]
+    assert stats["saved_snapshot_chars"] > 0
+    assert "scene" in stats["changed_top_level_keys"]
+    assert "characters" in stats["changed_top_level_keys"]
+    assert "participants" in stats["safety_kept_keys"]
+    assert "player_character_map" in stats["safety_kept_keys"]
+    assert "battle" in stats["safety_kept_keys"]
+
+
+def test_snapshot_projection_shadow_classifies_state_query_without_actions():
+    session = GameSession.new("group")
+    session.mode = GameMode.TACTICAL
+    session.battle = {"active": True}
+
+    stats = snapshot_projection_shadow_stats(
+        session,
+        GameMode.TACTICAL,
+        "当前情况怎么样？我现在的位置和敌人位置？",
+    )
+
+    assert stats["profile"] == "state_query"
+
+
+def test_snapshot_projection_shadow_keeps_mixed_query_action_as_tactical():
+    session = GameSession.new("group")
+    session.mode = GameMode.TACTICAL
+    session.battle = {"active": True}
+
+    stats = snapshot_projection_shadow_stats(
+        session,
+        GameMode.TACTICAL,
+        "看到敌人了吗？我上去攻击最近的敌人",
+    )
+
+    assert stats["profile"] == "tactical_action"

@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import re
+from collections.abc import Mapping
 from typing import Any
 
 from .cycle_buffer import append_cycle_action, complete_cycle_without_ra, cycle_end_requested
@@ -21,6 +23,7 @@ from .prompts import (
     build_system_prompt,
     build_user_prompt,
     prompt_component_chars,
+    snapshot_projection_shadow_stats,
 )
 from ..storage.json_repository import JsonGameRepository
 from ..tools.registry import ToolRegistry
@@ -52,6 +55,203 @@ class ToolLoopResult:
     def __init__(self, completion_text: str, tool_results: list[dict[str, Any]] | None = None):
         self.completion_text = completion_text
         self.tool_results = tool_results or []
+
+
+LLM_USAGE_FIELDS = (
+    "prompt_tokens",
+    "input_tokens",
+    "completion_tokens",
+    "output_tokens",
+    "total_tokens",
+    "cache_read_input_tokens",
+    "cache_creation_input_tokens",
+    "cached_tokens",
+    "cached_input_tokens",
+    "cached_content_token_count",
+    "prompt_cache_hit_tokens",
+    "prompt_cache_miss_tokens",
+    "prompt_token_count",
+    "candidates_token_count",
+    "total_token_count",
+)
+LLM_USAGE_CONTAINER_FIELDS = (
+    "usage",
+    "token_usage",
+    "usage_metadata",
+    "response_metadata",
+    "llm_output",
+    "raw_response",
+    "response",
+)
+LLM_USAGE_DETAIL_FIELDS = {
+    "prompt_tokens_details": {"cached_tokens": "cached_tokens"},
+    "input_tokens_details": {"cached_tokens": "cached_tokens"},
+    "input_token_details": {"cached_tokens": "cached_tokens"},
+    "cache": {
+        "read_input_tokens": "cache_read_input_tokens",
+        "creation_input_tokens": "cache_creation_input_tokens",
+    },
+}
+
+
+def _extract_llm_usage_summary(response: Any) -> dict[str, int | float]:
+    summary: dict[str, int | float] = {}
+    visited: set[int] = set()
+
+    def collect(value: Any, depth: int = 0) -> None:
+        if value is None or depth > 5:
+            return
+        value_id = id(value)
+        if value_id in visited:
+            return
+        visited.add(value_id)
+        mapping = _as_usage_mapping(value)
+        if not mapping:
+            return
+        for field in LLM_USAGE_FIELDS:
+            number = _usage_number(mapping.get(field))
+            if number is not None and field not in summary:
+                summary[field] = number
+        for detail_key, fields in LLM_USAGE_DETAIL_FIELDS.items():
+            detail = _as_usage_mapping(mapping.get(detail_key))
+            if not detail:
+                continue
+            for source_key, target_key in fields.items():
+                number = _usage_number(detail.get(source_key))
+                if number is not None and target_key not in summary:
+                    summary[target_key] = number
+        for container_key in LLM_USAGE_CONTAINER_FIELDS:
+            if container_key in mapping:
+                collect(mapping.get(container_key), depth + 1)
+
+    collect(response)
+    _add_cache_hit_ratio(summary)
+    return summary
+
+
+def _as_usage_mapping(value: Any) -> Mapping[str, Any] | None:
+    if isinstance(value, Mapping):
+        return value
+    if value is None or isinstance(value, (str, bytes, int, float, bool)):
+        return None
+    mapping: dict[str, Any] = {}
+    for field in (*LLM_USAGE_FIELDS, *LLM_USAGE_CONTAINER_FIELDS, *LLM_USAGE_DETAIL_FIELDS.keys()):
+        try:
+            if hasattr(value, field):
+                mapping[field] = getattr(value, field)
+        except Exception:
+            continue
+    return mapping or None
+
+
+def _usage_number(value: Any) -> int | float | None:
+    if isinstance(value, bool) or value is None:
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return value
+    if isinstance(value, str):
+        stripped = value.strip()
+        if stripped.isdigit():
+            return int(stripped)
+        try:
+            return float(stripped)
+        except ValueError:
+            return None
+    return None
+
+
+def _add_cache_hit_ratio(summary: dict[str, int | float]) -> None:
+    input_tokens = _first_usage_number(
+        summary,
+        ("prompt_tokens", "input_tokens", "prompt_token_count"),
+    )
+    cached_tokens = _first_usage_number(
+        summary,
+        (
+            "cached_tokens",
+            "cache_read_input_tokens",
+            "cached_input_tokens",
+            "cached_content_token_count",
+            "prompt_cache_hit_tokens",
+        ),
+    )
+    if input_tokens and cached_tokens is not None:
+        summary["cache_hit_ratio_pct"] = round(cached_tokens / input_tokens * 100, 2)
+
+
+def _first_usage_number(
+    mapping: Mapping[str, int | float],
+    keys: tuple[str, ...],
+) -> int | float | None:
+    for key in keys:
+        value = mapping.get(key)
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            return value
+    return None
+
+
+def _llm_request_shape(kwargs: Mapping[str, Any]) -> dict[str, Any]:
+    contexts = kwargs.get("contexts") or []
+    if isinstance(contexts, (list, tuple)):
+        contexts_count = len(contexts)
+    elif contexts:
+        contexts_count = 1
+    else:
+        contexts_count = 0
+    return {
+        "prompt_chars": _safe_char_count(kwargs.get("prompt")),
+        "system_prompt_chars": _safe_char_count(kwargs.get("system_prompt")),
+        "contexts_count": contexts_count,
+        "contexts_chars": _safe_char_count(contexts),
+        "tool_enabled": bool(kwargs.get("func_tool") is not None or kwargs.get("tools") is not None),
+    }
+
+
+def _safe_char_count(value: Any) -> int:
+    if value is None:
+        return 0
+    if isinstance(value, str):
+        return len(value)
+    try:
+        return len(json.dumps(value, ensure_ascii=False, separators=(",", ":"), default=str))
+    except Exception:
+        return len(str(value))
+
+
+def _short_hash(value: Any) -> str:
+    if value is None:
+        text = ""
+    elif isinstance(value, str):
+        text = value
+    else:
+        try:
+            text = json.dumps(value, ensure_ascii=False, separators=(",", ":"), default=str)
+        except Exception:
+            text = str(value)
+    return hashlib.sha256(text.encode("utf-8", errors="replace")).hexdigest()[:12]
+
+
+def _log_llm_usage_summary(response: Any, kwargs: Mapping[str, Any]) -> None:
+    try:
+        usage = _extract_llm_usage_summary(response)
+        shape = _llm_request_shape(kwargs)
+        usage_text = json.dumps(usage, ensure_ascii=False, separators=(",", ":"))
+        get_plugin_logger().info(
+            "llm_usage chat_provider=%s prompt_chars=%s system_prompt_chars=%s system_prompt_hash=%s contexts_count=%s contexts_chars=%s tool_enabled=%s usage_available=%s usage=%s",
+            kwargs.get("chat_provider_id", ""),
+            shape["prompt_chars"],
+            shape["system_prompt_chars"],
+            _short_hash(kwargs.get("system_prompt")),
+            shape["contexts_count"],
+            shape["contexts_chars"],
+            shape["tool_enabled"],
+            bool(usage),
+            usage_text,
+        )
+    except Exception:
+        return
 
 
 class IntentRouter:
@@ -319,19 +519,34 @@ class IntentRouter:
                 ensure_ascii=False,
                 separators=(",", ":"),
             )
+            projection_shadow = snapshot_projection_shadow_stats(
+                session,
+                mode,
+                message,
+                actor=actor,
+                include_ra_context=self.ra_enabled,
+            )
+            projection_shadow_text = json.dumps(
+                projection_shadow,
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
             get_plugin_logger().info(
-                "router_prepared session=%s mode=%s actor=%s tools=%s snapshot_chars=%s system_prompt_chars=%s tool_schema_chars=%s external_memory_chars=%s prompt_profile=%s prompt_component_chars=%s prompt_component_tokens=%s rough_total_tokens=%s",
+                "router_prepared session=%s mode=%s actor=%s tools=%s snapshot_chars=%s system_prompt_chars=%s system_prompt_hash=%s tool_schema_chars=%s tool_schema_hash=%s external_memory_chars=%s prompt_profile=%s prompt_component_chars=%s prompt_component_tokens=%s snapshot_projection_shadow=%s rough_total_tokens=%s",
                 session_id,
                 mode.value,
                 actor.get("player_id", ""),
                 ",".join(tool_names),
                 self.memory_compressor.snapshot_chars(session),
                 len(system_prompt),
+                _short_hash(system_prompt),
                 len(tool_schema_text),
+                _short_hash(tool_schema_text),
                 external_memory_context_chars,
                 prompt_profile,
                 component_chars_text,
                 component_tokens_text,
+                projection_shadow_text,
                 _rough_token_count(len(system_prompt) + len(tool_schema_text)),
             )
 
@@ -957,11 +1172,16 @@ class IntentRouter:
                 repaired["opening_intro"] = repaired.pop("opening")
             if "player_guidance" not in repaired and repaired.get("guidance"):
                 repaired["player_guidance"] = repaired.pop("guidance")
+            if "campaign_outline" in repaired:
+                repaired["campaign_outline"] = _coerce_campaign_outline(repaired.get("campaign_outline"))
             if "campaign_outline" not in repaired:
                 for alias in ("plot_skeleton", "plot_outline", "outline", "story_outline"):
                     if repaired.get(alias):
                         repaired["campaign_outline"] = _coerce_campaign_outline(repaired.pop(alias))
                         break
+            if "scene_patch" in repaired and not isinstance(repaired.get("scene_patch"), dict):
+                scene_value = repaired.get("scene_patch")
+                repaired["scene_patch"] = {"summary": str(scene_value)} if str(scene_value or "").strip() else {}
             if "scene_patch" not in repaired:
                 for alias in ("initial_scene", "scene", "current_scene"):
                     if repaired.get(alias):
@@ -1009,7 +1229,7 @@ class IntentRouter:
 
     async def _llm_generate_once(self, **kwargs: Any) -> Any:
         try:
-            return await self.astr_context.llm_generate(**kwargs)
+            return await self._llm_generate_raw(kwargs)
         except json.JSONDecodeError as exc:
             get_plugin_logger().warning(
                 "llm_tool_arguments_json_error fallback_to_text error=%s",
@@ -1023,7 +1243,7 @@ class IntentRouter:
                 + "\n\n刚才工具参数 JSON 无法解析。请不要再调用工具，直接用简短自然语言说明本轮无法完成工具结算，并让玩家重发更短动作。"
             )
             try:
-                return await self.astr_context.llm_generate(**retry_kwargs)
+                return await self._llm_generate_raw(retry_kwargs)
             except Exception:
                 raise exc
         except TypeError as exc:
@@ -1032,7 +1252,7 @@ class IntentRouter:
             retry_kwargs = dict(kwargs)
             retry_kwargs["tools"] = retry_kwargs.pop("func_tool")
             try:
-                return await self.astr_context.llm_generate(**retry_kwargs)
+                return await self._llm_generate_raw(retry_kwargs)
             except json.JSONDecodeError as json_exc:
                 get_plugin_logger().warning(
                     "llm_tool_arguments_json_error fallback_to_text error=%s",
@@ -1046,11 +1266,16 @@ class IntentRouter:
                     + "\n\n刚才工具参数 JSON 无法解析。请不要再调用工具，直接用简短自然语言说明本轮无法完成工具结算，并让玩家重发更短动作。"
                 )
                 try:
-                    return await self.astr_context.llm_generate(**text_retry_kwargs)
+                    return await self._llm_generate_raw(text_retry_kwargs)
                 except Exception:
                     raise json_exc
             except TypeError:
                 raise exc
+
+    async def _llm_generate_raw(self, kwargs: dict[str, Any]) -> Any:
+        response = await self.astr_context.llm_generate(**kwargs)
+        _log_llm_usage_summary(response, kwargs)
+        return response
 
     @staticmethod
     def _limit_completion(text: str, session: Any, raw_player_message: str = "") -> str:
@@ -1688,6 +1913,14 @@ def _coerce_campaign_outline(value: Any) -> dict[str, Any]:
     text = str(value or "").strip()
     if not text:
         return {}
+    try:
+        decoded = json.loads(text)
+    except (TypeError, ValueError):
+        decoded = None
+    if isinstance(decoded, dict):
+        return decoded
+    if isinstance(decoded, list):
+        return {"acts": [str(item) for item in decoded if str(item).strip()]}
     parts = [
         part.strip(" \n\t-0123456789.、:：")
         for part in re.split(r"[\n；;]+", text)

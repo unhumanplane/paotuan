@@ -13,6 +13,7 @@ from ..core.prompts import (
     build_system_prompt,
     build_user_prompt,
     prompt_component_chars,
+    snapshot_projection_shadow_stats,
 )
 from ..storage.json_repository import JsonGameRepository
 
@@ -24,7 +25,7 @@ class EstimateTokenUsageArgs(BaseModel):
     )
 
 
-ToolSpecsProvider = Callable[[Any], Tuple[List[str], List[Dict[str, Any]]]]
+ToolSpecsProvider = Callable[..., Tuple[List[str], List[Dict[str, Any]]]]
 
 
 class DiagnosticTools:
@@ -47,6 +48,14 @@ class DiagnosticTools:
 
     def set_tool_specs_provider(self, provider: ToolSpecsProvider) -> None:
         self.tool_specs_provider = provider
+
+    def _tool_specs_for(self, mode: Any, message: str = "") -> Tuple[List[str], List[Dict[str, Any]]]:
+        if not self.tool_specs_provider:
+            return [], []
+        try:
+            return self.tool_specs_provider(mode, message)
+        except TypeError:
+            return self.tool_specs_provider(mode)
 
     async def estimate_token_usage(self, detail_level: str = "summary") -> Dict[str, Any]:
         session = self.repository.load_session(self.session_id)
@@ -91,6 +100,12 @@ class DiagnosticTools:
                 "observability": self._external_memory_observability(),
             },
             "prompt_budget": self._prompt_budget(session),
+            "snapshot_projection_shadow": snapshot_projection_shadow_stats(
+                session,
+                session.mode,
+                "",
+                actor={"player_id": "<diagnostic>"},
+            ),
             "compression": {
                 "would_compress_now": self.compressor.snapshot_chars(session)
                 > self.compressor.max_snapshot_chars
@@ -134,13 +149,22 @@ class DiagnosticTools:
             "session_id": self.session_id,
             "seen_at": "",
         }
-        tool_names, tool_specs = self.tool_specs_provider(session.mode)
+        tool_names, tool_specs = self._tool_specs_for(session.mode)
         tool_schema_text = json.dumps(tool_specs, ensure_ascii=False, separators=(",", ":"))
+        diagnostic_tool_names, diagnostic_tool_specs = self._tool_specs_for(
+            session.mode,
+            "token",
+        )
+        diagnostic_tool_schema_text = json.dumps(
+            diagnostic_tool_specs,
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
         system_prompt = build_system_prompt(session, session.mode, tool_names, tool_specs, actor=actor)
         diagnostic_system_prompt = build_diagnostic_system_prompt(
             session,
             session.mode,
-            tool_names,
+            diagnostic_tool_names,
             actor=actor,
         )
         component_chars = prompt_component_chars(
@@ -164,12 +188,12 @@ class DiagnosticTools:
         diagnostic_component_chars = prompt_component_chars(
             session,
             session.mode,
-            tool_names,
+            diagnostic_tool_names,
             actor=actor,
             profile="diagnostic",
         )
         diagnostic_component_chars["system_prompt_chars"] = len(diagnostic_system_prompt)
-        diagnostic_component_chars["tool_schema_chars"] = len(tool_schema_text)
+        diagnostic_component_chars["tool_schema_chars"] = len(diagnostic_tool_schema_text)
         diagnostic_attributed_prompt_chars = sum(
             value
             for key, value in diagnostic_component_chars.items()
@@ -191,12 +215,23 @@ class DiagnosticTools:
             from ..core.models import GameMode
 
             for mode in GameMode:
-                names, specs = self.tool_specs_provider(mode)
+                names, specs = self._tool_specs_for(mode)
                 text = json.dumps(specs, ensure_ascii=False, separators=(",", ":"))
+                diagnostic_names, diagnostic_specs = self._tool_specs_for(mode, "token")
+                diagnostic_text = json.dumps(
+                    diagnostic_specs,
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                )
                 by_mode[mode.value] = {
                     "tool_count": len(names),
                     "tool_schema_chars": len(text),
                     "rough_tool_schema_tokens": _rough_token_estimate(len(text)),
+                    "diagnostic_tool_count": len(diagnostic_names),
+                    "diagnostic_tool_schema_chars": len(diagnostic_text),
+                    "diagnostic_rough_tool_schema_tokens": _rough_token_estimate(
+                        len(diagnostic_text)
+                    ),
                 }
         except Exception:
             by_mode = {}
@@ -204,10 +239,12 @@ class DiagnosticTools:
             "available": True,
             "mode": session.mode.value,
             "tool_count": len(tool_names),
+            "diagnostic_tool_count": len(diagnostic_tool_names),
             "system_prompt_chars": len(system_prompt),
             "diagnostic_system_prompt_chars": len(diagnostic_system_prompt),
             "sample_user_prompt_chars": len(sample_user_prompt),
             "tool_schema_chars": len(tool_schema_text),
+            "diagnostic_tool_schema_chars": len(diagnostic_tool_schema_text),
             "total_request_chars_excluding_chat_history": total_chars,
             "total_request_chars_with_external_memory_budget": total_with_external_memory_chars,
             "rough_total_request_tokens": _rough_token_estimate(total_chars),
