@@ -1966,6 +1966,8 @@ def _is_runtime_status_tag(layer: str, key_text: str, value_text: str) -> bool:
         return False
     if _looks_like_post_start_power_grant(combined):
         return False
+    if _looks_like_post_start_resource_escalation(combined):
+        return False
     if "动作如潮" in combined and _contains_any_text(combined, ("刷新", "重置", "每次", "无限", "反复触发", "连续触发")):
         return False
     runtime_like = layer == "status" or _contains_any_text(combined, RUNTIME_STATUS_KEY_TERMS)
@@ -2042,6 +2044,84 @@ def _looks_like_post_start_power_grant(text: str) -> bool:
             and _contains_any_text(lowered, ("记录", "拥有", "获得", "权限", "等级"))
         )
     )
+
+
+def _looks_like_post_start_resource_escalation(text: str) -> bool:
+    lowered = str(text or "").lower()
+    if not _contains_any_text(
+        lowered,
+        (
+            "资源",
+            "储备",
+            "养分",
+            "营养",
+            "能量",
+            "魔力",
+            "法力",
+            "弹药",
+            "金币",
+            "材料",
+            "补给",
+            "燃料",
+            "生物质",
+            "矿物质",
+        ),
+    ):
+        return False
+    if _contains_any_text(
+        lowered,
+        ("失败", "未能", "没有成功", "尝试", "需要", "不足", "短缺", "消耗", "代价", "损失"),
+    ) and not _contains_any_text(
+        lowered,
+        ("过剩", "海量", "巨量", "数周", "数月", "长期", "源源不断", "持续供给", "可快速补充", "自给自足", "不再依赖"),
+    ):
+        return False
+    high_scale = _contains_any_text(
+        lowered,
+        (
+            "过剩",
+            "充沛",
+            "大量",
+            "海量",
+            "巨量",
+            "爆满",
+            "满额",
+            "数周",
+            "数月",
+            "长期",
+            "高耗能",
+            "源源不断",
+            "持续供给",
+            "稳定供给",
+            "可快速补充",
+            "自给自足",
+            "不再依赖",
+            "完全定殖",
+            "大幅提升",
+        ),
+    )
+    acquisition = _contains_any_text(
+        lowered,
+        (
+            "获得",
+            "补充",
+            "储备",
+            "转化",
+            "转化为",
+            "采集",
+            "吸收",
+            "吞噬",
+            "分解",
+            "生产",
+            "生成",
+            "建立",
+            "供给",
+            "支撑",
+            "接入",
+            "定殖",
+        ),
+    )
+    return high_scale and acquisition
 
 
 def _looks_like_late_join_power_bundle(text: str) -> bool:
@@ -2322,6 +2402,7 @@ def post_start_world_fact_overreach_result(
             "感知边界的消融",
         ),
     )
+    resource_overgrant = _looks_like_post_start_resource_escalation(combined)
     faction_takeover = _contains_any_text(
         combined,
         ("补充设定", "现在演绎", "现在刚刚到场", "刚刚到场", "派出"),
@@ -2356,6 +2437,7 @@ def post_start_world_fact_overreach_result(
     if not (
         global_rewrite
         or power_grant
+        or resource_overgrant
         or faction_takeover
         or mass_control
         or guaranteed_summon
@@ -2379,6 +2461,7 @@ def post_start_world_fact_overreach_result(
             "世界意志、规则修正或清除不合世界观事物",
             "把召唤、控制或到场说成必定成功",
             "把自我升格直接落盘",
+            "一次行动直接获得过剩、长期或源源不断的资源储备",
         ],
     }
 

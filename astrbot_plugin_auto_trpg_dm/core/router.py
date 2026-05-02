@@ -2434,6 +2434,16 @@ ROLL_REQUIRED_ACTION_TERMS = (
     "解除",
     "冲锋",
     "抓住",
+    "捕获",
+    "收服",
+    "驯服",
+    "转化",
+    "采集",
+    "分解",
+    "侵入",
+    "寄生",
+    "点燃",
+    "引火",
 )
 
 SPATIAL_REQUIRED_ACTION_TERMS = (
@@ -2528,17 +2538,19 @@ def _adjudication_completeness_guard(
         return {}
     if _contains_any_term(text, LOW_RISK_DIRECT_TERMS):
         return {}
-    if not _contains_any_term(text, ROLL_REQUIRED_ACTION_TERMS + SPATIAL_REQUIRED_ACTION_TERMS):
-        return {}
-    if not _completion_claims_resolved_outcome(reply):
-        return {}
-
     tool_names = [str(item.get("tool") or "") for item in tool_results if isinstance(item, dict)]
     successful_tools = {
         str(item.get("tool") or "")
         for item in tool_results
         if isinstance(item, dict) and _tool_result_ok(item.get("result"))
     }
+    if _looks_like_rule_setup_request(text) and "register_rule" in successful_tools:
+        return {}
+    if not _contains_any_term(text, ROLL_REQUIRED_ACTION_TERMS + SPATIAL_REQUIRED_ACTION_TERMS):
+        return {}
+    if not _completion_claims_resolved_outcome(reply):
+        return {}
+
     has_roll_support = "execute_rule" in successful_tools
     has_spatial_support = bool(successful_tools.intersection({"move_entity", "check_attack_vector", "create_grid", "place_entity"}))
     has_turn_support = "turn_control" in successful_tools
@@ -2575,6 +2587,45 @@ def _completion_claims_resolved_outcome(reply: str) -> bool:
     if _contains_any_term(reply, UNRESOLVED_OUTCOME_MARKERS):
         return False
     return _contains_any_term(reply, RESOLVED_OUTCOME_TERMS)
+
+
+def _looks_like_rule_setup_request(text: str) -> bool:
+    config_terms = (
+        "玩法",
+        "规则",
+        "数值",
+        "最大值",
+        "上限",
+        "命中不需要",
+        "不需要骰",
+        "简单回合制",
+        "回合制",
+        "自动战斗",
+    )
+    action_terms = (
+        "我要",
+        "找个",
+        "攻击",
+        "射击",
+        "移动",
+        "飞",
+        "跑",
+        "搜索",
+        "调查",
+        "收服",
+        "捕获",
+        "治疗",
+        "偷",
+        "开锁",
+        "点燃",
+        "引火",
+        "转化",
+        "采集",
+        "寄生",
+        "杀",
+    )
+    hits = sum(1 for term in config_terms if term and term in text)
+    return hits >= 2 and not _contains_any_term(text, action_terms)
 
 
 def _completion_claims_state_change(reply: str) -> bool:
