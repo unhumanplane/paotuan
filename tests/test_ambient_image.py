@@ -5,6 +5,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+import astrbot_plugin_auto_trpg_dm.core.ambient_image as ambient_image_module
 from astrbot_plugin_auto_trpg_dm.core.ambient_image import (
     AmbientImageConfig,
     AmbientImageProvider,
@@ -31,6 +32,28 @@ def _test_runtime_dir(name: str) -> Path:
     path = base / f"{name}_{uuid.uuid4().hex}"
     path.mkdir()
     return path
+
+
+def _public_dns_resolver(host: str, port: int) -> list[str]:
+    return ["8.8.8.8"]
+
+
+def _add_recent_player_messages(
+    session: GameSession,
+    *,
+    count: int = 10,
+    players: tuple[str, ...] = ("player-a", "player-b"),
+    minutes_ago: int = 5,
+) -> None:
+    created_at = (datetime.now(timezone.utc) - timedelta(minutes=minutes_ago)).isoformat()
+    session.scene["ambient_image_recent_player_messages"] = [
+        {
+            "created_at": created_at,
+            "player_id": players[index % len(players)],
+            "message": f"玩家 {index} 描述了一个具体行动",
+        }
+        for index in range(count)
+    ]
 
 
 def test_ambient_image_disabled_skips_provider():
@@ -72,6 +95,7 @@ def test_images_api_payload_defaults_to_single_medium_quality_1_5k_and_parses_ur
         environ={"PACKY_KEY": "secret"},
         http_post=fake_post,
         http_get=fake_get,
+        dns_resolver=_public_dns_resolver,
     )
 
     result = asyncio.run(provider.generate("古堡门廊"))
@@ -130,6 +154,7 @@ def test_chat_completions_extracts_markdown_image_url():
         environ={"PACKY_KEY": "secret"},
         http_post=fake_post,
         http_get=fake_get,
+        dns_resolver=_public_dns_resolver,
     )
 
     result = asyncio.run(provider.generate("雨夜码头"))
@@ -146,6 +171,152 @@ def test_parse_chat_completion_url_even_when_body_has_error_text():
     result = parse_ambient_image_response(body, api_mode="chat_completions")
 
     assert result == {"ok": True, "url": "https://cdn.example/fallback.png"}
+
+
+def test_image_url_blocks_loopback_before_download():
+    calls = []
+
+    def fake_post(url, headers, payload, timeout):
+        body = {"data": [{"url": "https://127.0.0.1/image.png"}]}
+        return 200, {"content-type": "application/json"}, json.dumps(body).encode()
+
+    def fake_get(url, headers, timeout):
+        calls.append(url)
+        raise AssertionError("loopback URL should be blocked before download")
+
+    provider = AmbientImageProvider(
+        AmbientImageConfig(enabled=True, api_key_env="PACKY_KEY"),
+        environ={"PACKY_KEY": "secret"},
+        http_post=fake_post,
+        http_get=fake_get,
+    )
+
+    result = asyncio.run(provider.generate("本机 URL"))
+
+    assert result["ok"] is False
+    assert result["error"] == "ambient_image_url_blocked"
+    assert calls == []
+
+
+def test_image_url_blocks_private_dns_resolution_before_download():
+    calls = []
+
+    def fake_post(url, headers, payload, timeout):
+        body = {"data": [{"url": "https://cdn.example/image.png"}]}
+        return 200, {"content-type": "application/json"}, json.dumps(body).encode()
+
+    def fake_get(url, headers, timeout):
+        calls.append(url)
+        raise AssertionError("private DNS result should be blocked before download")
+
+    provider = AmbientImageProvider(
+        AmbientImageConfig(enabled=True, api_key_env="PACKY_KEY"),
+        environ={"PACKY_KEY": "secret"},
+        http_post=fake_post,
+        http_get=fake_get,
+        dns_resolver=lambda host, port: ["10.0.0.5"],
+    )
+
+    result = asyncio.run(provider.generate("私网 DNS"))
+
+    assert result["ok"] is False
+    assert result["error"] == "ambient_image_url_blocked"
+    assert result["reason"] == "resolved_ip_blocked"
+    assert calls == []
+
+
+def test_image_download_rejects_content_length_over_limit(monkeypatch):
+    monkeypatch.setattr(ambient_image_module, "MAX_AMBIENT_IMAGE_BYTES", 4)
+
+    def fake_post(url, headers, payload, timeout):
+        body = {"data": [{"url": "https://cdn.example/image.png"}]}
+        return 200, {"content-type": "application/json"}, json.dumps(body).encode()
+
+    def fake_get(url, headers, timeout):
+        return 200, {"content-type": "image/png", "content-length": "5"}, b"tiny"
+
+    provider = AmbientImageProvider(
+        AmbientImageConfig(enabled=True, api_key_env="PACKY_KEY"),
+        environ={"PACKY_KEY": "secret"},
+        http_post=fake_post,
+        http_get=fake_get,
+        dns_resolver=_public_dns_resolver,
+    )
+
+    result = asyncio.run(provider.generate("超大 content length"))
+
+    assert result["ok"] is False
+    assert result["error"] == "ambient_image_too_large"
+    assert result["source"] == "download"
+    assert result["content_length"] == 5
+
+
+def test_image_download_rejects_actual_bytes_over_limit(monkeypatch):
+    monkeypatch.setattr(ambient_image_module, "MAX_AMBIENT_IMAGE_BYTES", 4)
+
+    def fake_post(url, headers, payload, timeout):
+        body = {"data": [{"url": "https://cdn.example/image.png"}]}
+        return 200, {"content-type": "application/json"}, json.dumps(body).encode()
+
+    def fake_get(url, headers, timeout):
+        return 200, {"content-type": "image/png"}, b"12345"
+
+    provider = AmbientImageProvider(
+        AmbientImageConfig(enabled=True, api_key_env="PACKY_KEY"),
+        environ={"PACKY_KEY": "secret"},
+        http_post=fake_post,
+        http_get=fake_get,
+        dns_resolver=_public_dns_resolver,
+    )
+
+    result = asyncio.run(provider.generate("超大实际内容"))
+
+    assert result["ok"] is False
+    assert result["error"] == "ambient_image_too_large"
+    assert result["actual_bytes"] == 5
+
+
+def test_image_download_rejects_non_image_content_type():
+    def fake_post(url, headers, payload, timeout):
+        body = {"data": [{"url": "https://cdn.example/image.png"}]}
+        return 200, {"content-type": "application/json"}, json.dumps(body).encode()
+
+    def fake_get(url, headers, timeout):
+        return 200, {"content-type": "text/html"}, b"<html></html>"
+
+    provider = AmbientImageProvider(
+        AmbientImageConfig(enabled=True, api_key_env="PACKY_KEY"),
+        environ={"PACKY_KEY": "secret"},
+        http_post=fake_post,
+        http_get=fake_get,
+        dns_resolver=_public_dns_resolver,
+    )
+
+    result = asyncio.run(provider.generate("非图片内容"))
+
+    assert result["ok"] is False
+    assert result["error"] == "ambient_image_content_type_invalid"
+    assert result["content_type"] == "text/html"
+
+
+def test_b64_json_rejects_payload_over_limit(monkeypatch):
+    monkeypatch.setattr(ambient_image_module, "MAX_AMBIENT_IMAGE_BYTES", 4)
+    image_b64 = base64.b64encode(b"12345").decode()
+
+    def fake_post(url, headers, payload, timeout):
+        return 200, {"content-type": "application/json"}, json.dumps({"data": [{"b64_json": image_b64}]}).encode()
+
+    provider = AmbientImageProvider(
+        AmbientImageConfig(enabled=True, response_format="b64_json", api_key_env="PACKY_KEY"),
+        environ={"PACKY_KEY": "secret"},
+        http_post=fake_post,
+    )
+
+    result = asyncio.run(provider.generate("超大 base64"))
+
+    assert result["ok"] is False
+    assert result["error"] == "ambient_image_too_large"
+    assert result["source"] == "b64_json"
 
 
 def test_ambient_image_gate_blocks_combat_before_prompt_or_api():
@@ -168,6 +339,7 @@ def test_ambient_image_warmup_requires_frequent_interaction_plus_five_minutes():
     session.scene["ambient_image_state"]["warmup_started_at"] = (
         datetime.now(timezone.utc) - timedelta(minutes=6)
     ).isoformat()
+    _add_recent_player_messages(session)
     ready = ambient_image_gate(session, config)
 
     assert waiting["reason"] == "ambient_image_warmup_wait"
@@ -248,6 +420,84 @@ def test_pause_resume_trigger_bypasses_warmup_and_setup_filter():
     assert offered is True
 
 
+def test_interval_trigger_skips_when_activity_window_has_too_few_messages():
+    session = GameSession.new("group")
+    session.scene["summary"] = "黑塔城的街巷仍被浓雾覆盖。"
+    session.scene["ambient_image_state"] = {
+        "warmup_started_at": (datetime.now(timezone.utc) - timedelta(minutes=20)).isoformat(),
+        "interaction_count": 12,
+    }
+    session.scene["_recent_narrative_events"] = [
+        {"at": str(index), "message": f"行动 {index}", "outcome": "剧情推进"}
+        for index in range(12)
+    ]
+    _add_recent_player_messages(session, count=9, players=("player-a", "player-b"))
+    config = AmbientImageConfig(enabled=True)
+
+    result = ambient_image_gate(session, config)
+
+    assert result["reason"] == "ambient_image_activity_wait"
+    assert result["activity_message_count"] == 9
+    assert result["activity_min_messages"] == 10
+
+
+def test_interval_trigger_skips_when_activity_window_has_one_speaker():
+    session = GameSession.new("group")
+    session.scene["summary"] = "黑塔城的街巷仍被浓雾覆盖。"
+    session.scene["ambient_image_state"] = {
+        "warmup_started_at": (datetime.now(timezone.utc) - timedelta(minutes=20)).isoformat(),
+        "interaction_count": 12,
+    }
+    session.scene["_recent_narrative_events"] = [
+        {"at": str(index), "message": f"行动 {index}", "outcome": "剧情推进"}
+        for index in range(12)
+    ]
+    _add_recent_player_messages(session, count=10, players=("player-a",))
+    config = AmbientImageConfig(enabled=True)
+
+    result = ambient_image_gate(session, config)
+
+    assert result["reason"] == "ambient_image_activity_wait"
+    assert result["activity_player_count"] == 1
+    assert result["activity_min_players"] == 2
+
+
+def test_active_window_keeps_interval_trigger_eligible():
+    session = GameSession.new("group")
+    session.scene["summary"] = "黑塔城的街巷仍被浓雾覆盖。"
+    session.scene["ambient_image_state"] = {
+        "warmup_started_at": (datetime.now(timezone.utc) - timedelta(minutes=20)).isoformat(),
+        "interaction_count": 12,
+    }
+    session.scene["_recent_narrative_events"] = [
+        {"at": str(index), "message": f"行动 {index}", "outcome": "剧情推进"}
+        for index in range(12)
+    ]
+    _add_recent_player_messages(session, count=10, players=("player-a", "player-b"))
+    config = AmbientImageConfig(enabled=True)
+
+    result = ambient_image_gate(session, config)
+
+    assert result["ok"] is True
+    assert result["trigger"] == "interval"
+
+
+def test_pause_resume_trigger_bypasses_activity_gate():
+    session = GameSession.new("group")
+    session.scene["summary"] = "调查暂时告一段落。"
+    session.scene["_dm_paused"] = False
+    session.scene["_dm_resumed_at"] = datetime.now(timezone.utc).isoformat()
+    session.scene["ambient_image_state"] = {
+        "last_resume_generated_at": (datetime.now(timezone.utc) - timedelta(minutes=130)).isoformat(),
+    }
+    config = AmbientImageConfig(enabled=True)
+
+    result = ambient_image_gate(session, config)
+
+    assert result["ok"] is True
+    assert result["trigger"] == "pause_resume"
+
+
 def test_direct_user_image_request_does_not_trigger_ambient_image():
     session = GameSession.new("group")
     session.scene["summary"] = "雾气笼罩黑塔城，城门前响起钟声。"
@@ -255,6 +505,7 @@ def test_direct_user_image_request_does_not_trigger_ambient_image():
         "warmup_started_at": (datetime.now(timezone.utc) - timedelta(minutes=6)).isoformat(),
         "interaction_count": 12,
     }
+    _add_recent_player_messages(session)
     session.scene["_recent_narrative_events"] = [
         {"at": str(index), "message": f"行动 {index}", "outcome": "剧情推进"}
         for index in range(12)
@@ -283,6 +534,7 @@ def test_low_frequency_requires_thirty_turns_or_forty_minutes():
         {"at": str(index), "message": f"行动 {index}", "outcome": "剧情推进"}
         for index in range(30)
     ]
+    _add_recent_player_messages(session, count=10, players=("player-a", "player-b"))
     config = AmbientImageConfig(enabled=True, frequency="low")
 
     waiting = ambient_image_gate(session, config)
@@ -397,7 +649,7 @@ def test_ambient_image_tool_missing_key_skips_prompt_model():
     assert "last_ambient_image" not in repo.load_session("group").scene
 
 
-def test_ambient_image_tool_saves_prompt_metadata_and_pending_output():
+def test_ambient_image_tool_saves_prompt_metadata_without_pending_output():
     runtime_dir = _test_runtime_dir("success")
     repo = JsonGameRepository(runtime_dir)
     session = GameSession.new("group")
@@ -460,5 +712,352 @@ def test_ambient_image_tool_saves_prompt_metadata_and_pending_output():
     assert saved.scene["last_ambient_image"]["prompt"].startswith("Image title: 黑塔城夜雾")
     assert metadata["prompt_model_prompt"] == "cinematic 1.5k dark tower city fog"
     assert saved.scene["ambient_image_style"]["description"] == "low-key cinematic fog, restrained fantasy realism"
-    assert saved.scene["_pending_outputs"][0]["type"] == "ambient_image"
+    assert result["send_to_chat"] is True
+    assert saved.scene.get("_pending_outputs", []) == []
     assert (runtime_dir / "ambient_images").exists()
+
+
+def test_prompt_similarity_retry_chooses_alternate_prompt():
+    runtime_dir = _test_runtime_dir("similarity_retry")
+    repo = JsonGameRepository(runtime_dir)
+    session = GameSession.new("group")
+    session.scene["summary"] = "黑塔城的雾夜调查仍在继续。"
+    repeated_prompt = compose_ambient_image_prompt(
+        title="黑塔城夜雾",
+        prompt="dark tower city fog bell street lantern",
+        style="low key noir fantasy",
+    )
+    session.scene["ambient_image_prompts"] = [
+        {"title": "黑塔城夜雾", "prompt": repeated_prompt},
+        {"title": "黑塔城街灯", "prompt": repeated_prompt},
+    ]
+    session.scene["_recent_narrative_events"] = [{"at": "now", "message": "继续调查", "outcome": "抵达码头"}]
+    now = datetime.now(timezone.utc).isoformat()
+    session.scene["ambient_image_recent_player_messages"] = [
+        {"created_at": now, "player_id": "player-a", "message": "我沿着黑塔城街灯继续搜查雾气里的钟声。"},
+        {"created_at": now, "player_id": "player-b", "message": "我询问码头船工，并观察他身后潮湿木板上的蓝色灯影。"},
+        {"created_at": now, "player_id": "player-c", "message": "继续"},
+    ]
+    repo.save_session(session)
+
+    class FakeLlm:
+        def __init__(self):
+            self.prompt_calls = 0
+            self.judge_calls = 0
+
+        async def __call__(self, **kwargs):
+            if "去重判定器" in str(kwargs.get("system_prompt", "")):
+                self.judge_calls += 1
+                score = 0.91 if self.judge_calls == 1 else 0.18
+                return type(
+                    "Response",
+                    (),
+                    {
+                        "completion_text": json.dumps(
+                            {
+                                "score": score,
+                                "too_similar": score >= 0.82,
+                                "matched_recent_index": 1 if score >= 0.82 else -1,
+                                "reason": "重复" if score >= 0.82 else "已换到码头船工画面",
+                            }
+                        )
+                    },
+                )()
+            self.prompt_calls += 1
+            if self.prompt_calls == 1:
+                prompt = "dark tower city fog bell street lantern"
+                title = "黑塔城夜雾"
+            else:
+                prompt = "rain soaked pier blue lamp distant boat silhouette wet planks"
+                title = "雨夜码头蓝灯"
+            return type(
+                "Response",
+                (),
+                {"completion_text": json.dumps({"title": title, "prompt": prompt, "style": "low key noir fantasy"})},
+            )()
+
+    class FakeProvider:
+        def __init__(self):
+            self.prompts = []
+
+        async def generate(self, prompt):
+            self.prompts.append(prompt)
+            return {
+                "ok": True,
+                "available": True,
+                "image_bytes": b"png-bytes",
+                "extension": "png",
+                "api_mode": "images",
+                "source": "b64_json",
+            }
+
+    fake_llm = FakeLlm()
+    fake_provider = FakeProvider()
+    tools = AmbientImageTools(
+        repo,
+        "group",
+        AmbientImageConfig(enabled=True),
+        fake_provider,
+        actor={"player_id": "player-a"},
+        message="我沿着黑塔城街灯继续搜查雾气里的钟声。",
+        llm_generate=fake_llm,
+    )
+
+    result = asyncio.run(
+        tools.generate_ambient_image(
+            story_moment="码头调查",
+            rationale="同场景需要换素材来源",
+            trigger_override="opening",
+        )
+    )
+
+    saved = repo.load_session("group")
+    assert result["ok"] is True
+    assert fake_llm.prompt_calls == 2
+    assert fake_llm.judge_calls == 2
+    assert len(fake_provider.prompts) == 1
+    assert "rain soaked pier blue lamp" in fake_provider.prompts[0]
+    assert saved.scene["last_ambient_image"]["prompt_retry_reason"] == "ambient_image_prompt_similar_recent"
+    assert saved.scene["last_ambient_image"]["retry_source_player_id"] == "player-b"
+
+
+def test_prompt_similarity_skips_when_retry_still_too_similar():
+    runtime_dir = _test_runtime_dir("similarity_skip")
+    repo = JsonGameRepository(runtime_dir)
+    session = GameSession.new("group")
+    session.scene["summary"] = "黑塔城的雾夜调查仍在继续。"
+    repeated_prompt = compose_ambient_image_prompt(
+        title="黑塔城夜雾",
+        prompt="dark tower city fog bell street lantern",
+        style="low key noir fantasy",
+    )
+    session.scene["ambient_image_prompts"] = [{"title": "黑塔城夜雾", "prompt": repeated_prompt}]
+    session.scene["_recent_narrative_events"] = [{"at": "now", "message": "继续调查", "outcome": "仍在街道"}]
+    now = datetime.now(timezone.utc).isoformat()
+    session.scene["ambient_image_recent_player_messages"] = [
+        {"created_at": now, "player_id": "player-a", "message": "我继续追查黑塔城街灯下的雾中钟声。"},
+        {"created_at": now, "player_id": "player-b", "message": "我观察同一条街上潮湿石板和昏黄灯笼。"},
+    ]
+    repo.save_session(session)
+
+    class FakeLlm:
+        def __init__(self):
+            self.prompt_calls = 0
+            self.judge_calls = 0
+
+        async def __call__(self, **kwargs):
+            if "去重判定器" in str(kwargs.get("system_prompt", "")):
+                self.judge_calls += 1
+                return type(
+                    "Response",
+                    (),
+                    {
+                        "completion_text": json.dumps(
+                            {
+                                "score": 0.93,
+                                "too_similar": True,
+                                "matched_recent_index": 0,
+                                "reason": "仍是同一条黑塔城雾街",
+                            }
+                        )
+                    },
+                )()
+            self.prompt_calls += 1
+            return type(
+                "Response",
+                (),
+                {
+                    "completion_text": json.dumps(
+                        {
+                            "title": "黑塔城夜雾",
+                            "prompt": "dark tower city fog bell street lantern",
+                            "style": "low key noir fantasy",
+                        }
+                    )
+                },
+            )()
+
+    class FakeProvider:
+        async def generate(self, prompt):
+            raise AssertionError("provider should not be called when retry remains too similar")
+
+    fake_llm = FakeLlm()
+    tools = AmbientImageTools(
+        repo,
+        "group",
+        AmbientImageConfig(enabled=True),
+        FakeProvider(),
+        actor={"player_id": "player-a"},
+        message="我继续追查黑塔城街灯下的雾中钟声。",
+        llm_generate=fake_llm,
+    )
+
+    result = asyncio.run(
+        tools.generate_ambient_image(
+            story_moment="街道调查",
+            rationale="测试相似度跳过",
+            trigger_override="opening",
+        )
+    )
+
+    assert result["ok"] is False
+    assert result["error"] == "ambient_image_prompt_too_similar"
+    assert result["retry_attempted"] is True
+    assert fake_llm.prompt_calls == 2
+    assert fake_llm.judge_calls == 2
+
+
+def test_prompt_similarity_default_compares_recent_three_prompts():
+    runtime_dir = _test_runtime_dir("similarity_recent_three")
+    repo = JsonGameRepository(runtime_dir)
+    session = GameSession.new("group")
+    session.scene["summary"] = "黑塔城的雾夜调查仍在继续。"
+    old_prompt = compose_ambient_image_prompt(
+        title="黑塔城夜雾",
+        prompt="dark tower city fog bell street lantern",
+        style="low key noir fantasy",
+    )
+    session.scene["ambient_image_prompts"] = [
+        {"title": "更早的黑塔城夜雾", "prompt": old_prompt},
+        {"title": "码头船影", "prompt": "rain pier boat blue lamp"},
+        {"title": "钟楼内厅", "prompt": "clocktower interior brass stairs"},
+    ]
+    session.scene["_recent_narrative_events"] = [{"at": "now", "message": "回到街道", "outcome": "雾气变浓"}]
+    repo.save_session(session)
+
+    class FakeLlm:
+        def __init__(self):
+            self.judge_prompt = ""
+
+        async def __call__(self, **kwargs):
+            if "去重判定器" in str(kwargs.get("system_prompt", "")):
+                self.judge_prompt = str(kwargs.get("prompt", ""))
+                return type(
+                    "Response",
+                    (),
+                    {"completion_text": json.dumps({"score": 0.2, "too_similar": False, "matched_recent_index": -1})},
+                )()
+            return type(
+                "Response",
+                (),
+                {
+                    "completion_text": json.dumps(
+                        {
+                            "title": "黑塔城夜雾",
+                            "prompt": "dark tower city fog bell street lantern",
+                            "style": "low key noir fantasy",
+                        }
+                    )
+                },
+            )()
+
+    class FakeProvider:
+        def __init__(self):
+            self.called = False
+
+        async def generate(self, prompt):
+            self.called = True
+            return {
+                "ok": True,
+                "available": True,
+                "image_bytes": b"png-bytes",
+                "extension": "png",
+                "api_mode": "images",
+                "source": "b64_json",
+            }
+
+    fake_provider = FakeProvider()
+    fake_llm = FakeLlm()
+    tools = AmbientImageTools(
+        repo,
+        "group",
+        AmbientImageConfig(enabled=True),
+        fake_provider,
+        llm_generate=fake_llm,
+    )
+
+    result = asyncio.run(
+        tools.generate_ambient_image(
+            story_moment="回到街道",
+            rationale="更早 prompt 不应阻止当前生成",
+            trigger_override="opening",
+        )
+    )
+
+    assert result["ok"] is True
+    assert fake_provider.called is True
+    assert "更早的黑塔城夜雾" in fake_llm.judge_prompt
+    assert "码头船影" in fake_llm.judge_prompt
+    assert "钟楼内厅" in fake_llm.judge_prompt
+
+
+def test_prompt_similarity_recent_count_config_limits_judge_context():
+    runtime_dir = _test_runtime_dir("similarity_recent_count_config")
+    repo = JsonGameRepository(runtime_dir)
+    session = GameSession.new("group")
+    session.scene["summary"] = "黑塔城的雾夜调查仍在继续。"
+    session.scene["ambient_image_prompts"] = [
+        {"title": "更早的黑塔城夜雾", "prompt": "dark tower city fog bell street lantern"},
+        {"title": "码头船影", "prompt": "rain pier boat blue lamp"},
+        {"title": "钟楼内厅", "prompt": "clocktower interior brass stairs"},
+    ]
+    repo.save_session(session)
+
+    class FakeLlm:
+        def __init__(self):
+            self.judge_prompt = ""
+
+        async def __call__(self, **kwargs):
+            if "去重判定器" in str(kwargs.get("system_prompt", "")):
+                self.judge_prompt = str(kwargs.get("prompt", ""))
+                return type(
+                    "Response",
+                    (),
+                    {"completion_text": json.dumps({"score": 0.1, "too_similar": False})},
+                )()
+            return type(
+                "Response",
+                (),
+                {
+                    "completion_text": json.dumps(
+                        {
+                            "title": "码头蓝灯",
+                            "prompt": "rain soaked pier blue lamp distant boat silhouette",
+                            "style": "low key noir fantasy",
+                        }
+                    )
+                },
+            )()
+
+    class FakeProvider:
+        async def generate(self, prompt):
+            return {
+                "ok": True,
+                "available": True,
+                "image_bytes": b"png-bytes",
+                "extension": "png",
+                "api_mode": "images",
+                "source": "b64_json",
+            }
+
+    fake_llm = FakeLlm()
+    tools = AmbientImageTools(
+        repo,
+        "group",
+        AmbientImageConfig(enabled=True, similarity_recent_count=2),
+        FakeProvider(),
+        llm_generate=fake_llm,
+    )
+
+    result = asyncio.run(
+        tools.generate_ambient_image(
+            story_moment="码头调查",
+            rationale="测试相似度比较数量配置",
+            trigger_override="opening",
+        )
+    )
+
+    assert result["ok"] is True
+    assert "更早的黑塔城夜雾" not in fake_llm.judge_prompt
+    assert "码头船影" in fake_llm.judge_prompt
+    assert "钟楼内厅" in fake_llm.judge_prompt

@@ -20,6 +20,8 @@ from ..storage.json_repository import JsonGameRepository
 
 PromptLlmGenerate = Callable[..., Awaitable[Any]]
 PAUSE_RESUME_TRIGGER_WINDOW_MINUTES = 10
+AMBIENT_IMAGE_GENERATION_IN_PROGRESS_MINUTES = 5
+RECENT_PLAYER_MESSAGES_LIMIT = 50
 
 
 class GenerateAmbientImageArgs(BaseModel):
@@ -62,20 +64,26 @@ class AmbientImageTools:
         rationale: str = "",
         send_to_chat: bool = True,
         trigger_override: str = "",
+        ignore_generation_in_progress: bool = False,
     ) -> Dict[str, Any]:
         session = self.repository.load_session(self.session_id)
-        gate = ambient_image_gate(session, self.config, trigger_override=trigger_override)
-        if not gate.get("ok"):
-            result = gate
-            self._audit("generate_ambient_image", locals_without_self(locals()), result)
-            return result
-
         provider_unavailable = _provider_unavailable(self.provider)
         if provider_unavailable:
             result = {
                 **audit_safe_ambient_image_result(provider_unavailable),
                 "message": "氛围图这轮没有生成；跑团流程继续。",
             }
+            self._audit("generate_ambient_image", locals_without_self(locals()), result)
+            return result
+
+        gate = ambient_image_gate(
+            session,
+            self.config,
+            trigger_override=trigger_override,
+            ignore_generation_in_progress=ignore_generation_in_progress,
+        )
+        if not gate.get("ok"):
+            result = gate
             self._audit("generate_ambient_image", locals_without_self(locals()), result)
             return result
 
@@ -129,6 +137,12 @@ class AmbientImageTools:
             "quality": provider_result.get("quality", self.config.quality),
             "source": provider_result.get("source", ""),
         }
+        if prompt_result.get("prompt_retry_reason"):
+            record["prompt_retry_reason"] = prompt_result.get("prompt_retry_reason", "")
+        if prompt_result.get("prompt_similarity") is not None:
+            record["prompt_similarity"] = prompt_result.get("prompt_similarity")
+        if prompt_result.get("retry_source_player_id"):
+            record["retry_source_player_id"] = prompt_result.get("retry_source_player_id", "")
         latest_session.scene["last_ambient_image"] = record
         latest_session.scene["ambient_image_state"] = {
             **dict(latest_session.scene.get("ambient_image_state") or {}),
@@ -147,13 +161,11 @@ class AmbientImageTools:
                 "file_name": image_path.name,
                 "api_mode": record["api_mode"],
                 "story_key": record["story_key"],
+                "prompt_retry_reason": prompt_result.get("prompt_retry_reason", ""),
+                "retry_source_player_id": prompt_result.get("retry_source_player_id", ""),
             }
         )
         latest_session.scene["ambient_image_prompts"] = history[-20:]
-        if final_send_to_chat:
-            pending = list(latest_session.scene.get("_pending_outputs") or [])
-            pending.append(record)
-            latest_session.scene["_pending_outputs"] = pending[-3:]
         self.repository.save_session(latest_session)
 
         result = {
@@ -184,14 +196,186 @@ class AmbientImageTools:
         prompt_model = str(self.config.prompt_model or self.chat_provider_id or "").strip()
         story_key = _ambient_story_key(session)
         style_seed = _ambient_style_seed(session)
-        generation_prompt = build_ambient_image_prompt_request(
+        initial_player_id = str(self.actor.get("player_id") or "").strip()
+        prompt_result = await self._request_prompt_for_player_message(
             session,
             player_message=self.message,
+            prompt_model=prompt_model,
+            story_key=story_key,
+            style_seed=style_seed,
+            story_moment=story_moment,
+            rationale=rationale,
+        )
+        if not prompt_result.get("ok"):
+            return prompt_result
+
+        similarity = await self._judge_prompt_similarity(session, prompt_result, prompt_model=prompt_model)
+        if not similarity.get("too_similar"):
+            if similarity.get("judge_degraded"):
+                prompt_result["prompt_similarity_judge_degraded"] = True
+                prompt_result["prompt_similarity_reason"] = similarity.get("reason", "")
+            return prompt_result
+
+        if not bool(self.config.similarity_retry_enabled):
+            return _prompt_too_similar_result(similarity, retry_attempted=False)
+
+        alternate_source = _select_alternate_player_message(
+            session,
+            initial_player_id=initial_player_id,
+            initial_message=self.message,
+        )
+        if not alternate_source:
+            return {
+                **_prompt_too_similar_result(similarity, retry_attempted=False),
+                "alternate_source_missing": True,
+            }
+
+        retry_result = await self._request_prompt_for_player_message(
+            session,
+            player_message=str(alternate_source.get("message", "")),
+            prompt_model=str(prompt_result.get("prompt_model") or prompt_model),
+            story_key=story_key,
+            style_seed=style_seed,
+            story_moment=story_moment,
+            rationale=rationale,
+        )
+        if not retry_result.get("ok"):
+            return retry_result
+
+        retry_similarity = await self._judge_prompt_similarity(
+            session,
+            retry_result,
+            prompt_model=str(retry_result.get("prompt_model") or prompt_model),
+        )
+        if retry_similarity.get("too_similar"):
+            return _prompt_too_similar_result(retry_similarity, retry_attempted=True)
+        retry_result["prompt_retry_reason"] = "ambient_image_prompt_similar_recent"
+        retry_result["prompt_similarity"] = similarity.get("score", 0.0)
+        retry_result["prompt_similarity_reason"] = similarity.get("reason", "")
+        retry_result["retry_attempted"] = True
+        retry_result["retry_source_player_id"] = alternate_source.get("player_id", "")
+        if retry_similarity.get("judge_degraded"):
+            retry_result["prompt_similarity_judge_degraded"] = True
+            retry_result["prompt_similarity_reason"] = retry_similarity.get("reason", "")
+        return retry_result
+
+    async def _request_prompt_for_player_message(
+        self,
+        session: Any,
+        *,
+        player_message: str,
+        prompt_model: str,
+        story_key: str,
+        style_seed: str,
+        story_moment: str,
+        rationale: str,
+    ) -> dict[str, Any]:
+        generation_prompt = build_ambient_image_prompt_request(
+            session,
+            player_message=player_message,
             dm_story_moment=story_moment,
             rationale=rationale,
             style_seed=style_seed,
             prompt_template=self.config.prompt_template,
         )
+        return await self._request_prompt_result(
+            session,
+            generation_prompt=generation_prompt,
+            prompt_model=prompt_model,
+            story_key=story_key,
+            style_seed=style_seed,
+        )
+
+    async def _judge_prompt_similarity(
+        self,
+        session: Any,
+        prompt_result: dict[str, Any],
+        *,
+        prompt_model: str,
+    ) -> dict[str, Any]:
+        recent_count = _clamp_int(self.config.similarity_recent_count, 1, 10)
+        threshold = _clamp_float(self.config.similarity_threshold, 0.0, 1.0)
+        recent_prompts = _recent_ambient_prompts(session, limit=recent_count)
+        if not recent_prompts:
+            return {"too_similar": False, "score": 0.0, "similar_to_recent_count": 0}
+        try:
+            judgment = await self._request_similarity_judgment(
+                candidate=prompt_result,
+                recent_prompts=recent_prompts,
+                prompt_model=prompt_model,
+                threshold=threshold,
+            )
+        except Exception as exc:
+            return {
+                "too_similar": False,
+                "score": 0.0,
+                "similar_to_recent_count": 0,
+                "judge_degraded": True,
+                "reason": redact_ambient_image_text(str(exc), limit=200),
+            }
+        if not judgment.get("ok"):
+            return {
+                "too_similar": False,
+                "score": 0.0,
+                "similar_to_recent_count": 0,
+                "judge_degraded": True,
+                "reason": judgment.get("reason", "semantic_judge_failed"),
+            }
+        score = _clamp_float(judgment.get("score", 1.0 if judgment.get("too_similar") else 0.0), 0.0, 1.0)
+        return {
+            "too_similar": score >= threshold,
+            "score": round(score, 4),
+            "similarity_threshold": threshold,
+            "similar_to_recent_count": 1 if score >= threshold else 0,
+            "matched_recent_index": _safe_int(judgment.get("matched_recent_index"), -1),
+            "reason": str(judgment.get("reason") or ""),
+        }
+
+    async def _request_similarity_judgment(
+        self,
+        *,
+        candidate: dict[str, Any],
+        recent_prompts: list[dict[str, Any]],
+        prompt_model: str,
+        threshold: float,
+    ) -> dict[str, Any]:
+        if self.llm_generate is None:
+            return {"ok": False, "reason": "ambient_image_prompt_model_missing"}
+        kwargs: dict[str, Any] = {
+            "prompt": build_ambient_image_similarity_judge_prompt(
+                candidate=candidate,
+                recent_prompts=recent_prompts,
+                threshold=threshold,
+            ),
+            "contexts": [],
+            "system_prompt": AMBIENT_IMAGE_SIMILARITY_SYSTEM,
+        }
+        if prompt_model:
+            kwargs["chat_provider_id"] = prompt_model
+        try:
+            response = await self.llm_generate(**kwargs)
+        except TypeError as exc:
+            if "chat_provider_id" not in kwargs:
+                return {"ok": False, "reason": redact_ambient_image_text(str(exc), limit=200)}
+            kwargs.pop("chat_provider_id", None)
+            try:
+                response = await self.llm_generate(**kwargs)
+            except Exception as retry_exc:
+                return {"ok": False, "reason": redact_ambient_image_text(str(retry_exc), limit=200)}
+        except Exception as exc:
+            return {"ok": False, "reason": redact_ambient_image_text(str(exc), limit=200)}
+        raw_text = getattr(response, "completion_text", "") or str(response)
+        return parse_prompt_similarity_judgment(raw_text)
+
+    async def _request_prompt_result(
+        self,
+        session: Any,
+        *,
+        generation_prompt: str,
+        prompt_model: str,
+        story_key: str,
+        style_seed: str,
+    ) -> dict[str, Any]:
         kwargs: dict[str, Any] = {
             "prompt": generation_prompt,
             "contexts": [],
@@ -210,7 +394,15 @@ class AmbientImageTools:
                     "reason": redact_ambient_image_text(str(exc), limit=200),
                 }
             kwargs.pop("chat_provider_id", None)
-            response = await self.llm_generate(**kwargs)
+            try:
+                response = await self.llm_generate(**kwargs)
+            except Exception as retry_exc:
+                return {
+                    "ok": False,
+                    "available": False,
+                    "error": "ambient_image_prompt_model_failed",
+                    "reason": redact_ambient_image_text(str(retry_exc), limit=200),
+                }
             prompt_model = self.chat_provider_id
         except Exception as exc:
             return {
@@ -221,30 +413,13 @@ class AmbientImageTools:
             }
 
         raw_text = getattr(response, "completion_text", "") or str(response)
-        parsed = parse_prompt_model_output(raw_text)
-        if not parsed.get("prompt"):
-            return {"ok": False, "available": False, "error": "ambient_image_prompt_empty"}
-        locked_story_style = _ambient_existing_story_style(session)
-        title = parsed.get("title", "氛围图")
-        prompt_model_prompt = parsed["prompt"]
-        style_seed = locked_story_style or parsed.get("style") or style_seed
-        image_prompt = compose_ambient_image_prompt(
-            title=title,
-            prompt=prompt_model_prompt,
-            style=style_seed,
+        return _compose_prompt_result(
+            session,
+            raw_text=raw_text,
+            prompt_model=prompt_model,
+            story_key=story_key,
+            style_seed=style_seed,
         )
-        if not image_prompt:
-            return {"ok": False, "available": False, "error": "ambient_image_prompt_empty"}
-        return {
-            "ok": True,
-            "prompt": image_prompt,
-            "prompt_model_prompt": prompt_model_prompt,
-            "title": title,
-            "style_seed": style_seed,
-            "story_key": story_key,
-            "prompt_model": prompt_model,
-            "raw_excerpt": redact_ambient_image_text(raw_text, limit=300),
-        }
 
     def _write_image(self, image_bytes: bytes, provider_result: dict[str, Any]) -> Path:
         images_dir = self.repository.ambient_images_dir()
@@ -283,6 +458,9 @@ class AmbientImageTools:
             "source": provider_result.get("source", ""),
             "url": provider_result.get("url", ""),
             "visual_only": True,
+            "prompt_retry_reason": prompt_result.get("prompt_retry_reason", ""),
+            "prompt_similarity": prompt_result.get("prompt_similarity", ""),
+            "retry_source_player_id": prompt_result.get("retry_source_player_id", ""),
         }
         path = image_path.with_suffix(image_path.suffix + ".json")
         path.write_text(json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -320,6 +498,19 @@ AMBIENT_IMAGE_PROMPT_SYSTEM = """你是 TRPG 氛围图提示词策划。你只�
 4. 提示词应描述主题、地点、主要人物/轮廓、情绪、光线、构图、镜头、材质和色彩。
 5. 不要包含血腥猎奇、色情、真实人物肖像、版权角色、API key、平台 ID 或本地路径。
 6. 默认横向 1.5k（1536x1024）、medium 质量的电影感氛围图；不要要求多张图。
+"""
+
+
+AMBIENT_IMAGE_SIMILARITY_SYSTEM = """你是 TRPG 氛围图去重判定器。你只判断候选图片 prompt 和最近成功氛围图是否会生成重复画面。
+
+输出 JSON，且只输出 JSON：
+{"score":0.0,"too_similar":false,"matched_recent_index":-1,"reason":"简短原因"}
+
+判定标准：
+1. 重点比较主要画面主体、剧情动作、场景位置、视觉重点和情绪是否重复。
+2. 同一故事的固定画风、材质、色彩、世界观风格、角色或地点连续性不应单独判为重复。
+3. 忽略模板结构词，例如 Image title、Scene prompt、Story visual style。
+4. 0.0 表示完全不同；0.5 表示有连续性但画面事件不同；0.8 以上表示视觉内容高度重复。
 """
 
 
@@ -368,11 +559,22 @@ def ambient_image_gate(
     config: AmbientImageConfig,
     *,
     trigger_override: str = "",
+    ignore_generation_in_progress: bool = False,
 ) -> dict[str, Any]:
     if not config.enabled:
         return {"ok": False, "available": False, "reason": "ambient_image_disabled"}
     if _combat_active(session):
         return {"ok": False, "available": False, "reason": "ambient_image_combat_active"}
+    scene = getattr(session, "scene", {}) or {}
+    state = dict(scene.get("ambient_image_state") or {})
+    in_progress = _ambient_generation_in_progress_state(state)
+    if not ignore_generation_in_progress and not in_progress.get("ready"):
+        return {
+            "ok": False,
+            "available": False,
+            "reason": "ambient_image_generation_in_progress",
+            **in_progress,
+        }
     if trigger_override:
         trigger = explicit_ambient_image_trigger(session, config, trigger_override)
     else:
@@ -449,6 +651,14 @@ def ambient_image_trigger(session: Any, config: AmbientImageConfig) -> dict[str,
             "min_turns": min_turns,
             "min_minutes": min_minutes,
         }
+    activity = _ambient_activity_state(session, config)
+    if not activity.get("ready"):
+        return {
+            "ok": False,
+            "available": False,
+            "reason": "ambient_image_activity_wait",
+            **activity,
+        }
     return {"ok": True, "trigger": "interval", "frequency": frequency}
 
 
@@ -458,10 +668,15 @@ def should_offer_ambient_image(
     mode: GameMode,
     *,
     player_message: str = "",
+    ignore_generation_in_progress: bool = False,
 ) -> bool:
     if mode != GameMode.NARRATIVE:
         return False
-    gate = ambient_image_gate(session, config)
+    gate = ambient_image_gate(
+        session,
+        config,
+        ignore_generation_in_progress=ignore_generation_in_progress,
+    )
     if not gate.get("ok"):
         return False
     if _looks_like_direct_ambient_image_request(player_message):
@@ -477,7 +692,11 @@ def should_offer_ambient_image(
     return bool(text.strip()) and not _looks_like_setup_only(text)
 
 
-def update_ambient_image_activity_state(session: Any) -> None:
+def update_ambient_image_activity_state(
+    session: Any,
+    actor: dict[str, str] | None = None,
+    player_message: str = "",
+) -> None:
     scene = getattr(session, "scene", {}) or {}
     now = utc_now_iso()
     state = dict(scene.get("ambient_image_state") or {})
@@ -490,6 +709,7 @@ def update_ambient_image_activity_state(session: Any) -> None:
         if interaction_count > 10 or _minutes_since(first_at) >= 5:
             state["warmup_started_at"] = now
     scene["ambient_image_state"] = state
+    _remember_recent_player_message(scene, actor or {}, player_message, now)
 
 
 def mark_ambient_image_trigger(session: Any, trigger: str) -> None:
@@ -562,6 +782,83 @@ def parse_prompt_model_output(text: str) -> dict[str, str]:
             pass
     cleaned = _short_text(text, 2400)
     return {"prompt": cleaned, "title": "氛围图"} if cleaned else {}
+
+
+def build_ambient_image_similarity_judge_prompt(
+    *,
+    candidate: dict[str, Any],
+    recent_prompts: list[dict[str, Any]],
+    threshold: float,
+) -> str:
+    lines = [
+        "请判断候选氛围图 prompt 是否与最近成功氛围图在视觉内容上过于相似。",
+        f"相似阈值：{float(threshold):.2f}",
+        "",
+        "候选：",
+        f"title={_short_text(candidate.get('title', ''), 100)}",
+        f"prompt={_short_text(candidate.get('prompt', ''), 1800)}",
+        "",
+        "最近成功氛围图：",
+    ]
+    for index, item in enumerate(recent_prompts):
+        title = _short_text(item.get("title", ""), 80)
+        prompt = _short_text(item.get("prompt", ""), 900)
+        lines.append(f"- index={index}; title={title}; prompt={prompt}")
+    lines.append("")
+    lines.append('只输出 JSON：{"score":0.0,"too_similar":false,"matched_recent_index":-1,"reason":"简短原因"}')
+    return "\n".join(lines)
+
+
+def parse_prompt_similarity_judgment(text: str) -> dict[str, Any]:
+    payload = _extract_json_object(text)
+    if not payload:
+        return {"ok": False, "reason": "similarity_judge_invalid_json"}
+    try:
+        data = json.loads(payload)
+    except json.JSONDecodeError:
+        return {"ok": False, "reason": "similarity_judge_invalid_json"}
+    score = _clamp_float(data.get("score", 1.0 if data.get("too_similar") else 0.0), 0.0, 1.0)
+    return {
+        "ok": True,
+        "score": score,
+        "too_similar": bool(data.get("too_similar", score >= 0.82)),
+        "matched_recent_index": _safe_int(data.get("matched_recent_index"), -1),
+        "reason": _short_text(data.get("reason", ""), 240),
+    }
+
+
+def _compose_prompt_result(
+    session: Any,
+    *,
+    raw_text: str,
+    prompt_model: str,
+    story_key: str,
+    style_seed: str,
+) -> dict[str, Any]:
+    parsed = parse_prompt_model_output(raw_text)
+    if not parsed.get("prompt"):
+        return {"ok": False, "available": False, "error": "ambient_image_prompt_empty"}
+    locked_story_style = _ambient_existing_story_style(session)
+    title = parsed.get("title", "氛围图")
+    prompt_model_prompt = parsed["prompt"]
+    effective_style = locked_story_style or parsed.get("style") or style_seed
+    image_prompt = compose_ambient_image_prompt(
+        title=title,
+        prompt=prompt_model_prompt,
+        style=effective_style,
+    )
+    if not image_prompt:
+        return {"ok": False, "available": False, "error": "ambient_image_prompt_empty"}
+    return {
+        "ok": True,
+        "prompt": image_prompt,
+        "prompt_model_prompt": prompt_model_prompt,
+        "title": title,
+        "style_seed": effective_style,
+        "story_key": story_key,
+        "prompt_model": prompt_model,
+        "raw_excerpt": redact_ambient_image_text(raw_text, limit=300),
+    }
 
 
 def compose_ambient_image_prompt(*, title: str, prompt: str, style: str) -> str:
@@ -674,6 +971,46 @@ def _ambient_warmup_state(state: dict[str, Any]) -> dict[str, Any]:
         "interaction_count": interaction_count,
         "warmup_started": True,
         "warmup_minutes_elapsed": elapsed,
+    }
+
+
+def _ambient_activity_state(session: Any, config: AmbientImageConfig) -> dict[str, Any]:
+    window_minutes = max(0, _safe_int(config.activity_window_minutes, 60))
+    min_messages = max(0, _safe_int(config.activity_min_messages, 10))
+    min_players = max(0, _safe_int(config.activity_min_players, 2))
+    if window_minutes <= 0 or (min_messages <= 0 and min_players <= 1):
+        return {"ready": True}
+
+    recent_messages = _recent_player_messages(session, window_minutes=window_minutes)
+    message_count = len(recent_messages)
+    player_ids = {
+        str(item.get("player_id") or "").strip()
+        for item in recent_messages
+        if str(item.get("player_id") or "").strip()
+    }
+    player_count = len(player_ids)
+    message_ready = min_messages <= 0 or message_count >= min_messages
+    player_ready = min_players <= 1 or player_count >= min_players
+    return {
+        "ready": message_ready and player_ready,
+        "activity_window_minutes": window_minutes,
+        "activity_message_count": message_count,
+        "activity_min_messages": min_messages,
+        "activity_player_count": player_count,
+        "activity_min_players": min_players,
+    }
+
+
+def _ambient_generation_in_progress_state(state: dict[str, Any]) -> dict[str, Any]:
+    started_at = str(state.get("generation_started_at", "") or "")
+    if not started_at:
+        return {"ready": True}
+    elapsed = _minutes_since(started_at)
+    return {
+        "ready": elapsed >= AMBIENT_IMAGE_GENERATION_IN_PROGRESS_MINUTES,
+        "generation_minutes_elapsed": elapsed,
+        "generation_minutes_required": AMBIENT_IMAGE_GENERATION_IN_PROGRESS_MINUTES,
+        "generation_started_at": started_at,
     }
 
 
@@ -888,6 +1225,126 @@ def _ambient_existing_story_style(session: Any) -> str:
     return ""
 
 
+def _remember_recent_player_message(
+    scene: dict[str, Any],
+    actor: dict[str, str],
+    player_message: str,
+    created_at: str,
+) -> None:
+    message = _short_text(player_message, 500)
+    if not message:
+        return
+    history = scene.get("ambient_image_recent_player_messages")
+    items = [dict(item) for item in history if isinstance(item, dict)] if isinstance(history, list) else []
+    items.append(
+        {
+            "created_at": created_at,
+            "player_id": _short_text(actor.get("player_id", ""), 120),
+            "display_name": _short_text(actor.get("display_name", ""), 120),
+            "message": message,
+        }
+    )
+    scene["ambient_image_recent_player_messages"] = items[-RECENT_PLAYER_MESSAGES_LIMIT:]
+
+
+def _recent_player_messages(
+    session: Any,
+    *,
+    window_minutes: int | None = None,
+    limit: int | None = None,
+) -> list[dict[str, Any]]:
+    scene = getattr(session, "scene", {}) or {}
+    history = scene.get("ambient_image_recent_player_messages")
+    if not isinstance(history, list):
+        return []
+    items: list[dict[str, Any]] = []
+    for item in history:
+        if not isinstance(item, dict):
+            continue
+        message = str(item.get("message") or "").strip()
+        if not message:
+            continue
+        if window_minutes is not None:
+            created_at = str(item.get("created_at") or "")
+            if _minutes_since(created_at) > max(0, int(window_minutes)):
+                continue
+        items.append(dict(item))
+    if limit is not None:
+        return items[-max(0, int(limit)):]
+    return items
+
+
+def _select_alternate_player_message(
+    session: Any,
+    *,
+    initial_player_id: str,
+    initial_message: str,
+) -> dict[str, Any]:
+    recent = _recent_player_messages(session, limit=RECENT_PLAYER_MESSAGES_LIMIT)
+    initial_player = str(initial_player_id or "").strip()
+    initial_text = str(initial_message or "").strip()
+    candidates = [
+        item
+        for item in reversed(recent)
+        if _is_suitable_ambient_source_message(str(item.get("message") or ""))
+        and str(item.get("message") or "").strip() != initial_text
+    ]
+    for item in candidates:
+        player_id = str(item.get("player_id") or "").strip()
+        if player_id and player_id != initial_player:
+            return item
+    return candidates[0] if candidates else {}
+
+
+def _is_suitable_ambient_source_message(message: str) -> bool:
+    text = str(message or "").strip()
+    if not text:
+        return False
+    lowered = text.lower()
+    low_signal = {
+        "好",
+        "好的",
+        "可以",
+        "同意",
+        "继续",
+        "嗯",
+        "ok",
+        "okay",
+        "yes",
+        "y",
+        "go on",
+        "continue",
+    }
+    if lowered in low_signal:
+        return False
+    if _looks_like_direct_ambient_image_request(text):
+        return False
+    return len(text) >= 4
+
+
+def _recent_ambient_prompts(session: Any, *, limit: int) -> list[dict[str, Any]]:
+    scene = getattr(session, "scene", {}) or {}
+    history = scene.get("ambient_image_prompts")
+    if not isinstance(history, list):
+        return []
+    items = [dict(item) for item in history if isinstance(item, dict)]
+    return items[-limit:]
+
+
+def _prompt_too_similar_result(similarity: dict[str, Any], *, retry_attempted: bool) -> dict[str, Any]:
+    return {
+        "ok": False,
+        "available": False,
+        "error": "ambient_image_prompt_too_similar",
+        "similarity": similarity.get("score", 0.0),
+        "similarity_threshold": similarity.get("similarity_threshold", 0.82),
+        "similar_to_recent_count": similarity.get("similar_to_recent_count", 0),
+        "matched_recent_index": similarity.get("matched_recent_index", -1),
+        "reason": similarity.get("reason", ""),
+        "retry_attempted": retry_attempted,
+    }
+
+
 def _minutes_since(iso_text: str) -> int:
     if not iso_text:
         return 10**9
@@ -925,6 +1382,18 @@ def _safe_int(value: object, default: int = 0) -> int:
         return int(value)
     except (TypeError, ValueError):
         return default
+
+
+def _clamp_int(value: object, minimum: int, maximum: int) -> int:
+    return min(max(_safe_int(value, minimum), minimum), maximum)
+
+
+def _clamp_float(value: object, minimum: float, maximum: float) -> float:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        parsed = minimum
+    return min(max(parsed, minimum), maximum)
 
 
 def _json_safe(value: Any) -> Any:

@@ -160,7 +160,7 @@
     "hint": "120"
   },
   "ambient_image_send_to_chat": {
-    "description": "生成成功后是否把图片随本轮回复发送。",
+    "description": "生成成功后是否把图片作为独立消息发送到聊天。常规自动氛围图在后台生成，不延迟正常 DM 回复，也不会附着到普通回复上。",
     "type": "bool",
     "hint": "true"
   },
@@ -168,6 +168,36 @@
     "description": "普通氛围图触发频率：low=30轮或40分钟；medium=10轮或20分钟；high=5轮或5分钟；二者先满足即可。",
     "type": "string",
     "hint": "medium"
+  },
+  "ambient_image_activity_window_minutes": {
+    "description": "常规自动氛围图的互动活跃度滑动窗口，单位分钟。0 表示关闭活跃度门禁。",
+    "type": "int",
+    "hint": "60"
+  },
+  "ambient_image_activity_min_messages": {
+    "description": "滑动窗口内至少需要的玩家发言总数；低于该值会跳过常规自动氛围图。0 表示不检查总发言数。",
+    "type": "int",
+    "hint": "10"
+  },
+  "ambient_image_activity_min_players": {
+    "description": "滑动窗口内至少需要的不同发言玩家数；低于该值会跳过常规自动氛围图。1 表示允许单人跑团。",
+    "type": "int",
+    "hint": "2"
+  },
+  "ambient_image_similarity_recent_count": {
+    "description": "生图前语义去重会比较最近多少次成功氛围图 prompt。默认 3，建议范围 1-10。",
+    "type": "int",
+    "hint": "3"
+  },
+  "ambient_image_similarity_threshold": {
+    "description": "语义相似度阈值，0.0-1.0；达到或超过该值时会尝试换近期玩家发言重试一次。",
+    "type": "string",
+    "hint": "0.82"
+  },
+  "ambient_image_similarity_retry_enabled": {
+    "description": "候选 prompt 与最近氛围图过于相似时，是否换另一条近期玩家发言重试一次。关闭后会直接跳过本次图。",
+    "type": "bool",
+    "hint": "true"
   },
   "ambient_image_prompt_template": {
     "description": "生成生图 prompt 前发送给 prompt 模型的模板。留空时使用内置模板；可使用 {story_style}、{story_moment}、{rationale}、{scene}、{memory_summary}、{characters}、{world_tags}、{player_message}、{output_defaults} 等占位符。",
