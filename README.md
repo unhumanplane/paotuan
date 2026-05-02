@@ -69,7 +69,7 @@ Honcho 接入是可选增强层，不替代本地 `GameSession` 和 `JsonGameRep
 
 氛围图片是可选视觉辅助，和 SVG 战棋地图是两套功能。SVG 地图用于位置、距离、视线和战场示意；氛围图只用于渲染剧情气氛、帮助玩家理解关键场景，不会写入任何权威游戏事实。
 
-当前接入目标是 PackyAPI `gpt-image-2`，默认走 `/v1/images/generations`，也可以切换到 `/v1/chat/completions`。图片 API key、base URL、模型、尺寸、质量、返回格式、频率和 prompt 模板都通过 AstrBot 插件配置设置，默认关闭。prompt 模型会先返回 `title`、`prompt`、`style`，插件再拼合成最终生图 prompt。完整配置、触发规则、隐私边界和费用风险见 [TRPG 氛围图片生成指南](docs/ambient-image-api.md)。
+当前接入目标是 PackyAPI `gpt-image-2`，默认走 `/v1/images/generations`，也可以切换到 `/v1/chat/completions`。图片 API key、base URL、模型、尺寸、质量、返回格式、频率、活跃度门禁、prompt 语义去重和 prompt 模板都通过 AstrBot 插件配置设置，默认关闭。prompt 模型会先返回 `title`、`prompt`、`style`，插件再拼合成最终生图 prompt；生成完成后会单独发送 `{title}` 和图片，不附着到普通 DM 回复上。完整配置、触发规则、安全边界、隐私边界和费用风险见 [TRPG 氛围图片生成指南](docs/ambient-image-api.md)。
 
 ## 当前能力一览
 
@@ -252,7 +252,7 @@ powershell -ExecutionPolicy Bypass -File scripts/handle-pr.ps1 -PrNumber 123 -Me
 - 规则书工具调用。
 - DM guidance / 安全策略。
 - Honcho 外置记忆的可选降级、ID 映射、prompt 注入和受控写入 payload。
-- 氛围图片 API 的关闭、缺 key、双 endpoint 解析、触发门禁、prompt 保存和 pending 图片输出。
+- 氛围图片 API 的关闭、缺 key、双 endpoint 解析、触发门禁、prompt 保存和独立图片发送。
 
 如果本地环境可用，建议运行：
 
