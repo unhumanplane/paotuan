@@ -2,13 +2,18 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any, Callable, Dict
+from typing import Any, Callable, Dict, List, Tuple
 
 from pydantic import BaseModel, Field
 
 from ..core.external_memory import audit_safe_external_memory_result
 from ..core.memory import MemoryCompressor
-from ..core.prompts import build_system_prompt, build_user_prompt
+from ..core.prompts import (
+    build_diagnostic_system_prompt,
+    build_system_prompt,
+    build_user_prompt,
+    prompt_component_chars,
+)
 from ..storage.json_repository import JsonGameRepository
 
 
@@ -19,7 +24,7 @@ class EstimateTokenUsageArgs(BaseModel):
     )
 
 
-ToolSpecsProvider = Callable[[Any], tuple[list[str], list[dict[str, Any]]]]
+ToolSpecsProvider = Callable[[Any], Tuple[List[str], List[Dict[str, Any]]]]
 
 
 class DiagnosticTools:
@@ -132,6 +137,49 @@ class DiagnosticTools:
         tool_names, tool_specs = self.tool_specs_provider(session.mode)
         tool_schema_text = json.dumps(tool_specs, ensure_ascii=False, separators=(",", ":"))
         system_prompt = build_system_prompt(session, session.mode, tool_names, tool_specs, actor=actor)
+        diagnostic_system_prompt = build_diagnostic_system_prompt(
+            session,
+            session.mode,
+            tool_names,
+            actor=actor,
+        )
+        component_chars = prompt_component_chars(
+            session,
+            session.mode,
+            tool_names,
+            actor=actor,
+        )
+        component_chars["system_prompt_chars"] = len(system_prompt)
+        component_chars["tool_schema_chars"] = len(tool_schema_text)
+        attributed_prompt_chars = sum(
+            value
+            for key, value in component_chars.items()
+            if key.endswith("_chars") and key not in {"system_prompt_chars", "tool_schema_chars"}
+            if isinstance(value, int)
+        )
+        component_chars["static_prompt_shell_chars"] = max(
+            0,
+            len(system_prompt) - attributed_prompt_chars,
+        )
+        diagnostic_component_chars = prompt_component_chars(
+            session,
+            session.mode,
+            tool_names,
+            actor=actor,
+            profile="diagnostic",
+        )
+        diagnostic_component_chars["system_prompt_chars"] = len(diagnostic_system_prompt)
+        diagnostic_component_chars["tool_schema_chars"] = len(tool_schema_text)
+        diagnostic_attributed_prompt_chars = sum(
+            value
+            for key, value in diagnostic_component_chars.items()
+            if key.endswith("_chars") and key not in {"system_prompt_chars", "tool_schema_chars"}
+            if isinstance(value, int)
+        )
+        diagnostic_component_chars["diagnostic_static_shell_chars"] = max(
+            0,
+            len(diagnostic_system_prompt) - diagnostic_attributed_prompt_chars,
+        )
         external_memory_budget = self._external_memory_budget(session, tool_names, tool_specs, actor)
         sample_user_prompt = build_user_prompt("示例玩家输入")
         total_chars = len(system_prompt) + len(sample_user_prompt) + len(tool_schema_text)
@@ -157,6 +205,7 @@ class DiagnosticTools:
             "mode": session.mode.value,
             "tool_count": len(tool_names),
             "system_prompt_chars": len(system_prompt),
+            "diagnostic_system_prompt_chars": len(diagnostic_system_prompt),
             "sample_user_prompt_chars": len(sample_user_prompt),
             "tool_schema_chars": len(tool_schema_text),
             "total_request_chars_excluding_chat_history": total_chars,
@@ -166,6 +215,12 @@ class DiagnosticTools:
                 total_with_external_memory_chars
             ),
             "external_memory": external_memory_budget,
+            "system_prompt_component_chars": component_chars,
+            "system_prompt_component_tokens": _component_token_estimates(component_chars),
+            "diagnostic_prompt_component_chars": diagnostic_component_chars,
+            "diagnostic_prompt_component_tokens": _component_token_estimates(
+                diagnostic_component_chars
+            ),
             "mode_tool_schema_costs": by_mode,
         }
 
@@ -294,3 +349,13 @@ def _rough_token_estimate(chars: int) -> Dict[str, int]:
         "heuristic": max(1, chars // 2),
         "high": max(1, int(chars / 1.5)),
     }
+
+
+def _component_token_estimates(component_chars: Dict[str, Any]) -> Dict[str, Any]:
+    estimates: Dict[str, Any] = {}
+    for key, value in component_chars.items():
+        if isinstance(value, int):
+            estimates[key] = _rough_token_estimate(value)["heuristic"] if value > 0 else 0
+        else:
+            estimates[key] = value
+    return estimates

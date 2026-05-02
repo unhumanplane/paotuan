@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Awaitable, Callable
+from typing import Any, Awaitable, Callable, Dict
 
 from pydantic import BaseModel, Field
 from pydantic.dataclasses import dataclass
@@ -39,7 +39,7 @@ from .spatial_tools import (
 from .turn_tools import TurnControlArgs, TurnTools
 
 
-ToolHandler = Callable[..., Awaitable[dict[str, Any]]]
+ToolHandler = Callable[..., Awaitable[Dict[str, Any]]]
 
 
 class EmptyArgs(BaseModel):

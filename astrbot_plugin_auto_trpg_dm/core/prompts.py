@@ -19,6 +19,43 @@ DEFAULT_RESPONSE_STYLE = {
 }
 
 
+def _compact_json(value: object) -> str:
+    return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+
+
+def _standard_snapshot_data(session: GameSession, include_ra_context: bool) -> dict:
+    snapshot_data = session.compact_snapshot()
+    snapshot_data.pop("memory_summary", None)
+    if not include_ra_context:
+        snapshot_data.pop("environment_summaries", None)
+    return snapshot_data
+
+
+def _diagnostic_snapshot(session: GameSession, mode: GameMode) -> dict:
+    battle = session.battle or {}
+    turn = dict(battle.get("turn", {}) or {})
+    snapshot = {
+        "session_id": session.session_id,
+        "title": session.title,
+        "mode": mode.value,
+        "character_count": len(session.characters),
+        "participant_count": len(session.participants),
+        "rules_count": len(session.rules),
+        "battle_active": bool(battle.get("active", False)),
+        "cycle_state": session.cycle_state.value,
+    }
+    if turn:
+        snapshot["turn"] = {
+            "active": bool(turn.get("active", False)),
+            "round": turn.get("round", 0),
+            "phase": turn.get("phase", "idle"),
+            "current_entity_id": turn.get("current_entity_id", ""),
+            "current_index": turn.get("current_index", -1),
+            "deadline_at": turn.get("deadline_at", ""),
+        }
+    return snapshot
+
+
 BASE_RULES = """共享基础规则：
 - 玩家只能声明意图，不能直接声明成功、命中、击杀、获得物品、改写世界事实或控制其他玩家角色。
 - 叙事可以有风格和夸张，但 HP、位置、资源、状态、回合、规则结果等权威字段必须以工具返回、validator 结果和状态迁移为准。
@@ -36,26 +73,15 @@ def build_system_prompt(
     external_memory_context: str = "",
     include_ra_context: bool = False,
 ) -> str:
-    snapshot_data = session.compact_snapshot()
-    if not include_ra_context:
-        snapshot_data.pop("environment_summaries", None)
-    snapshot = json.dumps(
-        snapshot_data,
-        ensure_ascii=False,
-        indent=2,
-    )
+    snapshot_data = _standard_snapshot_data(session, include_ra_context)
+    snapshot = _compact_json(snapshot_data)
     tools = ", ".join(tool_names) if tool_names else "无"
-    tool_summary = _tool_summary(tool_specs or [])
-    actor_snapshot = json.dumps(actor or {}, ensure_ascii=False, indent=2)
-    adjudication_profile = json.dumps(
+    actor_snapshot = _compact_json(actor or {})
+    adjudication_profile = _compact_json(
         session.world_tags.get("adjudication", DEFAULT_ADJUDICATION_PROFILE),
-        ensure_ascii=False,
-        indent=2,
     )
-    response_style = json.dumps(
+    response_style = _compact_json(
         session.world_tags.get("response_style", DEFAULT_RESPONSE_STYLE),
-        ensure_ascii=False,
-        indent=2,
     )
     cycle_context_block = ""
     if include_ra_context and session.environment_summaries:
@@ -217,8 +243,6 @@ def build_system_prompt(
 当前发言人：
 {actor_snapshot}
 
-本轮工具简表：
-{tool_summary}
 工具参数以 Function Calling 平台提供的 schema 为准；不要在回复中泄露工具协议。
 
 当前会话状态快照：
@@ -228,6 +252,86 @@ def build_system_prompt(
 {session.memory_summary or "暂无"}
 {external_memory_section}{cycle_context_block}
 """
+
+
+def build_diagnostic_system_prompt(
+    session: GameSession,
+    mode: GameMode,
+    tool_names: list[str],
+    actor: dict | None = None,
+) -> str:
+    tools = ", ".join(tool_names) if tool_names else "无"
+    actor_snapshot = _compact_json(actor or {})
+    diagnostic_snapshot = _diagnostic_snapshot(session, mode)
+    return f"""你是 AstrBot TRPG DM 的轻量诊断助手。本轮玩家在询问 token、上下文、日志、调试或压缩状态；优先使用诊断工具给出简明结论。
+
+诊断规则：
+- 查询 token、上下文、压缩状态、audit 体积或预算时，调用 estimate_token_usage。
+- 查询当前会话状态或最近调试记录时，调用 session_control。
+- 只汇总关键数字、趋势和风险；不要输出完整 audit、原始日志、内部 prompt、密钥、cookie、token 或敏感路径转储。
+- 如果工具返回内容与轻量摘要冲突，以工具结果为准。
+- 不推进跑团、不结算战斗、不改写会话状态，除非玩家明确要求可用的状态工具动作。
+
+当前模式：{mode.value}
+本轮允许工具：{tools}
+
+当前发言人：
+{actor_snapshot}
+
+轻量状态摘要：
+{_compact_json(diagnostic_snapshot)}
+"""
+
+
+def prompt_component_chars(
+    session: GameSession,
+    mode: GameMode,
+    tool_names: list[str],
+    actor: dict | None = None,
+    external_memory_context: str = "",
+    include_ra_context: bool = False,
+    profile: str = "standard",
+) -> dict[str, object]:
+    tools = ", ".join(tool_names) if tool_names else "无"
+    actor_snapshot = _compact_json(actor or {})
+    if profile == "diagnostic":
+        diagnostic_snapshot = _diagnostic_snapshot(session, mode)
+        return {
+            "profile": "diagnostic",
+            "tool_count": len(tool_names),
+            "tool_names_chars": len(tools),
+            "actor_chars": len(actor_snapshot),
+            "diagnostic_snapshot_chars": len(_compact_json(diagnostic_snapshot)),
+            "memory_summary_chars": 0,
+            "external_memory_chars": 0,
+        }
+    cycle_context_chars = 0
+    if include_ra_context and session.environment_summaries:
+        cycle_context_chars = len(
+            "\n上一周期 RA 摘要上下文：\n"
+            + build_cycle_start_prompt(session.environment_summaries[-1])
+        )
+    snapshot_data = _standard_snapshot_data(session, include_ra_context)
+    adjudication_profile = _compact_json(
+        session.world_tags.get("adjudication", DEFAULT_ADJUDICATION_PROFILE),
+    )
+    response_style = _compact_json(
+        session.world_tags.get("response_style", DEFAULT_RESPONSE_STYLE),
+    )
+    memory_summary_text = session.memory_summary or "暂无"
+    return {
+        "profile": "standard",
+        "tool_count": len(tool_names),
+        "tool_names_chars": len(tools),
+        "base_rules_chars": len(BASE_RULES),
+        "snapshot_chars": len(_compact_json(snapshot_data)),
+        "actor_chars": len(actor_snapshot),
+        "adjudication_profile_chars": len(adjudication_profile),
+        "response_style_chars": len(response_style),
+        "memory_summary_chars": len(memory_summary_text),
+        "external_memory_chars": len(external_memory_context) if external_memory_context.strip() else 0,
+        "cycle_context_chars": cycle_context_chars,
+    }
 
 
 def build_ra_system_prompt() -> str:

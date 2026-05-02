@@ -1147,9 +1147,19 @@ def test_diagnostic_prompt_budget_includes_external_memory_budget(tmp_path):
     result = asyncio.run(tools.estimate_token_usage("summary"))
 
     external = result["prompt_budget"]["external_memory"]
+    component_chars = result["prompt_budget"]["system_prompt_component_chars"]
+    diagnostic_component_chars = result["prompt_budget"]["diagnostic_prompt_component_chars"]
     assert external["included_in_budget"] is True
     assert external["configured_max_context_chars"] == 32
     assert external["estimated_section_chars"] >= 32
+    assert component_chars["profile"] == "standard"
+    assert component_chars["system_prompt_chars"] == result["prompt_budget"]["system_prompt_chars"]
+    assert component_chars["tool_schema_chars"] == result["prompt_budget"]["tool_schema_chars"]
+    assert "static_prompt_shell_chars" in component_chars
+    assert diagnostic_component_chars["profile"] == "diagnostic"
+    assert diagnostic_component_chars["system_prompt_chars"] == result["prompt_budget"]["diagnostic_system_prompt_chars"]
+    assert "diagnostic_static_shell_chars" in diagnostic_component_chars
+    assert result["prompt_budget"]["system_prompt_component_tokens"]["snapshot_chars"] >= 0
     assert (
         result["prompt_budget"]["total_request_chars_with_external_memory_budget"]
         > result["prompt_budget"]["total_request_chars_excluding_chat_history"]
@@ -1380,6 +1390,34 @@ def test_router_injects_external_memory_context_into_prompt(tmp_path):
     assert observed_result["context_chars"] == len("玩家偏好：先谈判再动手。")
     assert "context" not in observed_result
     assert "content" not in observed_result
+
+
+def test_router_uses_lightweight_prompt_for_diagnostic_request(tmp_path):
+    repository = JsonGameRepository(tmp_path / "data")
+    external_memory = FakeRouterExternalMemory(
+        context_result={
+            "ok": True,
+            "available": True,
+            "context": "玩家偏好：这段外部记忆不应进入轻量诊断 prompt。",
+        }
+    )
+    astr_context = FakeAstrContext("当前 token 粗估约 100。")
+    router = IntentRouter(
+        astr_context=astr_context,
+        repository=repository,
+        tool_registry=FakeToolRegistry(),
+        external_memory=external_memory,
+    )
+
+    reply = asyncio.run(router.handle_message(FakeEvent("分析当前 token 消耗")))
+    system_prompt = astr_context.calls[0]["system_prompt"]
+
+    assert "token" in reply
+    assert "AstrBot TRPG DM" in system_prompt
+    assert "estimate_token_usage" in system_prompt
+    assert "外部 Honcho 辅助记忆" not in system_prompt
+    assert "这段外部记忆不应进入轻量诊断 prompt" not in system_prompt
+    assert external_memory.context_calls == []
 
 
 def test_router_external_memory_context_failure_is_audited_and_does_not_block(tmp_path):

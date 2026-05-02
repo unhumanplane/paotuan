@@ -16,7 +16,12 @@ from .memory import MemoryCompressor
 from .modes import GameModeStateMachine
 from .models import GameMode, utc_now_iso
 from .plugin_log import get_plugin_logger
-from .prompts import build_system_prompt, build_user_prompt
+from .prompts import (
+    build_diagnostic_system_prompt,
+    build_system_prompt,
+    build_user_prompt,
+    prompt_component_chars,
+)
 from ..storage.json_repository import JsonGameRepository
 from ..tools.registry import ToolRegistry
 from ..tools.turn_tools import TurnTools
@@ -232,9 +237,10 @@ class IntentRouter:
                 message=message,
                 provider_id=provider_id,
             )
+            diagnostic_prompt = _is_diagnostic_request(message)
             external_memory_context = ""
             external_memory_context_chars = 0
-            if self.external_memory:
+            if self.external_memory and not diagnostic_prompt:
                 external_result = await self.external_memory.context_for_prompt(session, actor, message)
                 if external_result.get("ok") and external_result.get("available"):
                     external_memory_context = str(external_result.get("context", "") or "")
@@ -256,18 +262,61 @@ class IntentRouter:
                             "result": audit_safe_external_memory_result(external_result),
                         },
                     )
-            system_prompt = build_system_prompt(
+            if diagnostic_prompt:
+                system_prompt = build_diagnostic_system_prompt(
+                    session,
+                    mode,
+                    tool_names,
+                    actor=actor,
+                )
+            else:
+                system_prompt = build_system_prompt(
+                    session,
+                    mode,
+                    tool_names,
+                    tool_specs,
+                    actor=actor,
+                    external_memory_context=external_memory_context,
+                    include_ra_context=self.ra_enabled,
+                )
+            tool_schema_text = json.dumps(tool_specs, ensure_ascii=False, separators=(",", ":"))
+            prompt_profile = "diagnostic" if diagnostic_prompt else "standard"
+            component_chars = prompt_component_chars(
                 session,
                 mode,
                 tool_names,
-                tool_specs,
                 actor=actor,
                 external_memory_context=external_memory_context,
                 include_ra_context=self.ra_enabled,
+                profile=prompt_profile,
             )
-            tool_schema_text = json.dumps(tool_specs, ensure_ascii=False, separators=(",", ":"))
+            component_chars["system_prompt_chars"] = len(system_prompt)
+            component_chars["tool_schema_chars"] = len(tool_schema_text)
+            attributed_prompt_chars = sum(
+                value
+                for key, value in component_chars.items()
+                if key.endswith("_chars") and key not in {"system_prompt_chars", "tool_schema_chars"}
+                if isinstance(value, int)
+            )
+            shell_key = (
+                "diagnostic_static_shell_chars"
+                if prompt_profile == "diagnostic"
+                else "static_prompt_shell_chars"
+            )
+            component_chars[shell_key] = max(0, len(system_prompt) - attributed_prompt_chars)
+            component_tokens = _component_token_estimates(component_chars)
+            component_chars_text = json.dumps(
+                component_chars,
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
+            component_tokens_text = json.dumps(
+                component_tokens,
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
             get_plugin_logger().info(
-                "router_prepared session=%s mode=%s actor=%s tools=%s snapshot_chars=%s system_prompt_chars=%s tool_schema_chars=%s external_memory_chars=%s rough_total_tokens=%s",
+                "router_prepared session=%s mode=%s actor=%s tools=%s snapshot_chars=%s system_prompt_chars=%s tool_schema_chars=%s external_memory_chars=%s prompt_profile=%s prompt_component_chars=%s prompt_component_tokens=%s rough_total_tokens=%s",
                 session_id,
                 mode.value,
                 actor.get("player_id", ""),
@@ -276,7 +325,10 @@ class IntentRouter:
                 len(system_prompt),
                 len(tool_schema_text),
                 external_memory_context_chars,
-                max(1, (len(system_prompt) + len(tool_schema_text)) // 2),
+                prompt_profile,
+                component_chars_text,
+                component_tokens_text,
+                _rough_token_count(len(system_prompt) + len(tool_schema_text)),
             )
 
         loop_result = await self._run_llm_tool_loop(
@@ -2558,6 +2610,50 @@ def _audit_safe_tool_results(tool_results: list[dict[str, Any]]) -> list[dict[st
 
 def _contains_any_term(text: str, terms: tuple[str, ...]) -> bool:
     return any(term and term.lower() in text for term in terms)
+
+
+def _rough_token_count(chars: int) -> int:
+    if chars <= 0:
+        return 0
+    return max(1, chars // 2)
+
+
+def _rough_token_estimate(chars: int) -> dict[str, int]:
+    if chars <= 0:
+        return {"low": 0, "heuristic": 0, "high": 0}
+    return {
+        "low": max(1, chars // 4),
+        "heuristic": _rough_token_count(chars),
+        "high": max(1, int(chars / 1.5)),
+    }
+
+
+def _component_token_estimates(component_chars: dict[str, object]) -> dict[str, object]:
+    estimates: dict[str, object] = {}
+    for key, value in component_chars.items():
+        if isinstance(value, int):
+            estimates[key] = _rough_token_estimate(value)["heuristic"]
+        else:
+            estimates[key] = value
+    return estimates
+
+
+DIAGNOSTIC_REQUEST_TERMS = (
+    "token",
+    "tokens",
+    "上下文",
+    "压缩",
+    "调试",
+    "debug",
+    "日志",
+    "消耗",
+    "预算",
+    "audit",
+)
+
+
+def _is_diagnostic_request(message: str) -> bool:
+    return _contains_any_term(str(message or "").strip().lower(), DIAGNOSTIC_REQUEST_TERMS)
 
 
 def _turn_entity_label(session: Any, entity_id: str) -> str:

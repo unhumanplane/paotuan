@@ -1361,6 +1361,11 @@ CARD_OVERPOWERED_TERMS = (
     "创世神",
     "造物主",
     "世界意志",
+    "裂变反应堆",
+    "裸露的裂变反应堆",
+    "稳定裂变反应",
+    "可控临界",
+    "可控裂变",
 )
 
 CARD_FACT_INJECTION_TERMS = (
@@ -1527,10 +1532,53 @@ BALANCE_STRATEGIC_ASSET_TERMS = (
     "歼星",
     "灭星",
     "行星毁灭",
+    "铀",
+    "铀235",
+    "铀-235",
+    "u235",
+    "u-235",
+    "浓缩铀",
+    "贫铀",
+    "核燃料",
+    "核材料",
+    "放射性同位素",
+    "裂变",
+    "核裂变",
+    "链式反应",
+    "反应堆",
+    "核反应堆",
+    "裂变反应堆",
+    "临界态",
+    "可控临界",
+    "可控裂变",
+    "criticality",
+    "critical mass",
+    "fissile",
+    "uranium",
     "nuke",
     "nuclear",
     "icbm",
     "orbital cannon",
+)
+
+BALANCE_NUCLEAR_BODY_TERMS = (
+    "身体含铀",
+    "矿物元素含铀",
+    "由铀组成",
+    "铀元素结晶",
+    "铀矿",
+    "u235石头人",
+    "u-235石头人",
+    "铀235石头人",
+    "铀-235石头人",
+    "浓缩铀石头人",
+    "身体是铀",
+    "体内有铀",
+    "体内含铀",
+    "核燃料身体",
+    "核材料身体",
+    "裂变反应堆",
+    "裸露的裂变反应堆",
 )
 
 BALANCE_STRATEGIC_CONTROL_TERMS = (
@@ -1803,6 +1851,8 @@ def _extract_character_levels(text: str) -> List[int]:
 
 def _looks_like_strategic_asset_claim(text: str) -> bool:
     lowered = str(text or "").lower()
+    if _contains_any_text(lowered, BALANCE_NUCLEAR_BODY_TERMS):
+        return True
     return _contains_any_text(lowered, BALANCE_STRATEGIC_ASSET_TERMS) and _contains_any_text(lowered, BALANCE_STRATEGIC_CONTROL_TERMS)
 
 
@@ -1931,11 +1981,58 @@ def _looks_like_post_start_power_grant(text: str) -> bool:
     lowered = str(text or "").lower()
     if _contains_any_text(lowered, ("失败", "未能", "没有成功", "尝试", "代价", "临时", "消耗", "伤势")) and not _contains_any_text(
         lowered,
-        ("已获得", "从此拥有", "永久", "核心资源", "愿力"),
+        ("已获得", "获得了", "从此拥有", "现在可以", "已激活", "永久", "核心资源", "愿力"),
     ):
         return False
+    nuclear_or_mutation_upgrade = (
+        _contains_any_text(
+            lowered,
+            (
+                "已获得",
+                "获得了",
+                "从此拥有",
+                "现在可以",
+                "已激活",
+                "稳定掌握",
+                "永久",
+                "进化成",
+                "突变成",
+                "转化为",
+            ),
+        )
+        and _contains_any_text(
+            lowered,
+            (
+                "裂变",
+                "核裂变",
+                "链式反应",
+                "反应堆",
+                "可控临界",
+                "可控裂变",
+                "辐射合成",
+                "辐射能量",
+                "辐照微生物",
+                "大量有用基因",
+                "更强更有效的有益进化",
+                "远超哺乳类",
+                "神经传导速度",
+                "智力",
+                "感知进化",
+                "分离氦气",
+                "储存氦气",
+                "飞起来",
+                "释放脉冲",
+                "脉冲能力",
+                "形态跃迁",
+                "细胞层级重组",
+                "能量代谢转换",
+                "感知边界",
+            ),
+        )
+    )
     return (
-        _contains_any_text(lowered, ("愿力", "核心资源", "传奇壮举", "传奇能力", "魔网权限", "虚空印记", "虚空德鲁伊", "提夫林"))
+        nuclear_or_mutation_upgrade
+        or _contains_any_text(lowered, ("愿力", "核心资源", "传奇壮举", "传奇能力", "魔网权限", "虚空印记", "虚空德鲁伊", "提夫林"))
         or (
             _contains_any_text(lowered, ("全世界", "全球", "所有时空", "全位面"))
             and _contains_any_text(lowered, ("流星雨", "神迹", "投影", "感激", "愿力"))
@@ -2212,6 +2309,17 @@ def post_start_world_fact_overreach_result(
             "魔网化身",
             "半神",
             "神格",
+            "裂变反应堆",
+            "可控临界",
+            "可控裂变",
+            "辐射合成代谢",
+            "辐射能量",
+            "大量有用基因",
+            "更强更有效的有益进化",
+            "形态跃迁",
+            "细胞层级重组",
+            "能量代谢转换",
+            "感知边界的消融",
         ),
     )
     faction_takeover = _contains_any_text(
