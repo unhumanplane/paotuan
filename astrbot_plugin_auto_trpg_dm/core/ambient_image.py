@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+from functools import partial
 import ipaddress
 import json
 import os
@@ -12,7 +13,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import Any, Callable, Dict, List, Tuple
 
 
 AMBIENT_IMAGE_API_MODES = {"images", "chat_completions"}
@@ -45,9 +46,9 @@ class AmbientImageConfig:
     similarity_retry_enabled: bool = True
 
 
-HttpPost = Callable[[str, dict[str, str], dict[str, Any], int], tuple[int, dict[str, str], bytes]]
-HttpGet = Callable[[str, dict[str, str], int], tuple[int, dict[str, str], bytes]]
-DnsResolver = Callable[[str, int], list[str]]
+HttpPost = Callable[[str, Dict[str, str], Dict[str, Any], int], Tuple[int, Dict[str, str], bytes]]
+HttpGet = Callable[[str, Dict[str, str], int], Tuple[int, Dict[str, str], bytes]]
+DnsResolver = Callable[[str, int], List[str]]
 
 
 class AmbientImageSizeLimitError(Exception):
@@ -64,6 +65,14 @@ class AmbientImageSizeLimitError(Exception):
         self.actual_bytes = actual_bytes
         self.content_length = content_length
         super().__init__(source)
+
+
+class AmbientImageUrlBlockedError(Exception):
+    def __init__(self, url: str, check: dict[str, Any]):
+        self.url = url
+        self.error = str(check.get("error") or "ambient_image_url_blocked")
+        self.reason = str(check.get("reason") or "")
+        super().__init__(self.reason or self.error)
 
 
 class AmbientImageProvider:
@@ -90,7 +99,7 @@ class AmbientImageProvider:
         timeout = max(1, int(self.config.timeout_seconds or 120))
         try:
             return await asyncio.wait_for(
-                asyncio.to_thread(self._generate_sync, prompt),
+                _run_sync_in_thread(self._generate_sync, prompt),
                 timeout=timeout + 5,
             )
         except TimeoutError:
@@ -282,6 +291,14 @@ class AmbientImageProvider:
             status, headers, image_bytes = self.http_get(image_url, {"Accept": "image/*"}, timeout)
         except AmbientImageSizeLimitError as exc:
             return {**_too_large_result(exc), "url": image_url}
+        except AmbientImageUrlBlockedError as exc:
+            return {
+                "ok": False,
+                "available": False,
+                "error": exc.error,
+                "reason": exc.reason,
+                "url": exc.url,
+            }
         except Exception as exc:
             return {
                 "ok": False,
@@ -493,16 +510,37 @@ def _http_post_json(url: str, headers: dict[str, str], payload: dict[str, Any], 
 
 
 def _http_get(url: str, headers: dict[str, str], timeout: int) -> tuple[int, dict[str, str], bytes]:
-    request = urllib.request.Request(url, headers=headers, method="GET")
-    with urllib.request.urlopen(request, timeout=timeout) as response:
-        response_headers = dict(response.headers.items())
-        response_body = _read_limited_body(
-            response,
-            headers=response_headers,
-            max_bytes=MAX_AMBIENT_IMAGE_BYTES,
-            source="download",
-        )
-        return int(response.status), response_headers, response_body
+    current_url = url
+    redirects = 0
+    while True:
+        request = urllib.request.Request(current_url, headers=headers, method="GET")
+        try:
+            with _NO_REDIRECT_OPENER.open(request, timeout=timeout) as response:
+                response_headers = dict(response.headers.items())
+                response_body = _read_limited_body(
+                    response,
+                    headers=response_headers,
+                    max_bytes=MAX_AMBIENT_IMAGE_BYTES,
+                    source="download",
+                )
+                return int(response.status), response_headers, response_body
+        except urllib.error.HTTPError as exc:
+            status = int(getattr(exc, "code", 0) or 0)
+            response_headers = _headers_dict(getattr(exc, "headers", None))
+            location = _headers_get(response_headers, "location")
+            if status not in {301, 302, 303, 307, 308} or not location:
+                raise
+            redirects += 1
+            if redirects > 3:
+                raise AmbientImageUrlBlockedError(
+                    current_url,
+                    {"error": "ambient_image_redirect_blocked", "reason": "too_many_redirects"},
+                ) from exc
+            next_url = urllib.parse.urljoin(current_url, location)
+            url_check = validate_ambient_image_url(next_url)
+            if not url_check.get("ok"):
+                raise AmbientImageUrlBlockedError(next_url, url_check) from exc
+            current_url = next_url
 
 
 def _response_error_excerpt(body: bytes) -> str:
@@ -515,6 +553,12 @@ def _headers_get(headers: dict[str, str], key: str) -> str:
         if str(item_key).lower() == lowered:
             return str(value)
     return ""
+
+
+def _headers_dict(headers: Any) -> dict[str, str]:
+    if not headers or not hasattr(headers, "items"):
+        return {}
+    return {str(key): str(value) for key, value in headers.items()}
 
 
 def _content_length(headers: dict[str, str]) -> int | None:
@@ -622,3 +666,19 @@ def _safe_image_extension(value: str) -> str:
 
 def _elapsed_ms(started: float) -> int:
     return int((time.monotonic() - started) * 1000)
+
+
+async def _run_sync_in_thread(func: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
+    to_thread = getattr(asyncio, "to_thread", None)
+    if callable(to_thread):
+        return await to_thread(func, *args, **kwargs)
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(None, partial(func, *args, **kwargs))
+
+
+class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+_NO_REDIRECT_OPENER = urllib.request.build_opener(_NoRedirectHandler)

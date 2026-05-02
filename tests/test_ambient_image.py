@@ -1,6 +1,9 @@
+from __future__ import annotations
+
 import asyncio
 import base64
 import json
+import urllib.error
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -223,6 +226,40 @@ def test_image_url_blocks_private_dns_resolution_before_download():
     assert result["error"] == "ambient_image_url_blocked"
     assert result["reason"] == "resolved_ip_blocked"
     assert calls == []
+
+
+def test_image_download_blocks_private_redirect_before_follow(monkeypatch):
+    calls = []
+
+    def fake_post(url, headers, payload, timeout):
+        body = {"data": [{"url": "https://cdn.example/image.png"}]}
+        return 200, {"content-type": "application/json"}, json.dumps(body).encode()
+
+    class RedirectOpener:
+        def open(self, request, timeout):
+            calls.append(request.full_url)
+            raise urllib.error.HTTPError(
+                request.full_url,
+                302,
+                "Found",
+                {"Location": "http://127.0.0.1/private.png"},
+                None,
+            )
+
+    monkeypatch.setattr(ambient_image_module, "_NO_REDIRECT_OPENER", RedirectOpener())
+    provider = AmbientImageProvider(
+        AmbientImageConfig(enabled=True, api_key_env="PACKY_KEY"),
+        environ={"PACKY_KEY": "secret"},
+        http_post=fake_post,
+        dns_resolver=_public_dns_resolver,
+    )
+
+    result = asyncio.run(provider.generate("跳转到本机"))
+
+    assert result["ok"] is False
+    assert result["error"] == "ambient_image_url_blocked"
+    assert result["url"] == "http://127.0.0.1/private.png"
+    assert calls == ["https://cdn.example/image.png"]
 
 
 def test_image_download_rejects_content_length_over_limit(monkeypatch):
