@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from typing import Any
 
 from .models import GameMode, GameSession
 
@@ -17,6 +18,492 @@ DEFAULT_RESPONSE_STYLE = {
     "target": "默认 120-360 个中文字符；复杂战斗/轮次裁定最多 600 字。",
     "shape": "一句氛围描写 + 明确裁定/结果 + 一个下一步钩子。",
 }
+
+
+def _compact_json(value: object) -> str:
+    return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+
+
+def _standard_snapshot_data(session: GameSession, include_ra_context: bool) -> dict:
+    snapshot_data = session.compact_snapshot()
+    snapshot_data.pop("memory_summary", None)
+    if not include_ra_context:
+        snapshot_data.pop("environment_summaries", None)
+    return snapshot_data
+
+
+def _diagnostic_snapshot(session: GameSession, mode: GameMode) -> dict:
+    battle = session.battle or {}
+    turn = dict(battle.get("turn", {}) or {})
+    snapshot = {
+        "session_id": session.session_id,
+        "title": session.title,
+        "mode": mode.value,
+        "character_count": len(session.characters),
+        "participant_count": len(session.participants),
+        "rules_count": len(session.rules),
+        "battle_active": bool(battle.get("active", False)),
+        "cycle_state": session.cycle_state.value,
+    }
+    if turn:
+        snapshot["turn"] = {
+            "active": bool(turn.get("active", False)),
+            "round": turn.get("round", 0),
+            "phase": turn.get("phase", "idle"),
+            "current_entity_id": turn.get("current_entity_id", ""),
+            "current_index": turn.get("current_index", -1),
+            "deadline_at": turn.get("deadline_at", ""),
+        }
+    return snapshot
+
+
+def snapshot_projection_shadow_stats(
+    session: GameSession,
+    mode: GameMode,
+    message: str = "",
+    actor: dict | None = None,
+    include_ra_context: bool = False,
+) -> dict[str, object]:
+    """Estimate a future intent-specific snapshot projection without changing prompts."""
+    full_snapshot = _standard_snapshot_data(session, include_ra_context)
+    projection_profile = _snapshot_projection_profile(session, mode, message)
+    projected_snapshot = _project_snapshot_for_profile(
+        full_snapshot,
+        session,
+        projection_profile,
+        actor or {},
+    )
+    full_text = _compact_json(full_snapshot)
+    projected_text = _compact_json(projected_snapshot)
+    saved_chars = max(0, len(full_text) - len(projected_text))
+    return {
+        "shadow_only": True,
+        "profile": projection_profile,
+        "full_snapshot_chars": len(full_text),
+        "projected_snapshot_chars": len(projected_text),
+        "saved_snapshot_chars": saved_chars,
+        "rough_saved_snapshot_tokens": _rough_token_estimate(saved_chars),
+        "saved_snapshot_pct": round(saved_chars / len(full_text) * 100, 2) if full_text else 0,
+        "full_top_sections": _top_section_chars(full_snapshot),
+        "projected_top_sections": _top_section_chars(projected_snapshot),
+        "dropped_top_level_keys": sorted(
+            set(full_snapshot.keys()) - set(projected_snapshot.keys())
+        ),
+        "changed_top_level_keys": _changed_top_level_keys(full_snapshot, projected_snapshot),
+        "scene_dropped_keys": _dropped_mapping_keys(
+            full_snapshot.get("scene"),
+            projected_snapshot.get("scene"),
+        ),
+        "safety_kept_keys": [
+            key
+            for key in (
+                "session_id",
+                "mode",
+                "character_count",
+                "participants",
+                "player_character_map",
+                "battle",
+                "cycle_state",
+            )
+            if key in projected_snapshot
+        ],
+    }
+
+
+def _snapshot_projection_profile(session: GameSession, mode: GameMode, message: str) -> str:
+    text = str(message or "").strip().lower()
+    if _contains_any(text, SNAPSHOT_DIAGNOSTIC_TERMS):
+        return "diagnostic"
+    if mode == GameMode.TACTICAL or bool((session.battle or {}).get("active")):
+        if _looks_like_snapshot_state_query(text):
+            return "state_query"
+        if _contains_any(text, SNAPSHOT_CHARACTER_PROFILE_TERMS):
+            return "character_profile"
+        if _contains_any(text, SNAPSHOT_RULE_QUERY_TERMS):
+            return "rule_query"
+        return "tactical_action"
+    if mode == GameMode.CHARACTER_CREATION:
+        return "character_profile"
+    if mode == GameMode.RULE_AUTHORING:
+        return "rule_query"
+    return "narrative"
+
+
+def _looks_like_snapshot_state_query(text: str) -> bool:
+    if not text:
+        return False
+    if _contains_any(text, SNAPSHOT_ACTION_TERMS):
+        return False
+    return _contains_any(text, SNAPSHOT_EXPLICIT_STATE_QUERY_TERMS) or _contains_any(
+        text,
+        SNAPSHOT_STATE_QUERY_TERMS,
+    )
+
+
+def _project_snapshot_for_profile(
+    snapshot: dict[str, Any],
+    session: GameSession,
+    profile: str,
+    actor: dict[str, Any],
+) -> dict[str, Any]:
+    if profile == "diagnostic":
+        return _diagnostic_snapshot(session, session.mode)
+    projected = dict(snapshot)
+    projected["scene"] = _project_scene(snapshot.get("scene", {}), profile)
+    projected["characters"] = _project_characters(
+        snapshot.get("characters", []),
+        session,
+        actor,
+        profile,
+    )
+    projected["battle"] = _project_battle(snapshot.get("battle", {}), profile)
+    projected["rules"] = _project_rules(snapshot.get("rules", {}), profile)
+    return projected
+
+
+def _project_scene(scene: Any, profile: str) -> Any:
+    if not isinstance(scene, dict):
+        return scene
+    keep_keys = (
+        "summary",
+        "current_conflict",
+        "last_resolution",
+        "last_player_intent",
+        "immediate_hooks",
+        "_post_game",
+        "_encounter_ended_at",
+    )
+    projected: dict[str, Any] = {
+        key: scene[key]
+        for key in keep_keys
+        if key in scene and scene.get(key) not in (None, "", [], {})
+    }
+    if scene.get("last_map_svg"):
+        projected["last_map_svg"] = _project_map_ref(scene.get("last_map_svg"))
+    recent_limit = 2 if profile in {"state_query", "character_profile"} else 4
+    recent_events = _project_recent_events(scene.get("_recent_narrative_events"), recent_limit)
+    if recent_events:
+        projected["recent_events"] = recent_events
+    if scene.get("_dm_paused"):
+        projected["_dm_paused"] = True
+        if scene.get("_dm_pause_reason"):
+            projected["_dm_pause_reason"] = _short_text(scene.get("_dm_pause_reason"), 180)
+    return projected
+
+
+def _project_map_ref(value: Any) -> Any:
+    if not isinstance(value, dict):
+        return _short_text(value, 160)
+    return {
+        key: value.get(key)
+        for key in ("type", "title", "name")
+        if value.get(key)
+    }
+
+
+def _project_recent_events(value: Any, limit: int) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    events: list[dict[str, Any]] = []
+    for item in value[-max(0, limit) :]:
+        if not isinstance(item, dict):
+            continue
+        events.append(
+            {
+                "at": item.get("at", ""),
+                "player_id": item.get("player_id", ""),
+                "character_id": item.get("character_id", ""),
+                "message": _short_text(item.get("message", ""), 100),
+                "outcome": _short_text(item.get("outcome", ""), 140),
+            }
+        )
+    return events
+
+
+def _project_characters(
+    characters: Any,
+    session: GameSession,
+    actor: dict[str, Any],
+    profile: str,
+) -> Any:
+    if not isinstance(characters, list):
+        return characters
+    if profile in {"state_query", "rule_query"}:
+        return characters
+    relevant_ids = _relevant_character_ids(session, actor)
+    if profile == "narrative" and not bool((session.battle or {}).get("active")):
+        relevant_ids.update(item.get("id", "") for item in characters if isinstance(item, dict))
+    relevant: list[dict[str, Any]] = []
+    roster: list[dict[str, Any]] = []
+    for character in characters:
+        if not isinstance(character, dict):
+            continue
+        character_id = str(character.get("id", ""))
+        if character_id in relevant_ids:
+            relevant.append(character)
+        else:
+            roster.append(_minimal_character(character))
+    if not relevant and characters:
+        first = characters[0]
+        if isinstance(first, dict):
+            relevant.append(first)
+            roster = [
+                _minimal_character(item)
+                for item in characters[1:]
+                if isinstance(item, dict)
+            ]
+    return {"relevant": relevant, "roster": roster}
+
+
+def _minimal_character(character: dict[str, Any]) -> dict[str, Any]:
+    tag_layers = dict(character.get("tag_layers") or {})
+    minimal = {
+        "id": character.get("id", ""),
+        "name": character.get("name", ""),
+        "player_id": character.get("player_id", ""),
+        "summary": _short_text(character.get("summary", ""), 120),
+        "tag_count": character.get("tag_count", 0),
+    }
+    status = tag_layers.get("status")
+    if status:
+        minimal["status"] = status
+    return minimal
+
+
+def _relevant_character_ids(session: GameSession, actor: dict[str, Any]) -> set[str]:
+    ids: set[str] = set()
+    actor_player_id = str(actor.get("player_id", "") or "")
+    if actor_player_id:
+        bound_id = str((session.player_character_map or {}).get(actor_player_id, "") or "")
+        if bound_id:
+            ids.add(bound_id)
+    if session.active_character_id:
+        ids.add(str(session.active_character_id))
+    battle = session.battle or {}
+    turn = dict(battle.get("turn") or {})
+    for candidate in (
+        battle.get("turn_entity_id", ""),
+        turn.get("current_entity_id", ""),
+    ):
+        if str(candidate or "").strip():
+            ids.add(str(candidate))
+    entities = dict(((battle.get("grid") or {}).get("entities") or {}))
+    for entity_id in list(ids):
+        entity = dict(entities.get(entity_id, {}) or {})
+        tags = dict(entity.get("tags") or {})
+        character_id = str(tags.get("character_id", "") or "")
+        if character_id:
+            ids.add(character_id)
+    if actor_player_id:
+        for entity_id, entity in entities.items():
+            tags = dict((entity or {}).get("tags") or {})
+            if str(tags.get("player_id", "") or "") == actor_player_id:
+                ids.add(str(entity_id))
+                if tags.get("character_id"):
+                    ids.add(str(tags.get("character_id")))
+    return {item for item in ids if item}
+
+
+def _project_battle(battle: Any, profile: str) -> Any:
+    if not isinstance(battle, dict):
+        return battle
+    if not battle.get("active"):
+        return {"active": False}
+    projected = json.loads(_compact_json(battle))
+    turn = projected.get("turn")
+    if isinstance(turn, dict) and "recent_turn_log" in turn:
+        limit = 6 if profile == "state_query" else 4
+        turn["recent_turn_log"] = list(turn.get("recent_turn_log") or [])[-limit:]
+    if profile in {"character_profile", "narrative"}:
+        grid = projected.get("grid")
+        if isinstance(grid, dict) and isinstance(grid.get("entities"), list):
+            grid["entities"] = [_minimal_entity(entity) for entity in grid["entities"]]
+    return projected
+
+
+def _minimal_entity(entity: Any) -> Any:
+    if not isinstance(entity, dict):
+        return entity
+    return {
+        key: entity.get(key)
+        for key in ("id", "name", "faction", "x", "y", "size", "blocks_move", "blocks_los")
+        if key in entity and entity.get(key) not in (None, "", [], {})
+    }
+
+
+def _project_rules(rules: Any, profile: str) -> Any:
+    if not isinstance(rules, dict) or profile in {"tactical_action", "rule_query"}:
+        return rules
+    projected = {
+        "count": rules.get("count", 0),
+        "level_1": rules.get("level_1", {}),
+    }
+    if rules.get("hint"):
+        projected["hint"] = rules.get("hint")
+    return projected
+
+
+def _top_section_chars(snapshot: dict[str, Any], limit: int = 8) -> list[dict[str, object]]:
+    sections = [
+        {
+            "key": key,
+            "chars": len(_compact_json(value)),
+        }
+        for key, value in snapshot.items()
+    ]
+    return sorted(sections, key=lambda item: int(item["chars"]), reverse=True)[:limit]
+
+
+def _changed_top_level_keys(full: dict[str, Any], projected: dict[str, Any]) -> list[str]:
+    changed: list[str] = []
+    for key in sorted(set(full.keys()).intersection(projected.keys())):
+        if len(_compact_json(full.get(key))) != len(_compact_json(projected.get(key))):
+            changed.append(key)
+    return changed
+
+
+def _dropped_mapping_keys(full_value: Any, projected_value: Any) -> list[str]:
+    if not isinstance(full_value, dict) or not isinstance(projected_value, dict):
+        return []
+    return sorted(set(full_value.keys()) - set(projected_value.keys()))
+
+
+def _short_text(value: Any, limit: int) -> str:
+    text = str(value or "")
+    if len(text) <= limit:
+        return text
+    return text[: max(0, limit - 3)] + "..."
+
+
+def _rough_token_estimate(chars: int) -> dict[str, int]:
+    if chars <= 0:
+        return {"low": 0, "heuristic": 0, "high": 0}
+    return {
+        "low": max(1, chars // 4),
+        "heuristic": max(1, chars // 2),
+        "high": max(1, int(chars / 1.5)),
+    }
+
+
+def _contains_any(text: str, terms: tuple[str, ...]) -> bool:
+    return any(term and term in text for term in terms)
+
+
+SNAPSHOT_DIAGNOSTIC_TERMS = (
+    "token",
+    "tokens",
+    "上下文",
+    "压缩",
+    "调试",
+    "debug",
+    "日志",
+    "消耗",
+    "预算",
+    "audit",
+)
+SNAPSHOT_STATE_QUERY_TERMS = (
+    "状态",
+    "战况",
+    "情况",
+    "局势",
+    "地图情况",
+    "当前位置",
+    "谁行动",
+    "轮到谁",
+    "我在哪里",
+    "我现在",
+    "现在怎样",
+    "当前剧情",
+    "剧情汇总",
+    "发生了什么",
+    "有没有被",
+    "看到敌人了吗",
+    "确认敌人位置",
+    "敌人位置",
+    "敌人在哪",
+    "敌方位置",
+    "status",
+)
+SNAPSHOT_EXPLICIT_STATE_QUERY_TERMS = (
+    "当前情况",
+    "现在的情况",
+    "我现在的情况",
+    "当前局势",
+    "汇总一下剧情",
+    "剧情汇总",
+    "当前剧情",
+    "地图情况",
+    "当前位置",
+    "轮到谁",
+    "谁行动",
+    "我在哪里",
+)
+SNAPSHOT_ACTION_TERMS = (
+    "攻击",
+    "射击",
+    "瞄准",
+    "砍",
+    "刺",
+    "施法",
+    "施放",
+    "移动",
+    "走到",
+    "靠近",
+    "冲",
+    "撤退",
+    "躲避",
+    "闪避",
+    "搜索",
+    "调查",
+    "检定",
+    "骰",
+    "警戒",
+    "拦截",
+    "治疗",
+    "喝药",
+    "使用",
+    "打开",
+    "拾取",
+    "潜行",
+    "劝说",
+    "谈判",
+    "说服",
+    "爬",
+    "跳",
+    "跑",
+    "追",
+    "躲",
+    "挡",
+    "格挡",
+    "attack",
+    "shoot",
+    "cast",
+    "move",
+    "dash",
+    "dodge",
+    "hide",
+    "search",
+)
+SNAPSHOT_CHARACTER_PROFILE_TERMS = (
+    "角色",
+    "人物卡",
+    "角色卡",
+    "建卡",
+    "创建角色",
+    "补充",
+    "装备",
+    "能力",
+    "职业",
+)
+SNAPSHOT_RULE_QUERY_TERMS = (
+    "规则",
+    "怎么判定",
+    "怎么骰",
+    "dnd",
+    "优势",
+    "劣势",
+    "命中",
+)
 
 
 BASE_RULES = """共享基础规则：
@@ -36,26 +523,15 @@ def build_system_prompt(
     external_memory_context: str = "",
     include_ra_context: bool = False,
 ) -> str:
-    snapshot_data = session.compact_snapshot()
-    if not include_ra_context:
-        snapshot_data.pop("environment_summaries", None)
-    snapshot = json.dumps(
-        snapshot_data,
-        ensure_ascii=False,
-        indent=2,
-    )
+    snapshot_data = _standard_snapshot_data(session, include_ra_context)
+    snapshot = _compact_json(snapshot_data)
     tools = ", ".join(tool_names) if tool_names else "无"
-    tool_summary = _tool_summary(tool_specs or [])
-    actor_snapshot = json.dumps(actor or {}, ensure_ascii=False, indent=2)
-    adjudication_profile = json.dumps(
+    actor_snapshot = _compact_json(actor or {})
+    adjudication_profile = _compact_json(
         session.world_tags.get("adjudication", DEFAULT_ADJUDICATION_PROFILE),
-        ensure_ascii=False,
-        indent=2,
     )
-    response_style = json.dumps(
+    response_style = _compact_json(
         session.world_tags.get("response_style", DEFAULT_RESPONSE_STYLE),
-        ensure_ascii=False,
-        indent=2,
     )
     cycle_context_block = ""
     if include_ra_context and session.environment_summaries:
@@ -135,6 +611,7 @@ def build_system_prompt(
 16. 裁定时按四档处理：
     - 合理且无风险：可以直接让动作成立，并可用 update_scene 或 update_character_tags 记录轻量事实。
     - 合理但有风险、对抗、消耗或不确定性：必须调用已有规则 execute_rule；缺少规则时先 register_rule，再 execute_rule。
+    - 会让角色获得大量、过剩、长期或源源不断资源储备的行动，必须先检定并给出边界；不能只靠 update_character_tags 写成既成事实。
     - 勉强可行但超出常规能力：允许尝试，但要给出高难度、代价、资源消耗、暴露风险或部分成功；不能白送收益。
     - 不可能、违反已知事实、越权控制他人角色、凭空获得重要物品/情报/胜利、绕过战棋物理限制：明确拒绝或要求玩家改写目标。
 17. 不要把“整活”和“成功”混为一谈。离谱设定可以成为风格、传闻、缺陷或需要检定的尝试；只有通过裁定、规则或工具验证后才成为有效结果。
@@ -172,15 +649,19 @@ def build_system_prompt(
     如果需要完整规则列表、旧规则详情或确认入参，再调用 list_rules；执行规则时使用 level_1.names 或 level_2.name 中的规则名。
 28. 开局顺序是硬约束：必须先有背景设定，再有剧本、角色卡和战场。
     背景未完成时，不得随机生成角色卡、开场剧情、地点遭遇、NPC 或战棋地图；但可以生成、补全、整理“背景设定本身”。
-    如果玩家要求“你来定背景/生成背景/补全背景/随机几个背景供选择”，你可以主动提出 2-5 个简短方案；若玩家要求直接采用或语义明显是在创建背景，调用 update_world_tags 写入背景要素。
+    如果玩家要求“你来定背景/生成背景/补全背景/来一个故事/来一个剧本/随机几个背景供选择”，以引导推进为主：不要反复追问可选细节，先调用 update_world_tags 写入最小可用背景，再用一句话提示下一步建卡或开场。
+    若玩家已经给出粗略题材、势力、地点或冲突，例如“战锤40K极限战士清剿基因窃取者”，这已经足够写入背景；缺的 tone/location/ruleset 由你保守补全。
     最小背景至少包含两类要素，例如 genre/tone/starting_premise/location/factions/ruleset；不要用空 patch 或纯风格词敷衍。
 29. 当玩家要求“开始游戏/开场/进入剧情/正式开局”时，必须先判断内容是否足够，并优先调用 start_game。
     start_game 需要你提交：简短开场介绍、玩家行动引导、至少三段式的跌宕剧情骨架、当前开场场景 patch。
     剧情骨架要预备导火索、升级/压力、反转或重大抉择、高潮方向；不要只写一句“冒险开始了”。
     start_game 成功后，背景、题材、主线、核心剧本锁定。开场后玩家不能再要求“改成另一个剧本/换背景/改主线/改题材”。
     必须明确区分两个阶段：开场前可以建卡/补卡/调整角色设定；开场后既有角色卡锁定。
-    开场后仍允许新玩家加入并创建新的合理角色卡，但老玩家不能改名、改摘要、补职业/能力/装备/默认战斗行为、重绑或换卡。
+    开场后仍允许新玩家加入并创建新的合理角色卡；老玩家不能改名、改摘要、补职业/能力/装备/默认战斗行为、重绑或换卡。
+    例外：若当前发言人的原绑定角色已被状态/战棋事实确认死亡、退休或永久退场，可以创建并绑定一个合理后继角色重新加入；旧角色保持原结局，不得覆盖、复活式重绑或借新卡改写旧后果。
+    后继角色必须用当前场景可解释的方式入场，强度贴近队伍基线，不能自带能立即解决当前冲突的关键资源、军团、神格或超规格装备。
     开场后只能用 update_character_tags 记录伤势、生命/资源消耗、临时状态、最近行动结果等场内状态；不要把玩家的“我有/我会/我已经成功”写成角色卡字段。
+    开场后不要把一次行动直接写成“资源过剩、足够支撑数周高耗能、源源不断供给、自给自足”等长期资源优势；这类收益需要 execute_rule 裁定并保持有限、可消耗、可被场景压力打断。
     你可以根据玩家行动、检定结果和战场状态动态推进或微调后续剧情，但这种调整必须是现有剧本的自然后果，不是接受玩家对主线的场外改写。
 30. 对玩家行动要判断“场内时间”是否合理：
     - 不允许把多个连续动作压缩成同一瞬间，例如同时侦查、移动、开锁、攻击、治疗、搜刮和撤退；
@@ -192,7 +673,8 @@ def build_system_prompt(
     - 背景设定只要至少包含两类有效要素，就 update_world_tags；不要追问完整世界观。
     - 开场前，建卡/绑定只要有角色名或身份方向，并能确定当前发言人，就 create_character 或 bind_player_character；外貌、性格、长传记不是必填。
     - 开场前，角色补充只要能归入身份、能力、装备、战术、状态、关系或备注，就 update_character_tags；不要因为格式不完美而反复追问。
-    - 开场后，只有新玩家能创建新角色；既有角色的身份、能力、装备、战术和关系不再补写。若玩家补强旧角色卡，说明已锁定，并让其通过场内行动、检定、训练或获得物品来推进。
+    - 开场后，只有新玩家能创建新角色；若老玩家原绑定角色已确认死亡、退休或永久退场，也可以创建合理后继角色重新加入。既有角色的身份、能力、装备、战术和关系不再补写。
+    - 若死亡/退场未被状态或战棋事实确认，不要直接给老玩家换卡；只问一个最小澄清，或先用 update_character_tags/status 记录已确认的死亡/退场事实。若只是补强旧角色卡，说明已锁定，并让其通过场内行动、检定、训练或获得物品来推进。
     - 所有建卡和补卡都要先做合理性判断；无敌、无限资源、自动成功、反复刷新动作经济、直接写死敌人或剧情真相的设定不成立。
     - 新角色卡必须和同团既有角色保持同一级别水平；不能比队伍明显更高等级，不能自带核弹、战略导弹、轨道炮、军团/舰队、神格、传奇权能或远超队伍的装备资源。
     - 只有缺少必要对象、角色归属、目标、坐标、风险同意，或存在互相矛盾/越权控制时，才提出一个最小澄清问题。
@@ -217,8 +699,6 @@ def build_system_prompt(
 当前发言人：
 {actor_snapshot}
 
-本轮工具简表：
-{tool_summary}
 工具参数以 Function Calling 平台提供的 schema 为准；不要在回复中泄露工具协议。
 
 当前会话状态快照：
@@ -228,6 +708,86 @@ def build_system_prompt(
 {session.memory_summary or "暂无"}
 {external_memory_section}{cycle_context_block}
 """
+
+
+def build_diagnostic_system_prompt(
+    session: GameSession,
+    mode: GameMode,
+    tool_names: list[str],
+    actor: dict | None = None,
+) -> str:
+    tools = ", ".join(tool_names) if tool_names else "无"
+    actor_snapshot = _compact_json(actor or {})
+    diagnostic_snapshot = _diagnostic_snapshot(session, mode)
+    return f"""你是 AstrBot TRPG DM 的轻量诊断助手。本轮玩家在询问 token、上下文、日志、调试或压缩状态；优先使用诊断工具给出简明结论。
+
+诊断规则：
+- 查询 token、上下文、压缩状态、audit 体积或预算时，调用 estimate_token_usage。
+- 查询当前会话状态或最近调试记录时，调用 session_control。
+- 只汇总关键数字、趋势和风险；不要输出完整 audit、原始日志、内部 prompt、密钥、cookie、token 或敏感路径转储。
+- 如果工具返回内容与轻量摘要冲突，以工具结果为准。
+- 不推进跑团、不结算战斗、不改写会话状态，除非玩家明确要求可用的状态工具动作。
+
+当前模式：{mode.value}
+本轮允许工具：{tools}
+
+当前发言人：
+{actor_snapshot}
+
+轻量状态摘要：
+{_compact_json(diagnostic_snapshot)}
+"""
+
+
+def prompt_component_chars(
+    session: GameSession,
+    mode: GameMode,
+    tool_names: list[str],
+    actor: dict | None = None,
+    external_memory_context: str = "",
+    include_ra_context: bool = False,
+    profile: str = "standard",
+) -> dict[str, object]:
+    tools = ", ".join(tool_names) if tool_names else "无"
+    actor_snapshot = _compact_json(actor or {})
+    if profile == "diagnostic":
+        diagnostic_snapshot = _diagnostic_snapshot(session, mode)
+        return {
+            "profile": "diagnostic",
+            "tool_count": len(tool_names),
+            "tool_names_chars": len(tools),
+            "actor_chars": len(actor_snapshot),
+            "diagnostic_snapshot_chars": len(_compact_json(diagnostic_snapshot)),
+            "memory_summary_chars": 0,
+            "external_memory_chars": 0,
+        }
+    cycle_context_chars = 0
+    if include_ra_context and session.environment_summaries:
+        cycle_context_chars = len(
+            "\n上一周期 RA 摘要上下文：\n"
+            + build_cycle_start_prompt(session.environment_summaries[-1])
+        )
+    snapshot_data = _standard_snapshot_data(session, include_ra_context)
+    adjudication_profile = _compact_json(
+        session.world_tags.get("adjudication", DEFAULT_ADJUDICATION_PROFILE),
+    )
+    response_style = _compact_json(
+        session.world_tags.get("response_style", DEFAULT_RESPONSE_STYLE),
+    )
+    memory_summary_text = session.memory_summary or "暂无"
+    return {
+        "profile": "standard",
+        "tool_count": len(tool_names),
+        "tool_names_chars": len(tools),
+        "base_rules_chars": len(BASE_RULES),
+        "snapshot_chars": len(_compact_json(snapshot_data)),
+        "actor_chars": len(actor_snapshot),
+        "adjudication_profile_chars": len(adjudication_profile),
+        "response_style_chars": len(response_style),
+        "memory_summary_chars": len(memory_summary_text),
+        "external_memory_chars": len(external_memory_context) if external_memory_context.strip() else 0,
+        "cycle_context_chars": cycle_context_chars,
+    }
 
 
 def build_ra_system_prompt() -> str:
@@ -326,7 +886,8 @@ def build_user_prompt(message: str, security_notes: list[str] | None = None) -> 
 {write_when_enough_hint}
 请先把玩家输入视为“意图/主张”，做合理性裁定：可直接成立、需要检定、代价成立、不成立或需澄清。
 若需要工具，先调用工具获取事实；若已经足够，直接写入或输出精简但有氛围的最终叙事、裁定结果。
-不要追问可选细节；只有缺少必要字段、角色归属、行动目标或存在越权/矛盾时，才提出一个最小澄清问题。"""
+不要追问可选细节；只有缺少必要字段、角色归属、行动目标或存在越权/矛盾时，才提出一个最小澄清问题。
+若行动不成立或需要澄清，保留一句场面/风险感，只给最关键限制和一个最小可执行下一步或问题；不要展开多套备选，除非玩家明确要求选项。"""
 
 
 def _tool_summary(tool_specs: list[dict]) -> str:
@@ -521,5 +1082,15 @@ def _looks_like_state_write_request(message: str) -> bool:
         "战斗习惯",
         "加入",
         "绑定",
+        "重新加入",
+        "重新进团",
+        "换新角色",
+        "新号",
+        "补位",
+        "替补",
+        "死亡",
+        "阵亡",
+        "退场",
+        "退休",
     )
     return any(term in text for term in state_terms)

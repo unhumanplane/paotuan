@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import re
+from collections.abc import Mapping
 from typing import Any
 
 from .ambient_image import AmbientImageConfig, AmbientImageProvider
@@ -17,7 +19,13 @@ from .memory import MemoryCompressor
 from .modes import GameModeStateMachine
 from .models import GameMode, utc_now_iso
 from .plugin_log import get_plugin_logger
-from .prompts import build_system_prompt, build_user_prompt
+from .prompts import (
+    build_diagnostic_system_prompt,
+    build_system_prompt,
+    build_user_prompt,
+    prompt_component_chars,
+    snapshot_projection_shadow_stats,
+)
 from ..storage.json_repository import JsonGameRepository
 from ..tools.ambient_image_tools import (
     AmbientImageTools,
@@ -55,6 +63,203 @@ class ToolLoopResult:
         self.tool_results = tool_results or []
 
 
+LLM_USAGE_FIELDS = (
+    "prompt_tokens",
+    "input_tokens",
+    "completion_tokens",
+    "output_tokens",
+    "total_tokens",
+    "cache_read_input_tokens",
+    "cache_creation_input_tokens",
+    "cached_tokens",
+    "cached_input_tokens",
+    "cached_content_token_count",
+    "prompt_cache_hit_tokens",
+    "prompt_cache_miss_tokens",
+    "prompt_token_count",
+    "candidates_token_count",
+    "total_token_count",
+)
+LLM_USAGE_CONTAINER_FIELDS = (
+    "usage",
+    "token_usage",
+    "usage_metadata",
+    "response_metadata",
+    "llm_output",
+    "raw_response",
+    "response",
+)
+LLM_USAGE_DETAIL_FIELDS = {
+    "prompt_tokens_details": {"cached_tokens": "cached_tokens"},
+    "input_tokens_details": {"cached_tokens": "cached_tokens"},
+    "input_token_details": {"cached_tokens": "cached_tokens"},
+    "cache": {
+        "read_input_tokens": "cache_read_input_tokens",
+        "creation_input_tokens": "cache_creation_input_tokens",
+    },
+}
+
+
+def _extract_llm_usage_summary(response: Any) -> dict[str, int | float]:
+    summary: dict[str, int | float] = {}
+    visited: set[int] = set()
+
+    def collect(value: Any, depth: int = 0) -> None:
+        if value is None or depth > 5:
+            return
+        value_id = id(value)
+        if value_id in visited:
+            return
+        visited.add(value_id)
+        mapping = _as_usage_mapping(value)
+        if not mapping:
+            return
+        for field in LLM_USAGE_FIELDS:
+            number = _usage_number(mapping.get(field))
+            if number is not None and field not in summary:
+                summary[field] = number
+        for detail_key, fields in LLM_USAGE_DETAIL_FIELDS.items():
+            detail = _as_usage_mapping(mapping.get(detail_key))
+            if not detail:
+                continue
+            for source_key, target_key in fields.items():
+                number = _usage_number(detail.get(source_key))
+                if number is not None and target_key not in summary:
+                    summary[target_key] = number
+        for container_key in LLM_USAGE_CONTAINER_FIELDS:
+            if container_key in mapping:
+                collect(mapping.get(container_key), depth + 1)
+
+    collect(response)
+    _add_cache_hit_ratio(summary)
+    return summary
+
+
+def _as_usage_mapping(value: Any) -> Mapping[str, Any] | None:
+    if isinstance(value, Mapping):
+        return value
+    if value is None or isinstance(value, (str, bytes, int, float, bool)):
+        return None
+    mapping: dict[str, Any] = {}
+    for field in (*LLM_USAGE_FIELDS, *LLM_USAGE_CONTAINER_FIELDS, *LLM_USAGE_DETAIL_FIELDS.keys()):
+        try:
+            if hasattr(value, field):
+                mapping[field] = getattr(value, field)
+        except Exception:
+            continue
+    return mapping or None
+
+
+def _usage_number(value: Any) -> int | float | None:
+    if isinstance(value, bool) or value is None:
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return value
+    if isinstance(value, str):
+        stripped = value.strip()
+        if stripped.isdigit():
+            return int(stripped)
+        try:
+            return float(stripped)
+        except ValueError:
+            return None
+    return None
+
+
+def _add_cache_hit_ratio(summary: dict[str, int | float]) -> None:
+    input_tokens = _first_usage_number(
+        summary,
+        ("prompt_tokens", "input_tokens", "prompt_token_count"),
+    )
+    cached_tokens = _first_usage_number(
+        summary,
+        (
+            "cached_tokens",
+            "cache_read_input_tokens",
+            "cached_input_tokens",
+            "cached_content_token_count",
+            "prompt_cache_hit_tokens",
+        ),
+    )
+    if input_tokens and cached_tokens is not None:
+        summary["cache_hit_ratio_pct"] = round(cached_tokens / input_tokens * 100, 2)
+
+
+def _first_usage_number(
+    mapping: Mapping[str, int | float],
+    keys: tuple[str, ...],
+) -> int | float | None:
+    for key in keys:
+        value = mapping.get(key)
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            return value
+    return None
+
+
+def _llm_request_shape(kwargs: Mapping[str, Any]) -> dict[str, Any]:
+    contexts = kwargs.get("contexts") or []
+    if isinstance(contexts, (list, tuple)):
+        contexts_count = len(contexts)
+    elif contexts:
+        contexts_count = 1
+    else:
+        contexts_count = 0
+    return {
+        "prompt_chars": _safe_char_count(kwargs.get("prompt")),
+        "system_prompt_chars": _safe_char_count(kwargs.get("system_prompt")),
+        "contexts_count": contexts_count,
+        "contexts_chars": _safe_char_count(contexts),
+        "tool_enabled": bool(kwargs.get("func_tool") is not None or kwargs.get("tools") is not None),
+    }
+
+
+def _safe_char_count(value: Any) -> int:
+    if value is None:
+        return 0
+    if isinstance(value, str):
+        return len(value)
+    try:
+        return len(json.dumps(value, ensure_ascii=False, separators=(",", ":"), default=str))
+    except Exception:
+        return len(str(value))
+
+
+def _short_hash(value: Any) -> str:
+    if value is None:
+        text = ""
+    elif isinstance(value, str):
+        text = value
+    else:
+        try:
+            text = json.dumps(value, ensure_ascii=False, separators=(",", ":"), default=str)
+        except Exception:
+            text = str(value)
+    return hashlib.sha256(text.encode("utf-8", errors="replace")).hexdigest()[:12]
+
+
+def _log_llm_usage_summary(response: Any, kwargs: Mapping[str, Any]) -> None:
+    try:
+        usage = _extract_llm_usage_summary(response)
+        shape = _llm_request_shape(kwargs)
+        usage_text = json.dumps(usage, ensure_ascii=False, separators=(",", ":"))
+        get_plugin_logger().info(
+            "llm_usage chat_provider=%s prompt_chars=%s system_prompt_chars=%s system_prompt_hash=%s contexts_count=%s contexts_chars=%s tool_enabled=%s usage_available=%s usage=%s",
+            kwargs.get("chat_provider_id", ""),
+            shape["prompt_chars"],
+            shape["system_prompt_chars"],
+            _short_hash(kwargs.get("system_prompt")),
+            shape["contexts_count"],
+            shape["contexts_chars"],
+            shape["tool_enabled"],
+            bool(usage),
+            usage_text,
+        )
+    except Exception:
+        return
+
+
 class IntentRouter:
     def __init__(
         self,
@@ -66,6 +271,8 @@ class IntentRouter:
         ambient_image_provider: AmbientImageProvider | None = None,
         max_steps: int = 8,
         ra_enabled: bool = False,
+        ra_model_provider: str = "default",
+        ra_max_tokens: int = 2048,
     ):
         self.astr_context = astr_context
         self.repository = repository
@@ -77,6 +284,8 @@ class IntentRouter:
         self.memory_compressor = MemoryCompressor()
         self.max_steps = max_steps
         self.ra_enabled = ra_enabled
+        self.ra_model_provider = ra_model_provider
+        self.ra_max_tokens = ra_max_tokens
         self._session_locks: dict[str, asyncio.Lock] = {}
         self._session_turn_locks: dict[str, asyncio.Lock] = {}
 
@@ -242,9 +451,10 @@ class IntentRouter:
                 message=message,
                 provider_id=provider_id,
             )
+            diagnostic_prompt = _is_diagnostic_request(message)
             external_memory_context = ""
             external_memory_context_chars = 0
-            if self.external_memory:
+            if self.external_memory and not diagnostic_prompt:
                 external_result = await self.external_memory.context_for_prompt(session, actor, message)
                 if external_result.get("ok") and external_result.get("available"):
                     external_memory_context = str(external_result.get("context", "") or "")
@@ -266,27 +476,88 @@ class IntentRouter:
                             "result": audit_safe_external_memory_result(external_result),
                         },
                     )
-            system_prompt = build_system_prompt(
+            if diagnostic_prompt:
+                system_prompt = build_diagnostic_system_prompt(
+                    session,
+                    mode,
+                    tool_names,
+                    actor=actor,
+                )
+            else:
+                system_prompt = build_system_prompt(
+                    session,
+                    mode,
+                    tool_names,
+                    tool_specs,
+                    actor=actor,
+                    external_memory_context=external_memory_context,
+                    include_ra_context=self.ra_enabled,
+                )
+            tool_schema_text = json.dumps(tool_specs, ensure_ascii=False, separators=(",", ":"))
+            prompt_profile = "diagnostic" if diagnostic_prompt else "standard"
+            component_chars = prompt_component_chars(
                 session,
                 mode,
                 tool_names,
-                tool_specs,
                 actor=actor,
                 external_memory_context=external_memory_context,
                 include_ra_context=self.ra_enabled,
+                profile=prompt_profile,
             )
-            tool_schema_text = json.dumps(tool_specs, ensure_ascii=False, separators=(",", ":"))
+            component_chars["system_prompt_chars"] = len(system_prompt)
+            component_chars["tool_schema_chars"] = len(tool_schema_text)
+            attributed_prompt_chars = sum(
+                value
+                for key, value in component_chars.items()
+                if key.endswith("_chars") and key not in {"system_prompt_chars", "tool_schema_chars"}
+                if isinstance(value, int)
+            )
+            shell_key = (
+                "diagnostic_static_shell_chars"
+                if prompt_profile == "diagnostic"
+                else "static_prompt_shell_chars"
+            )
+            component_chars[shell_key] = max(0, len(system_prompt) - attributed_prompt_chars)
+            component_tokens = _component_token_estimates(component_chars)
+            component_chars_text = json.dumps(
+                component_chars,
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
+            component_tokens_text = json.dumps(
+                component_tokens,
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
+            projection_shadow = snapshot_projection_shadow_stats(
+                session,
+                mode,
+                message,
+                actor=actor,
+                include_ra_context=self.ra_enabled,
+            )
+            projection_shadow_text = json.dumps(
+                projection_shadow,
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
             get_plugin_logger().info(
-                "router_prepared session=%s mode=%s actor=%s tools=%s snapshot_chars=%s system_prompt_chars=%s tool_schema_chars=%s external_memory_chars=%s rough_total_tokens=%s",
+                "router_prepared session=%s mode=%s actor=%s tools=%s snapshot_chars=%s system_prompt_chars=%s system_prompt_hash=%s tool_schema_chars=%s tool_schema_hash=%s external_memory_chars=%s prompt_profile=%s prompt_component_chars=%s prompt_component_tokens=%s snapshot_projection_shadow=%s rough_total_tokens=%s",
                 session_id,
                 mode.value,
                 actor.get("player_id", ""),
                 ",".join(tool_names),
                 self.memory_compressor.snapshot_chars(session),
                 len(system_prompt),
+                _short_hash(system_prompt),
                 len(tool_schema_text),
+                _short_hash(tool_schema_text),
                 external_memory_context_chars,
-                max(1, (len(system_prompt) + len(tool_schema_text)) // 2),
+                prompt_profile,
+                component_chars_text,
+                component_tokens_text,
+                projection_shadow_text,
+                _rough_token_count(len(system_prompt) + len(tool_schema_text)),
             )
 
         loop_result = await self._run_llm_tool_loop(
@@ -442,7 +713,10 @@ class IntentRouter:
                 )
             if cycle_end_requested(tool_trace):
                 if self.ra_enabled:
-                    ra_result = await RecorderAgent(self._llm_generate, provider_id).run_cycle_resolution(latest_session)
+                    ra_chat_provider = provider_id if (self.ra_model_provider or "default") == "default" else self.ra_model_provider
+                    ra_result = await RecorderAgent(
+                        self._llm_generate, ra_chat_provider, max_tokens=self.ra_max_tokens
+                    ).run_cycle_resolution(latest_session)
                     if ra_result.get("ok"):
                         completion_record = complete_cycle_with_ra(latest_session, ra_result["summary"])
                         self.repository.save_session(latest_session)
@@ -984,11 +1258,16 @@ class IntentRouter:
                 repaired["opening_intro"] = repaired.pop("opening")
             if "player_guidance" not in repaired and repaired.get("guidance"):
                 repaired["player_guidance"] = repaired.pop("guidance")
+            if "campaign_outline" in repaired:
+                repaired["campaign_outline"] = _coerce_campaign_outline(repaired.get("campaign_outline"))
             if "campaign_outline" not in repaired:
                 for alias in ("plot_skeleton", "plot_outline", "outline", "story_outline"):
                     if repaired.get(alias):
                         repaired["campaign_outline"] = _coerce_campaign_outline(repaired.pop(alias))
                         break
+            if "scene_patch" in repaired and not isinstance(repaired.get("scene_patch"), dict):
+                scene_value = repaired.get("scene_patch")
+                repaired["scene_patch"] = {"summary": str(scene_value)} if str(scene_value or "").strip() else {}
             if "scene_patch" not in repaired:
                 for alias in ("initial_scene", "scene", "current_scene"):
                     if repaired.get(alias):
@@ -1036,7 +1315,7 @@ class IntentRouter:
 
     async def _llm_generate_once(self, **kwargs: Any) -> Any:
         try:
-            return await self.astr_context.llm_generate(**kwargs)
+            return await self._llm_generate_raw(kwargs)
         except json.JSONDecodeError as exc:
             get_plugin_logger().warning(
                 "llm_tool_arguments_json_error fallback_to_text error=%s",
@@ -1050,7 +1329,7 @@ class IntentRouter:
                 + "\n\n刚才工具参数 JSON 无法解析。请不要再调用工具，直接用简短自然语言说明本轮无法完成工具结算，并让玩家重发更短动作。"
             )
             try:
-                return await self.astr_context.llm_generate(**retry_kwargs)
+                return await self._llm_generate_raw(retry_kwargs)
             except Exception:
                 raise exc
         except TypeError as exc:
@@ -1059,7 +1338,7 @@ class IntentRouter:
             retry_kwargs = dict(kwargs)
             retry_kwargs["tools"] = retry_kwargs.pop("func_tool")
             try:
-                return await self.astr_context.llm_generate(**retry_kwargs)
+                return await self._llm_generate_raw(retry_kwargs)
             except json.JSONDecodeError as json_exc:
                 get_plugin_logger().warning(
                     "llm_tool_arguments_json_error fallback_to_text error=%s",
@@ -1073,11 +1352,16 @@ class IntentRouter:
                     + "\n\n刚才工具参数 JSON 无法解析。请不要再调用工具，直接用简短自然语言说明本轮无法完成工具结算，并让玩家重发更短动作。"
                 )
                 try:
-                    return await self.astr_context.llm_generate(**text_retry_kwargs)
+                    return await self._llm_generate_raw(text_retry_kwargs)
                 except Exception:
                     raise json_exc
             except TypeError:
                 raise exc
+
+    async def _llm_generate_raw(self, kwargs: dict[str, Any]) -> Any:
+        response = await self.astr_context.llm_generate(**kwargs)
+        _log_llm_usage_summary(response, kwargs)
+        return response
 
     @staticmethod
     def _limit_completion(text: str, session: Any, raw_player_message: str = "") -> str:
@@ -1715,6 +1999,14 @@ def _coerce_campaign_outline(value: Any) -> dict[str, Any]:
     text = str(value or "").strip()
     if not text:
         return {}
+    try:
+        decoded = json.loads(text)
+    except (TypeError, ValueError):
+        decoded = None
+    if isinstance(decoded, dict):
+        return decoded
+    if isinstance(decoded, list):
+        return {"acts": [str(item) for item in decoded if str(item).strip()]}
     parts = [
         part.strip(" \n\t-0123456789.、:：")
         for part in re.split(r"[\n；;]+", text)
@@ -2461,6 +2753,16 @@ ROLL_REQUIRED_ACTION_TERMS = (
     "解除",
     "冲锋",
     "抓住",
+    "捕获",
+    "收服",
+    "驯服",
+    "转化",
+    "采集",
+    "分解",
+    "侵入",
+    "寄生",
+    "点燃",
+    "引火",
 )
 
 SPATIAL_REQUIRED_ACTION_TERMS = (
@@ -2555,17 +2857,19 @@ def _adjudication_completeness_guard(
         return {}
     if _contains_any_term(text, LOW_RISK_DIRECT_TERMS):
         return {}
-    if not _contains_any_term(text, ROLL_REQUIRED_ACTION_TERMS + SPATIAL_REQUIRED_ACTION_TERMS):
-        return {}
-    if not _completion_claims_resolved_outcome(reply):
-        return {}
-
     tool_names = [str(item.get("tool") or "") for item in tool_results if isinstance(item, dict)]
     successful_tools = {
         str(item.get("tool") or "")
         for item in tool_results
         if isinstance(item, dict) and _tool_result_ok(item.get("result"))
     }
+    if _looks_like_rule_setup_request(text) and "register_rule" in successful_tools:
+        return {}
+    if not _contains_any_term(text, ROLL_REQUIRED_ACTION_TERMS + SPATIAL_REQUIRED_ACTION_TERMS):
+        return {}
+    if not _completion_claims_resolved_outcome(reply):
+        return {}
+
     has_roll_support = "execute_rule" in successful_tools
     has_spatial_support = bool(successful_tools.intersection({"move_entity", "check_attack_vector", "create_grid", "place_entity"}))
     has_turn_support = "turn_control" in successful_tools
@@ -2602,6 +2906,45 @@ def _completion_claims_resolved_outcome(reply: str) -> bool:
     if _contains_any_term(reply, UNRESOLVED_OUTCOME_MARKERS):
         return False
     return _contains_any_term(reply, RESOLVED_OUTCOME_TERMS)
+
+
+def _looks_like_rule_setup_request(text: str) -> bool:
+    config_terms = (
+        "玩法",
+        "规则",
+        "数值",
+        "最大值",
+        "上限",
+        "命中不需要",
+        "不需要骰",
+        "简单回合制",
+        "回合制",
+        "自动战斗",
+    )
+    action_terms = (
+        "我要",
+        "找个",
+        "攻击",
+        "射击",
+        "移动",
+        "飞",
+        "跑",
+        "搜索",
+        "调查",
+        "收服",
+        "捕获",
+        "治疗",
+        "偷",
+        "开锁",
+        "点燃",
+        "引火",
+        "转化",
+        "采集",
+        "寄生",
+        "杀",
+    )
+    hits = sum(1 for term in config_terms if term and term in text)
+    return hits >= 2 and not _contains_any_term(text, action_terms)
 
 
 def _completion_claims_state_change(reply: str) -> bool:
@@ -2644,6 +2987,50 @@ def _audit_safe_tool_results(tool_results: list[dict[str, Any]]) -> list[dict[st
 
 def _contains_any_term(text: str, terms: tuple[str, ...]) -> bool:
     return any(term and term.lower() in text for term in terms)
+
+
+def _rough_token_count(chars: int) -> int:
+    if chars <= 0:
+        return 0
+    return max(1, chars // 2)
+
+
+def _rough_token_estimate(chars: int) -> dict[str, int]:
+    if chars <= 0:
+        return {"low": 0, "heuristic": 0, "high": 0}
+    return {
+        "low": max(1, chars // 4),
+        "heuristic": _rough_token_count(chars),
+        "high": max(1, int(chars / 1.5)),
+    }
+
+
+def _component_token_estimates(component_chars: dict[str, object]) -> dict[str, object]:
+    estimates: dict[str, object] = {}
+    for key, value in component_chars.items():
+        if key.endswith("_chars") and isinstance(value, int):
+            estimates[key[: -len("_chars")] + "_tokens"] = _rough_token_estimate(value)["heuristic"]
+        else:
+            estimates[key] = value
+    return estimates
+
+
+DIAGNOSTIC_REQUEST_TERMS = (
+    "token",
+    "tokens",
+    "上下文",
+    "压缩",
+    "调试",
+    "debug",
+    "日志",
+    "消耗",
+    "预算",
+    "audit",
+)
+
+
+def _is_diagnostic_request(message: str) -> bool:
+    return _contains_any_term(str(message or "").strip().lower(), DIAGNOSTIC_REQUEST_TERMS)
 
 
 def _turn_entity_label(session: Any, entity_id: str) -> str:

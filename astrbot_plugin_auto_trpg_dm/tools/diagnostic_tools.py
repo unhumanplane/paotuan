@@ -2,13 +2,19 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any, Callable, Dict
+from typing import Any, Callable, Dict, List, Tuple
 
 from pydantic import BaseModel, Field
 
 from ..core.external_memory import audit_safe_external_memory_result
 from ..core.memory import MemoryCompressor
-from ..core.prompts import build_system_prompt, build_user_prompt
+from ..core.prompts import (
+    build_diagnostic_system_prompt,
+    build_system_prompt,
+    build_user_prompt,
+    prompt_component_chars,
+    snapshot_projection_shadow_stats,
+)
 from ..storage.json_repository import JsonGameRepository
 
 
@@ -19,7 +25,7 @@ class EstimateTokenUsageArgs(BaseModel):
     )
 
 
-ToolSpecsProvider = Callable[[Any], tuple[list[str], list[dict[str, Any]]]]
+ToolSpecsProvider = Callable[..., Tuple[List[str], List[Dict[str, Any]]]]
 
 
 class DiagnosticTools:
@@ -42,6 +48,14 @@ class DiagnosticTools:
 
     def set_tool_specs_provider(self, provider: ToolSpecsProvider) -> None:
         self.tool_specs_provider = provider
+
+    def _tool_specs_for(self, mode: Any, message: str = "") -> Tuple[List[str], List[Dict[str, Any]]]:
+        if not self.tool_specs_provider:
+            return [], []
+        try:
+            return self.tool_specs_provider(mode, message)
+        except TypeError:
+            return self.tool_specs_provider(mode)
 
     async def estimate_token_usage(self, detail_level: str = "summary") -> Dict[str, Any]:
         session = self.repository.load_session(self.session_id)
@@ -86,6 +100,12 @@ class DiagnosticTools:
                 "observability": self._external_memory_observability(),
             },
             "prompt_budget": self._prompt_budget(session),
+            "snapshot_projection_shadow": snapshot_projection_shadow_stats(
+                session,
+                session.mode,
+                "",
+                actor={"player_id": "<diagnostic>"},
+            ),
             "compression": {
                 "would_compress_now": self.compressor.snapshot_chars(session)
                 > self.compressor.max_snapshot_chars
@@ -129,9 +149,61 @@ class DiagnosticTools:
             "session_id": self.session_id,
             "seen_at": "",
         }
-        tool_names, tool_specs = self.tool_specs_provider(session.mode)
+        tool_names, tool_specs = self._tool_specs_for(session.mode)
         tool_schema_text = json.dumps(tool_specs, ensure_ascii=False, separators=(",", ":"))
+        diagnostic_tool_names, diagnostic_tool_specs = self._tool_specs_for(
+            session.mode,
+            "token",
+        )
+        diagnostic_tool_schema_text = json.dumps(
+            diagnostic_tool_specs,
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
         system_prompt = build_system_prompt(session, session.mode, tool_names, tool_specs, actor=actor)
+        diagnostic_system_prompt = build_diagnostic_system_prompt(
+            session,
+            session.mode,
+            diagnostic_tool_names,
+            actor=actor,
+        )
+        component_chars = prompt_component_chars(
+            session,
+            session.mode,
+            tool_names,
+            actor=actor,
+        )
+        component_chars["system_prompt_chars"] = len(system_prompt)
+        component_chars["tool_schema_chars"] = len(tool_schema_text)
+        attributed_prompt_chars = sum(
+            value
+            for key, value in component_chars.items()
+            if key.endswith("_chars") and key not in {"system_prompt_chars", "tool_schema_chars"}
+            if isinstance(value, int)
+        )
+        component_chars["static_prompt_shell_chars"] = max(
+            0,
+            len(system_prompt) - attributed_prompt_chars,
+        )
+        diagnostic_component_chars = prompt_component_chars(
+            session,
+            session.mode,
+            diagnostic_tool_names,
+            actor=actor,
+            profile="diagnostic",
+        )
+        diagnostic_component_chars["system_prompt_chars"] = len(diagnostic_system_prompt)
+        diagnostic_component_chars["tool_schema_chars"] = len(diagnostic_tool_schema_text)
+        diagnostic_attributed_prompt_chars = sum(
+            value
+            for key, value in diagnostic_component_chars.items()
+            if key.endswith("_chars") and key not in {"system_prompt_chars", "tool_schema_chars"}
+            if isinstance(value, int)
+        )
+        diagnostic_component_chars["diagnostic_static_shell_chars"] = max(
+            0,
+            len(diagnostic_system_prompt) - diagnostic_attributed_prompt_chars,
+        )
         external_memory_budget = self._external_memory_budget(session, tool_names, tool_specs, actor)
         sample_user_prompt = build_user_prompt("示例玩家输入")
         total_chars = len(system_prompt) + len(sample_user_prompt) + len(tool_schema_text)
@@ -143,12 +215,23 @@ class DiagnosticTools:
             from ..core.models import GameMode
 
             for mode in GameMode:
-                names, specs = self.tool_specs_provider(mode)
+                names, specs = self._tool_specs_for(mode)
                 text = json.dumps(specs, ensure_ascii=False, separators=(",", ":"))
+                diagnostic_names, diagnostic_specs = self._tool_specs_for(mode, "token")
+                diagnostic_text = json.dumps(
+                    diagnostic_specs,
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                )
                 by_mode[mode.value] = {
                     "tool_count": len(names),
                     "tool_schema_chars": len(text),
                     "rough_tool_schema_tokens": _rough_token_estimate(len(text)),
+                    "diagnostic_tool_count": len(diagnostic_names),
+                    "diagnostic_tool_schema_chars": len(diagnostic_text),
+                    "diagnostic_rough_tool_schema_tokens": _rough_token_estimate(
+                        len(diagnostic_text)
+                    ),
                 }
         except Exception:
             by_mode = {}
@@ -156,9 +239,12 @@ class DiagnosticTools:
             "available": True,
             "mode": session.mode.value,
             "tool_count": len(tool_names),
+            "diagnostic_tool_count": len(diagnostic_tool_names),
             "system_prompt_chars": len(system_prompt),
+            "diagnostic_system_prompt_chars": len(diagnostic_system_prompt),
             "sample_user_prompt_chars": len(sample_user_prompt),
             "tool_schema_chars": len(tool_schema_text),
+            "diagnostic_tool_schema_chars": len(diagnostic_tool_schema_text),
             "total_request_chars_excluding_chat_history": total_chars,
             "total_request_chars_with_external_memory_budget": total_with_external_memory_chars,
             "rough_total_request_tokens": _rough_token_estimate(total_chars),
@@ -166,6 +252,12 @@ class DiagnosticTools:
                 total_with_external_memory_chars
             ),
             "external_memory": external_memory_budget,
+            "system_prompt_component_chars": component_chars,
+            "system_prompt_component_tokens": _component_token_estimates(component_chars),
+            "diagnostic_prompt_component_chars": diagnostic_component_chars,
+            "diagnostic_prompt_component_tokens": _component_token_estimates(
+                diagnostic_component_chars
+            ),
             "mode_tool_schema_costs": by_mode,
         }
 
@@ -294,3 +386,15 @@ def _rough_token_estimate(chars: int) -> Dict[str, int]:
         "heuristic": max(1, chars // 2),
         "high": max(1, int(chars / 1.5)),
     }
+
+
+def _component_token_estimates(component_chars: Dict[str, Any]) -> Dict[str, Any]:
+    estimates: Dict[str, Any] = {}
+    for key, value in component_chars.items():
+        if key.endswith("_chars") and isinstance(value, int):
+            estimates[key[: -len("_chars")] + "_tokens"] = (
+                _rough_token_estimate(value)["heuristic"] if value > 0 else 0
+            )
+        else:
+            estimates[key] = value
+    return estimates

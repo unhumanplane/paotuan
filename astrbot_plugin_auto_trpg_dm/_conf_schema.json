@@ -94,6 +94,16 @@
     "type": "bool",
     "hint": "false"
   },
+  "ra_model_provider": {
+    "description": "RA 使用的模型 provider。default 表示与 DM 使用同一模型；其他值会作为 chat_provider_id 传给 LLM。",
+    "type": "string",
+    "hint": "default"
+  },
+  "ra_max_tokens": {
+    "description": "RA 输出 token 上限建议值（默认 2048）。实际是否生效取决于底层 provider 是否支持透传 max_tokens 参数。",
+    "type": "int",
+    "hint": "2048"
+  },
   "ambient_image_enabled": {
     "description": "是否启用 TRPG 氛围图片生成。默认关闭；关闭时不会生成 prompt、不会调用图片 API。",
     "type": "bool",

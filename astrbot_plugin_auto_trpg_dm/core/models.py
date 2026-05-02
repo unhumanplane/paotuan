@@ -463,7 +463,7 @@ def compact_rules(rules: dict[str, RuleRef], detail_limit: int = 10, name_limit:
             }
             for rule in ordered[:detail_limit]
         ],
-        "hint": "需要完整规则列表或参数时调用 list_rules；执行规则使用 level_1.names 里的规则名。",
+        "hint": "执行规则使用 level_1.names 里的规则名；需要参数时按 tag 查询 detail，不要重复同参数 list_rules。",
     }
 
 

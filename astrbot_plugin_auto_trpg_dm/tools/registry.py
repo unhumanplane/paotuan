@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Awaitable, Callable
+from typing import Any, Awaitable, Callable, Dict
 
 from pydantic import BaseModel, Field
 from pydantic.dataclasses import dataclass
@@ -39,7 +39,7 @@ from .spatial_tools import (
 from .turn_tools import TurnControlArgs, TurnTools
 
 
-ToolHandler = Callable[..., Awaitable[dict[str, Any]]]
+ToolHandler = Callable[..., Awaitable[Dict[str, Any]]]
 
 
 class EmptyArgs(BaseModel):
@@ -188,7 +188,7 @@ class ToolRegistry:
             ),
             "list_rules": make_tool(
                 name="list_rules",
-                description="列出当前已经注册的规则。默认返回二级摘要；只有需要入参/出参详情时才用 detail。",
+                description="列出当前已经注册的规则。默认返回摘要；需要入参/出参时按 tag 查 detail，不要重复同参数查询。",
                 model=ListRulesArgs,
                 handler=rule_tools.list_rules,
             ),
@@ -200,7 +200,7 @@ class ToolRegistry:
             ),
             "create_character": make_tool(
                 name="create_character",
-                description="创建或覆盖一个无模式 Tag 角色卡；player_id 为空时绑定当前发言人。",
+                description="创建一个无模式 Tag 角色卡；player_id 为空时绑定当前发言人。开场后不能覆盖旧卡；原角色已死亡/退场时可用于创建后继角色。",
                 model=CreateCharacterArgs,
                 handler=memory_tools.create_character,
             ),
@@ -296,8 +296,28 @@ class ToolRegistry:
             ),
         }
 
-        def specs_for_mode(target_mode: GameMode) -> tuple[list[str], list[dict[str, Any]]]:
-            names = self._with_llm_decided_tools(self._allowed_tool_names(target_mode))
+        def specs_for_mode(
+            target_mode: GameMode,
+            message: str = "",
+        ) -> tuple[list[str], list[dict[str, Any]]]:
+            names = self._with_llm_decided_tools(
+                self._allowed_tool_names(target_mode, message=message),
+                message=message,
+            )
+            try:
+                session_for_specs = self.repository.load_session(session_id)
+                if _post_game_tool_scope(session_for_specs, message):
+                    names = self._with_llm_decided_tools(
+                        _post_game_tool_names(message),
+                        message=message,
+                    )
+                if not has_campaign_background(session_for_specs):
+                    names = self._background_first_tool_names(names, message=message)
+            except Exception:
+                pass
+            names = self._prune_diagnostic_tools(names, message=message)
+            if "cycle_control" not in names:
+                names.append("cycle_control")
             specs_for_names = [
                 {
                     "name": catalog[name].name,
@@ -323,6 +343,7 @@ class ToolRegistry:
             allowed = self._with_llm_decided_tools(_post_game_tool_names(message), message=message)
         if not has_campaign_background(session):
             allowed = self._background_first_tool_names(allowed, message=message)
+        allowed = self._prune_diagnostic_tools(allowed, message=message)
         if "cycle_control" not in allowed:
             allowed.append("cycle_control")
         selected = {name: catalog[name] for name in allowed}
@@ -532,6 +553,15 @@ class ToolRegistry:
         return list(dict.fromkeys([*selected, "generate_map_svg"]))
 
     @staticmethod
+    def _prune_diagnostic_tools(names: list[str], message: str = "") -> list[str]:
+        """Keep diagnostic-only tools out of ordinary gameplay tool schemas."""
+        selected = list(dict.fromkeys(names))
+        text = (message or "").strip().lower()
+        if text and _contains_any(text, DIAGNOSTIC_TERMS):
+            return selected
+        return [name for name in selected if name != "estimate_token_usage"]
+
+    @staticmethod
     def _background_first_tool_names(names: list[str], message: str = "") -> list[str]:
         """Before the campaign background exists, expose only setup-safe tools."""
         allowed = []
@@ -564,7 +594,7 @@ def _safe_int(value: Any, default: int = 0) -> int:
         return default
 
 
-DIAGNOSTIC_TERMS = ("token", "上下文", "压缩", "调试", "debug", "日志", "消耗", "预算")
+DIAGNOSTIC_TERMS = ("token", "tokens", "上下文", "压缩", "调试", "debug", "日志", "消耗", "预算", "audit")
 EXTERNAL_MEMORY_TERMS = (
     "honcho",
     "外置记忆",
@@ -592,6 +622,25 @@ CHARACTER_PROFILE_TERMS = (
     "创建角色",
     "建角色",
     "新角色",
+    "新角色加入",
+    "换新角色",
+    "换角色",
+    "重建角色",
+    "重建人物",
+    "新号",
+    "补位",
+    "替补",
+    "后继角色",
+    "重新加入",
+    "重新进团",
+    "重新入团",
+    "角色死了",
+    "角色死亡",
+    "死亡",
+    "阵亡",
+    "已死",
+    "退场",
+    "退休",
     "加入一个角色",
     "帮我建立角色",
     "职业",
@@ -623,6 +672,24 @@ BATTLE_JOIN_TERMS = (
     "创建角色",
     "建角色",
     "新角色",
+    "新角色加入",
+    "换新角色",
+    "换角色",
+    "重建角色",
+    "新号",
+    "补位",
+    "替补",
+    "后继角色",
+    "重新加入",
+    "重新进团",
+    "重新入团",
+    "角色死了",
+    "角色死亡",
+    "死亡",
+    "阵亡",
+    "已死",
+    "退场",
+    "退休",
     "参战",
     "绑定角色",
     "为我绑定",

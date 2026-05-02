@@ -15,21 +15,44 @@ LlmGenerate = Callable[..., Awaitable[Any]]
 class RecorderAgent:
     """Runs the RA cycle summarizer without importing AstrBot APIs."""
 
-    def __init__(self, llm_generate: LlmGenerate, chat_provider_id: str):
+    def __init__(self, llm_generate: LlmGenerate, chat_provider_id: str, max_tokens: int = 0):
         self.llm_generate = llm_generate
         self.chat_provider_id = chat_provider_id
+        self.max_tokens = max_tokens
 
     async def run_cycle_resolution(self, session: GameSession) -> dict[str, Any]:
         ra_input = build_ra_input_view(session)
         authority_snapshot = build_ra_authority_snapshot(session)
         prompt = build_ra_cycle_prompt(ra_input, authority_snapshot)
+        llm_kwargs: dict[str, Any] = {
+            "chat_provider_id": self.chat_provider_id,
+            "prompt": prompt,
+            "contexts": [],
+            "system_prompt": build_ra_system_prompt(),
+        }
+        if self.max_tokens > 0:
+            llm_kwargs["max_tokens"] = self.max_tokens
         try:
-            response = await self.llm_generate(
-                chat_provider_id=self.chat_provider_id,
-                prompt=prompt,
-                contexts=[],
-                system_prompt=build_ra_system_prompt(),
-            )
+            response = await self.llm_generate(**llm_kwargs)
+        except TypeError as exc:
+            if "max_tokens" not in llm_kwargs:
+                return {
+                    "ok": False,
+                    "error": "ra_llm_exception",
+                    "message": str(exc)[:240],
+                    "cycle_id": session.ra_cycle_input.cycle_id,
+                }
+            fallback_kwargs = dict(llm_kwargs)
+            fallback_kwargs.pop("max_tokens", None)
+            try:
+                response = await self.llm_generate(**fallback_kwargs)
+            except Exception as fallback_exc:
+                return {
+                    "ok": False,
+                    "error": "ra_llm_exception",
+                    "message": str(fallback_exc)[:240],
+                    "cycle_id": session.ra_cycle_input.cycle_id,
+                }
         except Exception as exc:
             return {
                 "ok": False,
