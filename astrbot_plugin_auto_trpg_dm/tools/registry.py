@@ -188,7 +188,7 @@ class ToolRegistry:
             ),
             "list_rules": make_tool(
                 name="list_rules",
-                description="列出当前已经注册的规则。默认返回二级摘要；只有需要入参/出参详情时才用 detail。",
+                description="列出当前已经注册的规则。默认返回摘要；需要入参/出参时按 tag 查 detail，不要重复同参数查询。",
                 model=ListRulesArgs,
                 handler=rule_tools.list_rules,
             ),

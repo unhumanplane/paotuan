@@ -53,6 +53,7 @@ class RuleTools:
         self.session_id = session_id
         self.actor = actor or {}
         self.message = message
+        self._list_rules_seen: set[tuple[str, str, int]] = set()
 
     async def register_rule(
         self,
@@ -172,31 +173,66 @@ class RuleTools:
 
     async def list_rules(self, detail_level: str = "summary", tag: str = "", limit: int = 16) -> Dict[str, Any]:
         """列出当前本地已经注册的规则，默认返回二级摘要以节省上下文。"""
+        normalized_level = str(detail_level or "summary").strip().lower()
+        if normalized_level not in {"summary", "detail"}:
+            normalized_level = "summary"
+        normalized_tag = str(tag or "").strip()
+        normalized_limit = _clamp_int(limit, default=16, minimum=1, maximum=16)
+        seen_key = (normalized_level, normalized_tag.lower(), normalized_limit)
+        if seen_key in self._list_rules_seen:
+            result: Dict[str, Any] = {
+                "ok": True,
+                "rules_reused": True,
+                "detail_level": normalized_level,
+                "tag": normalized_tag,
+                "limit": normalized_limit,
+                "hint": "本轮已返回过同参数规则列表；请使用上一条 list_rules 结果，不要重复查询。",
+            }
+            self.repository.append_audit(
+                self.session_id,
+                {
+                    "type": "tool",
+                    "tool": "list_rules",
+                    "input": {"detail_level": detail_level, "tag": tag, "limit": limit},
+                    "result": result,
+                },
+            )
+            return result
+        self._list_rules_seen.add(seen_key)
         raw_rules = self.rule_runtime.list_rules()
         refs = [RuleRef.from_dict(item) for item in raw_rules]
-        if tag.strip():
-            wanted = tag.strip().lower()
+        if normalized_tag:
+            wanted = normalized_tag.lower()
             refs = [rule for rule in refs if any(str(item).lower() == wanted for item in rule.tags)]
+        large_unfiltered_detail = normalized_level == "detail" and not normalized_tag and len(refs) > 48
+        detail_limit = min(normalized_limit, 4 if large_unfiltered_detail else 8)
+        name_limit = 32 if len(refs) > 48 else 48
         rules_by_name = {rule.name: rule for rule in refs}
         result: Dict[str, Any] = {
             "ok": True,
-            "rules": compact_rules(rules_by_name, detail_limit=min(limit, 16), name_limit=64),
-            "detail_level": detail_level,
-            "tag": tag,
+            "rules": compact_rules(rules_by_name, detail_limit=detail_limit, name_limit=name_limit),
+            "detail_level": normalized_level,
+            "tag": normalized_tag,
+            "limit": normalized_limit,
         }
-        if detail_level.strip().lower() == "detail":
+        if large_unfiltered_detail:
+            result["detail_restricted"] = True
+            result["hint"] = "规则很多；无标签 detail 只返回最近少量详情。需要参数时请按 rules.level_1.by_tag 选择 tag 后再查 detail。"
+        if normalized_level == "detail":
             result["details"] = [
                 {
                     "name": rule.name,
                     "version": rule.version,
                     "description": rule.description,
                     "tags": rule.tags,
-                    "input_schema": rule.input_schema,
-                    "output_schema": rule.output_schema,
+                    "input_schema": _compact_rule_schema(rule.input_schema),
+                    "output_schema": _compact_rule_schema(rule.output_schema),
                     "updated_at": rule.updated_at,
                 }
-                for rule in sorted(refs, key=lambda item: (item.updated_at, item.name), reverse=True)[:limit]
+                for rule in sorted(refs, key=lambda item: (item.updated_at, item.name), reverse=True)[:detail_limit]
             ]
+            if len(refs) > detail_limit:
+                result["details_omitted"] = len(refs) - detail_limit
         self.repository.append_audit(
             self.session_id,
             {
@@ -207,6 +243,38 @@ class RuleTools:
             },
         )
         return result
+
+
+def _clamp_int(value: Any, *, default: int, minimum: int, maximum: int) -> int:
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        number = default
+    return max(minimum, min(maximum, number))
+
+
+def _compact_rule_schema(value: Any, *, depth: int = 0) -> Any:
+    if depth >= 3:
+        return _short_text(value, 80)
+    if isinstance(value, dict):
+        items = list(value.items())
+        compacted = {
+            str(key): _compact_rule_schema(item, depth=depth + 1)
+            for key, item in items[:8]
+        }
+        omitted = len(items) - len(compacted)
+        if omitted > 0:
+            compacted["_omitted_keys"] = omitted
+        return compacted
+    if isinstance(value, list):
+        compacted_list = [_compact_rule_schema(item, depth=depth + 1) for item in value[:8]]
+        omitted = len(value) - len(compacted_list)
+        if omitted > 0:
+            compacted_list.append({"_omitted_items": omitted})
+        return compacted_list
+    if isinstance(value, str):
+        return _short_text(value, 120)
+    return value
 
 
 def _normalize_execute_rule_args(rule_name: str, args: Dict[str, Any]) -> Dict[str, Any]:
