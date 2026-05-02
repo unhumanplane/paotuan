@@ -1159,7 +1159,8 @@ def test_diagnostic_prompt_budget_includes_external_memory_budget(tmp_path):
     assert diagnostic_component_chars["profile"] == "diagnostic"
     assert diagnostic_component_chars["system_prompt_chars"] == result["prompt_budget"]["diagnostic_system_prompt_chars"]
     assert "diagnostic_static_shell_chars" in diagnostic_component_chars
-    assert result["prompt_budget"]["system_prompt_component_tokens"]["snapshot_chars"] >= 0
+    assert result["prompt_budget"]["system_prompt_component_tokens"]["snapshot_tokens"] >= 0
+    assert "tool_count" in result["prompt_budget"]["system_prompt_component_tokens"]
     assert (
         result["prompt_budget"]["total_request_chars_with_external_memory_budget"]
         > result["prompt_budget"]["total_request_chars_excluding_chat_history"]

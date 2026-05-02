@@ -354,8 +354,10 @@ def _rough_token_estimate(chars: int) -> Dict[str, int]:
 def _component_token_estimates(component_chars: Dict[str, Any]) -> Dict[str, Any]:
     estimates: Dict[str, Any] = {}
     for key, value in component_chars.items():
-        if isinstance(value, int):
-            estimates[key] = _rough_token_estimate(value)["heuristic"] if value > 0 else 0
+        if key.endswith("_chars") and isinstance(value, int):
+            estimates[key[: -len("_chars")] + "_tokens"] = (
+                _rough_token_estimate(value)["heuristic"] if value > 0 else 0
+            )
         else:
             estimates[key] = value
     return estimates
