@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import ipaddress
 import json
 import os
 import re
+import socket
 import time
 import urllib.error
 import urllib.parse
@@ -15,6 +17,8 @@ from typing import Any, Callable
 
 AMBIENT_IMAGE_API_MODES = {"images", "chat_completions"}
 DEFAULT_AMBIENT_IMAGE_BASE_URL = "https://www.packyapi.com"
+MAX_AMBIENT_IMAGE_BYTES = 20 * 1024 * 1024
+MAX_AMBIENT_IMAGE_RESPONSE_BYTES = 30 * 1024 * 1024
 
 
 @dataclass
@@ -33,10 +37,33 @@ class AmbientImageConfig:
     send_to_chat: bool = True
     frequency: str = "medium"
     prompt_template: str = ""
+    activity_window_minutes: int = 60
+    activity_min_messages: int = 10
+    activity_min_players: int = 2
+    similarity_recent_count: int = 3
+    similarity_threshold: float = 0.82
+    similarity_retry_enabled: bool = True
 
 
 HttpPost = Callable[[str, dict[str, str], dict[str, Any], int], tuple[int, dict[str, str], bytes]]
 HttpGet = Callable[[str, dict[str, str], int], tuple[int, dict[str, str], bytes]]
+DnsResolver = Callable[[str, int], list[str]]
+
+
+class AmbientImageSizeLimitError(Exception):
+    def __init__(
+        self,
+        *,
+        source: str,
+        max_bytes: int,
+        actual_bytes: int | None = None,
+        content_length: int | None = None,
+    ):
+        self.source = source
+        self.max_bytes = max_bytes
+        self.actual_bytes = actual_bytes
+        self.content_length = content_length
+        super().__init__(source)
 
 
 class AmbientImageProvider:
@@ -47,11 +74,13 @@ class AmbientImageProvider:
         environ: dict[str, str] | None = None,
         http_post: HttpPost | None = None,
         http_get: HttpGet | None = None,
+        dns_resolver: DnsResolver | None = None,
     ):
         self.config = config
         self.environ = environ if environ is not None else os.environ
         self.http_post = http_post or _http_post_json
         self.http_get = http_get or _http_get
+        self.dns_resolver = dns_resolver or _resolve_host_ips
 
     async def generate(self, prompt: str) -> dict[str, Any]:
         unavailable = self._unavailable()
@@ -126,8 +155,18 @@ class AmbientImageProvider:
         started = time.monotonic()
         try:
             status, response_headers, response_body = self.http_post(url, headers, payload, timeout)
+        except AmbientImageSizeLimitError as exc:
+            return _too_large_result(exc, elapsed_ms=_elapsed_ms(started))
         except urllib.error.HTTPError as exc:
-            response_body = exc.read()
+            try:
+                response_body = _read_limited_body(
+                    exc,
+                    headers=dict(getattr(exc, "headers", {}) or {}),
+                    max_bytes=MAX_AMBIENT_IMAGE_RESPONSE_BYTES,
+                    source="provider_response",
+                )
+            except AmbientImageSizeLimitError as size_exc:
+                return _too_large_result(size_exc, elapsed_ms=_elapsed_ms(started))
             status = int(getattr(exc, "code", 0) or 0)
             response_headers = dict(getattr(exc, "headers", {}) or {})
         except urllib.error.URLError as exc:
@@ -193,8 +232,16 @@ class AmbientImageProvider:
 
     def _materialize_image(self, parse_result: dict[str, Any], timeout: int) -> dict[str, Any]:
         if parse_result.get("b64_json"):
+            b64_text = str(parse_result["b64_json"])
+            if _estimated_base64_bytes(b64_text) > MAX_AMBIENT_IMAGE_BYTES:
+                return _too_large_result(
+                    AmbientImageSizeLimitError(
+                        source="b64_json",
+                        max_bytes=MAX_AMBIENT_IMAGE_BYTES,
+                    )
+                )
             try:
-                image_bytes = base64.b64decode(str(parse_result["b64_json"]), validate=True)
+                image_bytes = base64.b64decode(b64_text, validate=True)
             except Exception:
                 return {
                     "ok": False,
@@ -203,6 +250,14 @@ class AmbientImageProvider:
                 }
             if not image_bytes:
                 return {"ok": False, "available": False, "error": "ambient_image_empty_bytes"}
+            if len(image_bytes) > MAX_AMBIENT_IMAGE_BYTES:
+                return _too_large_result(
+                    AmbientImageSizeLimitError(
+                        source="b64_json",
+                        max_bytes=MAX_AMBIENT_IMAGE_BYTES,
+                        actual_bytes=len(image_bytes),
+                    )
+                )
             return {
                 "ok": True,
                 "available": True,
@@ -214,8 +269,19 @@ class AmbientImageProvider:
         image_url = str(parse_result.get("url") or "").strip()
         if not image_url:
             return {"ok": False, "available": False, "error": "ambient_image_result_missing"}
+        url_check = validate_ambient_image_url(image_url, resolver=self.dns_resolver)
+        if not url_check.get("ok"):
+            return {
+                "ok": False,
+                "available": False,
+                "error": url_check.get("error", "ambient_image_url_blocked"),
+                "reason": url_check.get("reason", ""),
+                "url": image_url,
+            }
         try:
             status, headers, image_bytes = self.http_get(image_url, {"Accept": "image/*"}, timeout)
+        except AmbientImageSizeLimitError as exc:
+            return {**_too_large_result(exc), "url": image_url}
         except Exception as exc:
             return {
                 "ok": False,
@@ -235,6 +301,37 @@ class AmbientImageProvider:
         if not image_bytes:
             return {"ok": False, "available": False, "error": "ambient_image_empty_bytes", "url": image_url}
         content_type = _headers_get(headers, "content-type")
+        content_length = _content_length(headers)
+        if content_length is not None and content_length > MAX_AMBIENT_IMAGE_BYTES:
+            return {
+                **_too_large_result(
+                    AmbientImageSizeLimitError(
+                        source="download",
+                        max_bytes=MAX_AMBIENT_IMAGE_BYTES,
+                        content_length=content_length,
+                    )
+                ),
+                "url": image_url,
+            }
+        if len(image_bytes) > MAX_AMBIENT_IMAGE_BYTES:
+            return {
+                **_too_large_result(
+                    AmbientImageSizeLimitError(
+                        source="download",
+                        max_bytes=MAX_AMBIENT_IMAGE_BYTES,
+                        actual_bytes=len(image_bytes),
+                    )
+                ),
+                "url": image_url,
+            }
+        if content_type and not _is_image_content_type(content_type):
+            return {
+                "ok": False,
+                "available": False,
+                "error": "ambient_image_content_type_invalid",
+                "content_type": content_type,
+                "url": image_url,
+            }
         return {
             "ok": True,
             "available": True,
@@ -306,6 +403,69 @@ def normalize_ambient_image_base_url(raw_base_url: str) -> str:
     return parsed.geturl().rstrip("/")
 
 
+def validate_ambient_image_url(url: str, *, resolver: DnsResolver | None = None) -> dict[str, Any]:
+    raw_url = str(url or "").strip()
+    if not raw_url:
+        return {"ok": False, "error": "ambient_image_url_invalid", "reason": "empty_url"}
+    try:
+        parsed = urllib.parse.urlparse(raw_url)
+        port = parsed.port
+    except ValueError:
+        return {"ok": False, "error": "ambient_image_url_invalid", "reason": "invalid_port"}
+    if parsed.scheme.lower() not in {"http", "https"}:
+        return {"ok": False, "error": "ambient_image_url_invalid", "reason": "unsupported_scheme"}
+    if parsed.username or parsed.password:
+        return {"ok": False, "error": "ambient_image_url_invalid", "reason": "userinfo_not_allowed"}
+    host = (parsed.hostname or "").strip().strip(".").lower()
+    if not host:
+        return {"ok": False, "error": "ambient_image_url_invalid", "reason": "missing_host"}
+    if host == "localhost" or host.endswith(".localhost"):
+        return {"ok": False, "error": "ambient_image_url_blocked", "reason": "localhost_blocked"}
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        resolve = resolver or _resolve_host_ips
+        try:
+            addresses = resolve(host, port or (443 if parsed.scheme.lower() == "https" else 80))
+        except OSError:
+            return {
+                "ok": False,
+                "error": "ambient_image_url_resolution_failed",
+                "reason": "dns_resolution_failed",
+            }
+        except Exception:
+            return {
+                "ok": False,
+                "error": "ambient_image_url_resolution_failed",
+                "reason": "dns_resolution_failed",
+            }
+        if not addresses:
+            return {
+                "ok": False,
+                "error": "ambient_image_url_resolution_failed",
+                "reason": "dns_resolution_empty",
+            }
+        for address in addresses:
+            try:
+                resolved_ip = ipaddress.ip_address(str(address))
+            except ValueError:
+                return {
+                    "ok": False,
+                    "error": "ambient_image_url_resolution_failed",
+                    "reason": "dns_resolution_invalid",
+                }
+            if _blocked_image_ip(resolved_ip):
+                return {
+                    "ok": False,
+                    "error": "ambient_image_url_blocked",
+                    "reason": "resolved_ip_blocked",
+                }
+        return {"ok": True}
+    if _blocked_image_ip(ip):
+        return {"ok": False, "error": "ambient_image_url_blocked", "reason": "ip_blocked"}
+    return {"ok": True}
+
+
 def redact_ambient_image_text(text: object, *, limit: int = 200) -> str:
     value = str(text or "")
     value = re.sub(r"Bearer\s+[A-Za-z0-9._~+/=-]+", "Bearer [redacted]", value, flags=re.IGNORECASE)
@@ -322,13 +482,27 @@ def _http_post_json(url: str, headers: dict[str, str], payload: dict[str, Any], 
     body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
     request = urllib.request.Request(url, data=body, headers=headers, method="POST")
     with urllib.request.urlopen(request, timeout=timeout) as response:
-        return int(response.status), dict(response.headers.items()), response.read()
+        response_headers = dict(response.headers.items())
+        response_body = _read_limited_body(
+            response,
+            headers=response_headers,
+            max_bytes=MAX_AMBIENT_IMAGE_RESPONSE_BYTES,
+            source="provider_response",
+        )
+        return int(response.status), response_headers, response_body
 
 
 def _http_get(url: str, headers: dict[str, str], timeout: int) -> tuple[int, dict[str, str], bytes]:
     request = urllib.request.Request(url, headers=headers, method="GET")
     with urllib.request.urlopen(request, timeout=timeout) as response:
-        return int(response.status), dict(response.headers.items()), response.read()
+        response_headers = dict(response.headers.items())
+        response_body = _read_limited_body(
+            response,
+            headers=response_headers,
+            max_bytes=MAX_AMBIENT_IMAGE_BYTES,
+            source="download",
+        )
+        return int(response.status), response_headers, response_body
 
 
 def _response_error_excerpt(body: bytes) -> str:
@@ -341,6 +515,85 @@ def _headers_get(headers: dict[str, str], key: str) -> str:
         if str(item_key).lower() == lowered:
             return str(value)
     return ""
+
+
+def _content_length(headers: dict[str, str]) -> int | None:
+    raw_value = _headers_get(headers, "content-length")
+    if not raw_value:
+        return None
+    try:
+        value = int(str(raw_value).strip())
+    except (TypeError, ValueError):
+        return None
+    return value if value >= 0 else None
+
+
+def _read_limited_body(response: Any, *, headers: dict[str, str], max_bytes: int, source: str) -> bytes:
+    content_length = _content_length(headers)
+    if content_length is not None and content_length > max_bytes:
+        raise AmbientImageSizeLimitError(
+            source=source,
+            max_bytes=max_bytes,
+            content_length=content_length,
+        )
+    body = response.read(max_bytes + 1)
+    if len(body) > max_bytes:
+        raise AmbientImageSizeLimitError(
+            source=source,
+            max_bytes=max_bytes,
+            actual_bytes=len(body),
+            content_length=content_length,
+        )
+    return body
+
+
+def _too_large_result(exc: AmbientImageSizeLimitError, *, elapsed_ms: int | None = None) -> dict[str, Any]:
+    result: dict[str, Any] = {
+        "ok": False,
+        "available": False,
+        "error": "ambient_image_too_large",
+        "source": exc.source,
+        "max_bytes": exc.max_bytes,
+    }
+    if exc.actual_bytes is not None:
+        result["actual_bytes"] = exc.actual_bytes
+    if exc.content_length is not None:
+        result["content_length"] = exc.content_length
+    if elapsed_ms is not None:
+        result["elapsed_ms"] = elapsed_ms
+    return result
+
+
+def _estimated_base64_bytes(value: str) -> int:
+    text = str(value or "").strip()
+    if not text:
+        return 0
+    padding = len(text) - len(text.rstrip("="))
+    return max(0, (len(text) * 3) // 4 - padding)
+
+
+def _resolve_host_ips(host: str, port: int) -> list[str]:
+    addresses: list[str] = []
+    for item in socket.getaddrinfo(host, port, type=socket.SOCK_STREAM):
+        sockaddr = item[4]
+        if sockaddr:
+            addresses.append(str(sockaddr[0]))
+    return addresses
+
+
+def _blocked_image_ip(address: ipaddress._BaseAddress) -> bool:
+    return bool(
+        address.is_loopback
+        or address.is_private
+        or address.is_link_local
+        or address.is_multicast
+        or address.is_reserved
+        or address.is_unspecified
+    )
+
+
+def _is_image_content_type(content_type: str) -> bool:
+    return (content_type or "").split(";")[0].strip().lower().startswith("image/")
 
 
 def _extension_from_content_type(content_type: str) -> str:
