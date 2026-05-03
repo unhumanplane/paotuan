@@ -1,6 +1,6 @@
 # AstrBot Auto TRPG DM
 
-全自然语言 TRPG DM 插件，基于 AstrBot v4.5.7+。当前插件版本：`v0.1.80`。
+全自然语言 TRPG DM 插件，基于 AstrBot v4.5.7+。当前插件版本：`v0.1.81`。
 
 这个项目的目标不是做一组零散命令，而是在 AstrBot 里运行一个可长期维护的小型 TRPG runtime。玩家可以直接说“我靠墙潜行过去，再射最近的敌人”，插件会结合当前场景、角色状态、战棋事实、本地规则和 LLM 裁定完成回应。
 
@@ -238,6 +238,17 @@ powershell -ExecutionPolicy Bypass -File scripts/deploy-nas.ps1 -Pull
 ```
 
 这个脚本只通过 `git archive` 打包 `astrbot_plugin_auto_trpg_dm/`，不会带上 `.deploy/`、私钥、缓存、运行数据或本地规则书原始资料。
+
+重启命令默认有 120 秒硬超时，可在本地配置里调整：
+
+```json
+{
+  "restartCommand": "docker restart astrbot",
+  "restartTimeoutSeconds": 120
+}
+```
+
+如果 NAS 上 Docker / Container Manager 对某个容器的 `inspect`、`restart` 或 `kill` 调用卡住，脚本会在超时后失败并报告；此时插件文件可能已经替换成功，但运行中的 AstrBot 进程未必已加载新版本。可以先用 `-SkipRestart` 只更新文件，再在 DSM 或具备 sudo 权限的 SSH 会话中重启 Container Manager / AstrBot 容器。
 
 ## PR 工作流
 

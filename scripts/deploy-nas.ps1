@@ -4,7 +4,8 @@ param(
     [switch]$DryRun,
     [switch]$SkipChecks,
     [switch]$SkipRestart,
-    [switch]$Pull
+    [switch]$Pull,
+    [int]$RestartTimeoutSeconds = 0
 )
 
 $ErrorActionPreference = "Stop"
@@ -98,7 +99,13 @@ $identityFile = Resolve-RepoPath $repoRoot (Config-Value $config "identityFile")
 $remotePluginDir = Config-Value $config "remotePluginDir"
 $remoteBackupDir = Config-Value $config "remoteBackupDir"
 $restartCommand = Config-Value $config "restartCommand"
+$configuredRestartTimeoutSeconds = [int](Config-Value $config "restartTimeoutSeconds" "120")
 $keepBackups = [int](Config-Value $config "keepBackups" "10")
+$restartTimeout = if ($RestartTimeoutSeconds -gt 0) {
+    $RestartTimeoutSeconds
+} else {
+    $configuredRestartTimeoutSeconds
+}
 
 if (-not $hostName) { Fail "Config field is required: host" }
 if (-not $userName) { Fail "Config field is required: user" }
@@ -110,6 +117,9 @@ if ($remotePluginDir -notmatch "^/") {
 }
 if ($remotePluginDir -match "/$") {
     Fail "remotePluginDir must not end with a trailing slash."
+}
+if ($restartTimeout -lt 1) {
+    Fail "restartTimeoutSeconds must be greater than zero."
 }
 
 $sshOptions = @()
@@ -217,9 +227,40 @@ if ($DryRun) {
 Run "scp" ($scpArgs + @($archive, "${remote}:$remoteArchive"))
 Run "ssh" ($sshArgs + @($remote, $remoteScript))
 
+$remoteVerifyScript = @"
+set -eu
+remote_dir=$qRemotePluginDir
+echo "Remote plugin metadata:"
+grep '^version:' "`$remote_dir/metadata.yaml"
+"@
+
+Run "ssh" ($sshArgs + @($remote, $remoteVerifyScript))
+
 if ($restartCommand -and -not $SkipRestart) {
+    $qRestartCommand = Remote-Quote $restartCommand
+    $remoteRestartScript = @"
+set -eu
+restart_command=$qRestartCommand
+timeout_seconds=$restartTimeout
+echo "Restart command timeout: `$timeout_seconds seconds"
+if command -v timeout >/dev/null 2>&1; then
+    set +e
+    timeout -s KILL "`$timeout_seconds" sh -lc "`$restart_command"
+    rc=`$?
+    set -e
+    if [ "`$rc" -eq 124 ] || [ "`$rc" -eq 137 ]; then
+        echo "Restart command timed out after `$timeout_seconds seconds." >&2
+        exit "`$rc"
+    fi
+    exit "`$rc"
+fi
+
+echo "Warning: remote timeout command not found; running restart command without timeout." >&2
+sh -lc "`$restart_command"
+"@
+
     Write-Host "Restart command: $restartCommand"
-    Run "ssh" ($sshArgs + @($remote, $restartCommand))
+    Run "ssh" ($sshArgs + @($remote, $remoteRestartScript))
 } elseif ($SkipRestart) {
     Write-Host "Restart skipped."
 } else {

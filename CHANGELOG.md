@@ -2,6 +2,17 @@
 
 所有已经合入 `main` 的用户可见变更都记录在这里。日期使用香港时区对应的开发日期。
 
+## [0.1.81] - 2026-05-03
+
+### Changed
+
+- NAS 部署脚本会在替换插件目录后立即验证远端 `metadata.yaml` 版本，方便区分“文件已更新”和“容器已重启”。
+- NAS 部署脚本的 `restartCommand` 增加硬超时，默认 120 秒；可通过本地配置 `restartTimeoutSeconds` 或命令行 `-RestartTimeoutSeconds` 调整，避免 Docker / Container Manager 卡住时部署命令无限等待。
+
+### Fixed
+
+- 改进 README 的 NAS 部署说明，补充 Docker 容器管理通道卡住时的处理边界：文件部署成功不等于运行中 AstrBot 已重新加载。
+
 ## [0.1.80] - 2026-05-03
 
 ### Added

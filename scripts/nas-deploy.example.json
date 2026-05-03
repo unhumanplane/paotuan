@@ -2,10 +2,11 @@
   "host": "nas.example.local",
   "user": "astrbot",
   "port": 22,
-  "identityFile": ".deploy/astrbot_deploy_ed25519",
+  "identityFile": ".deploy/example_deploy_ed25519",
   "remotePluginDir": "/AstrBot/data/plugins/000_auto_trpg_dm",
   "remoteBackupDir": "/volume1/docker/astrbot/backups/astrbot_plugin_auto_trpg_dm",
   "restartCommand": "docker restart astrbot",
+  "restartTimeoutSeconds": 120,
   "keepBackups": 10,
   "sshOptions": [
     "-o",
