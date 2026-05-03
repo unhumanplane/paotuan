@@ -29,6 +29,7 @@ __pycache__/
 *.py[cod]
 *$py.class
 .pytest_cache/
+.pytest_tmp/
 .pytest-tmp/
 .tmp/
 pytest-manual-dir/

@@ -125,6 +125,111 @@ def test_start_game_arg_repair_coerces_json_string_outline():
     assert repaired["scene_patch"]["summary"] == "废弃枢纽站里传来爪刃声。"
 
 
+def test_router_cleans_menu_like_guidance_before_return_and_audit():
+    repository = InMemoryRepository()
+    astr_context = FakeAstrContext(
+        "门缝里透出冷蓝色的光，里面有人压低声音提到巡逻换岗。\n\n"
+        "你可以选择：\n"
+        "1. 继续偷听\n"
+        "2. 敲门试探\n"
+        "3. 直接离开"
+    )
+    router = IntentRouter(
+        astr_context=astr_context,
+        repository=repository,
+        tool_registry=FakeToolRegistry(),
+    )
+
+    reply = asyncio.run(router.handle_message(FakeEvent("我调查门缝")))
+    records = repository.last_audit_records("group-1", limit=20)
+    handled = [item for item in records if item.get("type") == "message_handled"]
+    cleanup = [item for item in records if item.get("type") == "outbound_menu_guidance_cleaned"]
+
+    assert "冷蓝色的光" in reply
+    assert "你可以选择" not in reply
+    assert "继续偷听" not in reply
+    assert handled[-1]["completion"] == reply
+    assert cleanup[-1]["removed_blocks"] == 1
+    assert "original_hash" in cleanup[-1]
+    assert "cleaned_hash" in cleanup[-1]
+
+
+def test_router_skips_cleanup_for_diagnostic_completion():
+    repository = InMemoryRepository()
+    completion = "Token 粗算：1. prompt=100；2. completion=20；3. total=120。"
+    astr_context = FakeAstrContext(completion)
+    router = IntentRouter(
+        astr_context=astr_context,
+        repository=repository,
+        tool_registry=FakeToolRegistry(),
+    )
+
+    reply = asyncio.run(router.handle_message(FakeEvent("debug token 详细")))
+    records = repository.last_audit_records("group-1", limit=20)
+
+    assert reply == completion
+    assert not any(item.get("type") == "outbound_menu_guidance_cleaned" for item in records)
+
+
+def test_router_semantic_judge_deletes_ambiguous_tail_menu():
+    repository = InMemoryRepository()
+    astr_context = FakeAstrContext(
+        "门后的锁孔里透出蓝光，金属链条在里面轻轻晃动。\n\n"
+        "你是指：研究机关？还是询问守卫？或者同时？",
+        '{"classification":"closed_player_options","action":"delete_candidate","confidence":0.91,"reason":"候选文本是：你是指：研究机关？还是询问守卫？或者同时？"}',
+    )
+    router = IntentRouter(
+        astr_context=astr_context,
+        repository=repository,
+        tool_registry=FakeToolRegistry(),
+    )
+
+    reply = asyncio.run(router.handle_message(FakeEvent("我看看门")))
+    records = repository.last_audit_records("group-1", limit=30)
+    reviewed = [item for item in records if item.get("type") == "outbound_menu_guidance_semantic_reviewed"]
+    cleaned = [item for item in records if item.get("type") == "outbound_menu_guidance_cleaned"]
+    handled = [item for item in records if item.get("type") == "message_handled"]
+
+    assert len(astr_context.calls) == 2
+    assert reply == "门后的锁孔里透出蓝光，金属链条在里面轻轻晃动。"
+    assert "你是指" not in reply
+    assert reviewed[-1]["classification"] == "closed_player_options"
+    assert reviewed[-1]["action"] == "delete_candidate"
+    assert "candidate_hash" in reviewed[-1]
+    assert "candidate_text" not in reviewed[-1]
+    assert "研究机关" not in reviewed[-1]["reason"]
+    assert cleaned[-1]["semantic_classification"] == "closed_player_options"
+    assert handled[-1]["completion"] == reply
+
+
+def test_router_semantic_judge_keeps_necessary_clarification():
+    repository = InMemoryRepository()
+    completion = "雾里有两道身影。\n\n你是指左边披斗篷的人？还是右边拿灯的人？"
+    astr_context = FakeAstrContext(
+        completion,
+        '{"classification":"necessary_clarification","action":"keep","confidence":0.88,"reason":"asks target identity"}',
+    )
+    router = IntentRouter(
+        astr_context=astr_context,
+        repository=repository,
+        tool_registry=FakeToolRegistry(),
+    )
+
+    reply = asyncio.run(router.handle_message(FakeEvent("我盯着那个人")))
+    records = repository.last_audit_records("group-1", limit=30)
+    reviewed = [item for item in records if item.get("type") == "outbound_menu_guidance_semantic_reviewed"]
+
+    assert len(astr_context.calls) == 2
+    assert reply == completion
+    assert reviewed[-1]["classification"] == "necessary_clarification"
+    assert reviewed[-1]["action"] == "keep"
+    assert not any(
+        item.get("type") == "outbound_menu_guidance_cleaned"
+        and item.get("semantic_classification") == "necessary_clarification"
+        for item in records
+    )
+
+
 def test_ambient_image_auto_generation_is_scheduled_without_waiting():
     class FakeRepository:
         def __init__(self, session):
@@ -228,3 +333,72 @@ def test_ambient_image_auto_generation_is_scheduled_without_waiting():
         assert "generation_started_at" not in repository.session.scene["ambient_image_state"]
 
     asyncio.run(run_case())
+
+
+class FakeAstrContext:
+    def __init__(self, *completion_texts):
+        self.completion_texts = list(completion_texts) or [""]
+        self.calls = []
+
+    async def get_current_chat_provider_id(self, umo):
+        return "fake-provider"
+
+    async def llm_generate(self, **kwargs):
+        index = min(len(self.calls), len(self.completion_texts) - 1)
+        self.calls.append(kwargs)
+        return FakeLlmResponse(self.completion_texts[index])
+
+
+class FakeLlmResponse:
+    def __init__(self, completion_text):
+        self.completion_text = completion_text
+        self.tools_call_name = []
+        self.tools_call_args = []
+        self.tool_calls = []
+
+
+class FakeToolRegistry:
+    def for_mode(self, *args, **kwargs):
+        return None, [], FakeToolExecutor(), []
+
+
+class FakeToolExecutor:
+    async def execute(self, tool_name, args):
+        raise AssertionError("cleanup tests should not call tools")
+
+
+class FakeEvent:
+    def __init__(self, message):
+        self.message_str = message
+        self.unified_msg_origin = "group-1"
+        self.message_obj = FakeMessageObj()
+
+    def get_sender_id(self):
+        return "u-1"
+
+    def get_platform_id(self):
+        return "test"
+
+
+class FakeMessageObj:
+    sender = None
+
+
+class InMemoryRepository:
+    def __init__(self):
+        self.sessions = {}
+        self.audit_records = {}
+
+    def load_session(self, session_id):
+        if session_id not in self.sessions:
+            self.sessions[session_id] = GameSession.new(session_id)
+        return self.sessions[session_id]
+
+    def save_session(self, session):
+        self.sessions[session.session_id] = session
+
+    def append_audit(self, session_id, record):
+        self.audit_records.setdefault(session_id, []).append(record)
+
+    def last_audit_records(self, session_id, limit=20):
+        return self.audit_records.get(session_id, [])[-limit:]
