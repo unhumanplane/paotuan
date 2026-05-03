@@ -25,8 +25,9 @@ function Run([string]$File, [string[]]$ArgumentList) {
 
 function Run-SshScript([string[]]$SshArgumentList, [string]$RemoteTarget, [string]$Script) {
     $sshCommandArgs = $SshArgumentList + @($RemoteTarget, "sh", "-s")
+    $normalizedScript = $Script -replace "`r`n", "`n" -replace "`r", "`n"
     Write-Host ">> ssh $($sshCommandArgs -join ' ')"
-    $Script | & ssh @sshCommandArgs
+    $normalizedScript | & ssh @sshCommandArgs
     if ($LASTEXITCODE -ne 0) {
         Fail "Remote script failed with exit code ${LASTEXITCODE}."
     }

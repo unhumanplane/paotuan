@@ -33,7 +33,7 @@ from .tools.registry import ToolRegistry
 from .tools.turn_tools import TurnTools
 
 
-PLUGIN_VERSION = "0.1.83"
+PLUGIN_VERSION = "0.1.84"
 
 
 @register(
