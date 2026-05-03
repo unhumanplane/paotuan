@@ -1,6 +1,6 @@
 # AstrBot Auto TRPG DM
 
-全自然语言 TRPG DM 插件，基于 AstrBot v4.5.7+。当前插件版本：`v0.1.79`。
+全自然语言 TRPG DM 插件，基于 AstrBot v4.5.7+。当前插件版本：`v0.1.80`。
 
 这个项目的目标不是做一组零散命令，而是在 AstrBot 里运行一个可长期维护的小型 TRPG runtime。玩家可以直接说“我靠墙潜行过去，再射最近的敌人”，插件会结合当前场景、角色状态、战棋事实、本地规则和 LLM 裁定完成回应。
 
@@ -68,6 +68,21 @@ Recorder Agent，简称 RA，是可选的周期结算/记录 agent，默认关�
 
 如果底层 LLM provider 不支持透传 `max_tokens`，插件会自动重试一次不带 `max_tokens` 的调用，避免因为 provider 兼容性导致整轮流程失败。
 
+### 可选氛围图片
+
+氛围图片是可选视觉辅助，默认关闭，不接受玩家直接命令生图。它和 SVG 战棋地图是两套功能：SVG 地图用于位置、距离、视线和战场示意；氛围图只用于渲染剧情气氛、帮助玩家理解关键场景，不会写入任何权威游戏事实。
+
+当前接入目标是 PackyAPI `gpt-image-2`，默认走 `/v1/images/generations`，也可以切换到 `/v1/chat/completions`。图片 API key、base URL、模型、尺寸、质量、返回格式、触发频率、活跃度门禁、prompt 语义去重和 prompt 模板都通过 AstrBot 插件配置设置。prompt 模型会先返回 `title`、`prompt`、`style`，插件再拼合成最终生图 prompt；生成完成后单独发送 `{title}` 和图片，不附着到普通 `/dm` 回复上。
+
+安全边界：
+
+- 下载 provider 返回的 URL 前会阻止 localhost、私网、link-local、reserved、multicast 等地址。
+- provider 响应、URL 下载和 `b64_json` 图片都有大小上限。
+- 图片下载会校验 content type。
+- 普通 `/dm` 回复不会等待图片生成，图片生成在后台任务中独立完成。
+
+完整配置、触发规则、隐私边界和费用风险见 [docs/ambient-image-api.md](docs/ambient-image-api.md)。
+
 ## 架构概览
 
 ```text
@@ -79,6 +94,7 @@ astrbot_plugin_auto_trpg_dm/
     prompts.py            # 系统提示与模式提示
     security.py           # 输入安全预检查
     external_memory.py    # Honcho 外置记忆适配
+    ambient_image.py      # 氛围图片 provider、安全校验和物化逻辑
   tools/
     registry.py           # 按模式挂载工具
     memory_tools.py       # 角色、场景、世界设定和存档工具
@@ -87,6 +103,7 @@ astrbot_plugin_auto_trpg_dm/
     rule_tools.py         # 本地规则执行
     rulebook_tools.py     # DND 2024 / DM guidance 检索
     map_tools.py          # 视觉地图生成
+    ambient_image_tools.py # 氛围图片触发、prompt 和元数据保存
   rules/
     python_runtime.py     # 受限 Python 规则运行时
     dice.py               # 骰子工具
@@ -157,6 +174,14 @@ astrbot_plugin_auto_trpg_dm/_conf_schema.json
 | `ra_enabled` | `false` | 是否启用 Recorder Agent。 |
 | `ra_model_provider` | `default` | RA 使用的模型 provider。 |
 | `ra_max_tokens` | `2048` | RA 输出 token 上限建议值。 |
+| `ambient_image_enabled` | `false` | 是否启用 TRPG 氛围图片。 |
+| `ambient_image_api_mode` | `images` | 图片 API 路径：`images` 或 `chat_completions`。 |
+| `ambient_image_base_url` | `https://www.packyapi.com` | 图片 API base URL。 |
+| `ambient_image_api_key_env` | `PACKYAPI_SORA_API_KEY` | 图片 API key 所在环境变量名。 |
+| `ambient_image_frequency` | `medium` | 普通氛围图触发频率。 |
+| `ambient_image_activity_window_minutes` | `60` | 普通氛围图活跃窗口。 |
+| `ambient_image_activity_min_messages` | `10` | 活跃窗口内最少玩家消息数。 |
+| `ambient_image_activity_min_players` | `2` | 活跃窗口内最少不同玩家数。 |
 
 ## 数据与隐私
 
@@ -168,6 +193,7 @@ data/plugin_data/astrbot_plugin_auto_trpg_dm/
   rules/
   audit/
   maps/
+  ambient_images/
   rulebooks/
 ```
 
@@ -266,6 +292,7 @@ python -m pytest -q
 
 - [CHANGELOG.md](CHANGELOG.md)
 - [docs/honcho-external-memory.md](docs/honcho-external-memory.md)
+- [docs/ambient-image-api.md](docs/ambient-image-api.md)
 - [docs/design.zh.md](docs/design.zh.md)
 - [docs/architecture_spec.md](docs/architecture_spec.md)
 - [DND2024_CORE_RULEBOOK_INTEGRATION_PLAN.md](DND2024_CORE_RULEBOOK_INTEGRATION_PLAN.md)

@@ -30,6 +30,9 @@ __pycache__/
 *$py.class
 .pytest_cache/
 .pytest-tmp/
+.tmp/
+pytest-manual-dir/
+tests/_tmp_runtime/
 .coverage
 htmlcov/
 

@@ -2,6 +2,28 @@
 
 所有已经合入 `main` 的用户可见变更都记录在这里。日期使用香港时区对应的开发日期。
 
+## [0.1.80] - 2026-05-03
+
+### Added
+
+- 新增可选 TRPG 氛围图片生成，默认关闭；支持 Images API 与 Chat Completions 两种 provider 模式。
+- 增加活跃窗口门禁、最少消息数、最少玩家数和相似 prompt 重试/跳过，避免普通剧情里过度生图。
+- 图片生成改为后台任务，成功后独立发送 `{title}` 和图片，不阻塞普通 `/dm` 回复。
+- 增加 [docs/ambient-image-api.md](docs/ambient-image-api.md)，说明配置、触发规则、隐私边界、费用风险和排错方式。
+
+### Fixed
+
+- 为 provider 返回的图片 URL 加上 localhost、私网、link-local、reserved、multicast 和 DNS 解析结果拦截。
+- 为 provider 响应、URL 下载和 `b64_json` 图片加上大小上限，并校验下载 content type。
+- 禁止图片下载自动跟随未校验 redirect，防止 provider URL 通过跳转绕过 SSRF 检查。
+- 修复氛围图片 provider 在 Python 3.8 环境下的类型别名和线程执行兼容问题。
+
+### Verified
+
+- `python -m compileall -q astrbot_plugin_auto_trpg_dm tests scripts`
+- `python -m pytest -q`
+- `git diff --check`
+
 ## [0.1.79] - 2026-05-03
 
 ### Fixed

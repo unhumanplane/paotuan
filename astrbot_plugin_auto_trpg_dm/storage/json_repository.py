@@ -128,6 +128,11 @@ class JsonGameRepository:
         path.mkdir(parents=True, exist_ok=True)
         return path
 
+    def ambient_images_dir(self) -> Path:
+        path = self.data_dir / "ambient_images"
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
     def save_path(self, session_id: str) -> Path:
         return self._session_path(session_id)
 
