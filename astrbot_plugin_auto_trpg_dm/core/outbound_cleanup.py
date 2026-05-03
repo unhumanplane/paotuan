@@ -36,13 +36,21 @@ MENU_INTRO_RE = re.compile(
     r"(你可以(?:选择|选|做|考虑|尝试)|"
     r"你有(?:几|两|三|\d+).{0,8}(?:条路|个选择|种选择|个选项|种选项)|"
     r"有(?:几|两|三|\d+).{0,8}(?:个选择|种选择|条路|个选项|种选项)|"
-    r"接下来(?:你)?可以|下一步(?:你)?可以|下一步[？?]?|要做什么|请选择|"
-    r"你打算怎么(?:做|处理|应对))"
+    r"你面前的选择|你需要决定下一步|需要选择|你现在要怎么办|你选择[：:]|"
+    r"接下来(?:你)?可以|下一步(?:你)?可以|下一步(?:你想做什么|[，,、]?\s*你怎么打算)?[：:？?]?|"
+    r"要做什么|请选择|你想怎么做|你打算怎么(?:做|处理|应对))"
 )
-OPTION_LINE_RE = re.compile(r"^\s*(?:[-*]\s*)?(?:\d{1,2}|[A-Ca-c]|[一二三四五六七八九十])[、.．)）]\s+")
-INLINE_OPTION_RE = re.compile(r"(?:^|[\s，,；;：:])(?:\d{1,2}|[A-Ca-c])[、.．)）]")
+OPTION_LINE_RE = re.compile(
+    r"^\s*(?:[-*]\s*)?(?:\*{1,2}\s*)?"
+    r"(?:(?:\d{1,2}|[A-Ca-c]|[一二三四五六七八九十])[、.．)）：:]\s*|[①②③④⑤⑥⑦⑧⑨⑩]\s*)"
+)
+INLINE_OPTION_RE = re.compile(r"(?:^|[\s，,；;：:])(?:\d{1,2}|[A-Ca-c]|[①②③④⑤⑥⑦⑧⑨⑩])[、.．)）]?")
 QUESTION_MENU_RE = re.compile(r"(?:是[^？?]{1,60}[？?].{0,80}(?:还是|或是|或者).{1,80}[？?])")
-FOLLOWING_ACTION_MENU_PROMPT_RE = re.compile(r"^\s*(?:下一步\s*[？?]|你打算怎么(?:做|处理|应对).*[？?])\s*$")
+FOLLOWING_ACTION_MENU_PROMPT_RE = re.compile(
+    r"^\s*(?:下一步(?:你想做什么|[，,、]?\s*你怎么打算)?\s*[：:？?]|"
+    r"你现在要怎么办\s*[：:？?]|"
+    r"你(?:想|打算)怎么(?:做|处理|应对).*[？?])\s*$"
+)
 SEMANTIC_REVIEW_MAX_CANDIDATE_CHARS = 500
 SEMANTIC_REVIEW_START_TERMS = (
     "你是指",
@@ -135,6 +143,7 @@ FACTUAL_LINE_MARKERS = (
 ACTION_TERMS = (
     "调查",
     "搜索",
+    "搜查",
     "观察",
     "侦查",
     "查看",
@@ -164,6 +173,27 @@ ACTION_TERMS = (
     "等待",
     "撤退",
     "逃跑",
+    "推进",
+    "准备",
+    "修整",
+    "换弹",
+    "深入",
+    "踏入",
+    "清理",
+    "扫描",
+    "切换",
+    "拔",
+    "拉开",
+    "补",
+    "压制",
+    "喷吐",
+    "速射",
+    "强攻",
+    "突入",
+    "投",
+    "评估",
+    "调整",
+    "重新评估",
     "躲藏",
     "躲避",
     "潜行",
@@ -179,7 +209,25 @@ ACTION_TERMS = (
     "施法",
     "治疗",
 )
-ACTION_LINE_PREFIXES = ("继续", "直接", "先", "试着", "尝试", "转身", "悄悄")
+ACTION_LINE_PREFIXES = (
+    "继续",
+    "直接",
+    "先",
+    "试着",
+    "尝试",
+    "转身",
+    "悄悄",
+    "短暂",
+    "趁",
+    "快速",
+    "沿着",
+    "给",
+    "用",
+    "拔",
+    "切换",
+    "退后",
+    "换条",
+)
 
 
 def cleanup_menu_like_guidance(
@@ -208,6 +256,19 @@ def cleanup_menu_like_guidance(
             index += 1
             continue
 
+        if _line_starts_bare_action_menu(lines, index):
+            end = _bare_action_menu_end(lines, index)
+            if player_wants_help:
+                new_lines.append(HELP_REQUEST_REMINDER)
+                replacement_used = True
+                reason = reason or "explicit_help_numbered_menu_softened"
+            else:
+                reason = reason or "bare_action_menu_guidance_removed"
+            changed = True
+            removed_blocks += 1
+            index = end
+            continue
+
         if _line_starts_following_action_menu(lines, index):
             end = _following_action_menu_end(lines, index)
             if player_wants_help:
@@ -227,6 +288,10 @@ def cleanup_menu_like_guidance(
             block = lines[index:end]
             clue_menu = _block_looks_like_factual_clue_list(block)
             visible_target_list = player_wants_help and _block_looks_like_visible_target_list(block)
+            if _block_is_allowed_setup_or_confirmation(block, player_message):
+                new_lines.extend(block)
+                index = end
+                continue
             if visible_target_list:
                 new_lines.extend(block)
                 index = end
@@ -236,7 +301,7 @@ def cleanup_menu_like_guidance(
                 index += 1
                 continue
 
-            prefix = line[:menu_index].rstrip()
+            prefix = _clean_menu_prefix(line[:menu_index])
             if prefix:
                 new_lines.append(prefix)
             if player_wants_help and _count_option_lines(block) >= 2:
@@ -265,7 +330,7 @@ def cleanup_menu_like_guidance(
                 new_lines.append(line)
                 index += 1
                 continue
-            prefix = line[:hidden_index].rstrip()
+            prefix = _clean_menu_prefix(line[:hidden_index])
             if prefix:
                 new_lines.append(prefix)
             if player_wants_help:
@@ -522,6 +587,8 @@ def _line_starts_menu_block(lines: list[str], index: int) -> bool:
         return True
     if _count_following_option_lines(lines, index + 1) >= 2:
         return True
+    if _count_following_action_candidate_lines(lines, index + 1) >= 2:
+        return True
     return _looks_like_inline_action_menu(line)
 
 
@@ -530,11 +597,37 @@ def _menu_block_end(lines: list[str], start: int) -> int:
     while end < len(lines):
         line = lines[end]
         if not line.strip():
-            if _next_nonempty_is_option(lines, end + 1):
+            if _next_nonempty_is_option(lines, end + 1) or _next_nonempty_is_action_candidate(
+                lines, end + 1
+            ) or _next_nonempty_is_menu_closing_prompt(lines, end + 1):
                 end += 1
                 continue
             break
-        if _is_option_line(line):
+        if _is_option_line(line) or _is_action_candidate_line(line) or _is_menu_closing_prompt(line):
+            end += 1
+            continue
+        break
+    return end
+
+
+def _line_starts_bare_action_menu(lines: list[str], index: int) -> bool:
+    if not _is_option_line(lines[index]):
+        return False
+    return _count_following_action_option_lines(lines, index) >= 2
+
+
+def _bare_action_menu_end(lines: list[str], start: int) -> int:
+    end = start
+    while end < len(lines):
+        line = lines[end]
+        if not line.strip():
+            if _next_nonempty_is_action_option(lines, end + 1) or _next_nonempty_is_menu_closing_prompt(
+                lines, end + 1
+            ):
+                end += 1
+                continue
+            break
+        if _is_action_option_line(line) or _is_menu_closing_prompt(line):
             end += 1
             continue
         break
@@ -542,7 +635,7 @@ def _menu_block_end(lines: list[str], start: int) -> int:
 
 
 def _line_starts_following_action_menu(lines: list[str], index: int) -> bool:
-    line = str(lines[index] or "")
+    line = _plain_line_text(lines[index])
     if _looks_like_open_world_reminder(line) or _line_should_be_preserved(line):
         return False
     if not FOLLOWING_ACTION_MENU_PROMPT_RE.search(line):
@@ -555,11 +648,13 @@ def _following_action_menu_end(lines: list[str], start: int) -> int:
     while end < len(lines):
         line = lines[end]
         if not line.strip():
-            if _next_nonempty_is_action_candidate(lines, end + 1):
+            if _next_nonempty_is_action_candidate(
+                lines, end + 1
+            ) or _next_nonempty_is_menu_closing_prompt(lines, end + 1):
                 end += 1
                 continue
             break
-        if _is_action_candidate_line(line):
+        if _is_action_candidate_line(line) or _is_menu_closing_prompt(line):
             end += 1
             continue
         break
@@ -598,6 +693,38 @@ def _next_nonempty_is_option(lines: list[str], start: int) -> bool:
     return False
 
 
+def _next_nonempty_is_menu_closing_prompt(lines: list[str], start: int) -> bool:
+    for line in lines[start:]:
+        if not line.strip():
+            continue
+        return _is_menu_closing_prompt(line)
+    return False
+
+
+def _next_nonempty_is_action_option(lines: list[str], start: int) -> bool:
+    for line in lines[start:]:
+        if not line.strip():
+            continue
+        return _is_action_option_line(line)
+    return False
+
+
+def _count_following_action_option_lines(lines: list[str], start: int, limit: int = 8) -> int:
+    count = 0
+    scanned = 0
+    for line in lines[start:]:
+        if scanned >= limit:
+            break
+        scanned += 1
+        if not line.strip():
+            continue
+        if _is_action_option_line(line):
+            count += 1
+            continue
+        break
+    return count
+
+
 def _count_following_option_lines(lines: list[str], start: int, limit: int = 8) -> int:
     count = 0
     scanned = 0
@@ -619,7 +746,11 @@ def _count_option_lines(lines: list[str]) -> int:
 
 
 def _is_option_line(line: str) -> bool:
-    return bool(OPTION_LINE_RE.search(str(line or "")))
+    return bool(OPTION_LINE_RE.search(_plain_line_text(line)))
+
+
+def _is_action_option_line(line: str) -> bool:
+    return _is_option_line(line) and _is_action_candidate_text(line)
 
 
 def _line_has_inline_numbered_options(line: str) -> bool:
@@ -627,10 +758,10 @@ def _line_has_inline_numbered_options(line: str) -> bool:
 
 
 def _looks_like_inline_action_menu(line: str) -> bool:
-    text = str(line or "")
+    text = _plain_line_text(line)
     if _looks_like_open_world_reminder(text):
         return False
-    if "你可以" not in text and "接下来" not in text and "下一步" not in text:
+    if "你可以" not in text and "接下来" not in text and "下一步" not in text and "选择" not in text:
         return False
     if any(term in text for term in ("选择", "选项", "路线", "条路")) and any(
         sep in text for sep in ("、", "或者", "或是", "，", ",")
@@ -649,20 +780,24 @@ def _is_action_candidate_line(line: str) -> bool:
 
 
 def _is_action_candidate_text(value: str) -> bool:
-    text = re.sub(r"^\s*[-*]\s*", "", str(value or "")).strip()
-    text = re.sub(r"^(?:是|还是|或是|或者)\s*", "", text)
+    text = _plain_line_text(value)
+    text = _strip_option_marker(text)
+    text = re.sub(r"^\s*[-*]\s*", "", text).strip()
+    text = re.sub(r"^[^\w\u4e00-\u9fff]+", "", text).strip()
+    text = re.sub(r"^(?:是|还是|或是|或者|或)\s*", "", text)
+    text = re.split(r"——|--| - |：|:", text, maxsplit=1)[0].strip()
     text = text.strip("。！？!?；;，, ")
-    if not text or len(text) > 40:
+    if not text or len(text) > 72:
         return False
     if _line_should_be_preserved(text) or _is_option_line(text):
         return False
     if any(text.startswith(prefix) for prefix in ACTION_LINE_PREFIXES):
-        return any(term in text[:8] for term in ACTION_TERMS)
+        return any(term in text[:32] for term in ACTION_TERMS)
     return any(text.startswith(term) for term in ACTION_TERMS)
 
 
 def _hidden_menu_start_index(line: str) -> int:
-    text = " ".join(str(line or "").strip().split())
+    text = " ".join(_plain_line_text(line).strip().split())
     if not text or _looks_like_open_world_reminder(text) or _line_should_be_preserved(text):
         return -1
     clarification_match = re.search(r"你是(?:指|要|想).{0,120}(?:还是|或是|或者).{1,120}[？?]", text)
@@ -675,6 +810,10 @@ def _hidden_menu_start_index(line: str) -> int:
     framed_match = re.search(r"你打算怎么(?:做|处理|应对)", text)
     if framed_match and "还是" in text and question_count >= 1 and _sentence_like_action_count(text) >= 2:
         return framed_match.start()
+    soft_framed_match = re.search(r"你想怎么做", text)
+    if soft_framed_match and any(connector in text for connector in ("还是", "或者", "或是")):
+        if question_count >= 1 and _sentence_like_action_count(text) >= 2:
+            return soft_framed_match.start()
     next_match = re.search(r"下一步\s*[？?]", text)
     if next_match and _sentence_like_action_count(text) >= 2:
         return next_match.start()
@@ -689,7 +828,7 @@ def _sentence_like_action_count(text: str) -> int:
 def _looks_like_non_numbered_action_suggestion(line: str, player_wants_help: bool) -> bool:
     if player_wants_help:
         return False
-    text = str(line or "").strip()
+    text = _plain_line_text(line).strip()
     if not text or _looks_like_open_world_reminder(text) or _line_should_be_preserved(text):
         return False
     if "你可以" not in text and "接下来" not in text and "下一步" not in text:
@@ -706,7 +845,7 @@ def _looks_like_open_world_reminder(line: str) -> bool:
 
 
 def _line_should_be_preserved(line: str) -> bool:
-    text = str(line or "").strip().lower()
+    text = _plain_line_text(line).strip().lower()
     if not text:
         return False
     return any(marker in text for marker in FACTUAL_LINE_MARKERS)
@@ -752,6 +891,50 @@ def _block_looks_like_visible_target_list(lines: list[str]) -> bool:
     return all(_looks_like_visible_target_text(text) for text in option_texts)
 
 
+def _block_is_allowed_setup_or_confirmation(lines: list[str], player_message: str) -> bool:
+    if not lines:
+        return False
+    player_text = str(player_message or "")
+    joined = "\n".join(str(line or "") for line in lines)
+    if _player_message_requests_story_setup(player_text):
+        return True
+    if _player_message_requests_character_setup(player_text):
+        return True
+    if _player_message_needs_intent_clarification(player_text, joined):
+        return True
+    if _player_message_requests_meta_confirmation(player_text, joined):
+        return True
+    return False
+
+
+def _player_message_requests_story_setup(text: str) -> bool:
+    return any(term in text for term in ("开团", "新团", "开新故事", "新故事", "世界观", "战役"))
+
+
+def _player_message_requests_character_setup(text: str) -> bool:
+    return any(term in text for term in ("建卡", "创建角色", "角色设定", "绑定", "机械贤者"))
+
+
+def _player_message_needs_intent_clarification(player_text: str, reply_text: str) -> bool:
+    return any(term in reply_text for term in ("不太像角色行动意图", "你想做什么", "不太明白你的意思"))
+
+
+def _player_message_requests_meta_confirmation(player_text: str, reply_text: str) -> bool:
+    meta_terms = (
+        "战斗完成",
+        "章节",
+        "结束",
+        "完结",
+        "清空",
+        "重开",
+        "存档",
+        "撤退返回",
+        "正式结束",
+        "二次确认",
+    )
+    return any(term in player_text for term in meta_terms) or any(term in reply_text for term in meta_terms)
+
+
 def _looks_like_visible_target_choice_text(text: str) -> bool:
     source = str(text or "")
     if not re.search(r"你是(?:指|要|想)", source):
@@ -788,7 +971,27 @@ def _looks_like_visible_target_text(text: str) -> bool:
 
 
 def _option_line_text(line: str) -> str:
-    return OPTION_LINE_RE.sub("", str(line or ""), count=1).strip()
+    return _strip_option_marker(_plain_line_text(line)).strip()
+
+
+def _is_menu_closing_prompt(line: str) -> bool:
+    text = _plain_line_text(line).strip()
+    return bool(re.search(r"^(?:你要用哪个|你的选择|你选哪个|选哪一个|请选择)\s*[？?。!！]*$", text))
+
+
+def _plain_line_text(value: str) -> str:
+    text = str(value or "")
+    text = re.sub(r"\*{1,3}", "", text)
+    text = text.replace("`", "")
+    return text.strip()
+
+
+def _clean_menu_prefix(value: str) -> str:
+    return _plain_line_text(value).strip(" \t：:，,；;-—")
+
+
+def _strip_option_marker(value: str) -> str:
+    return OPTION_LINE_RE.sub("", str(value or ""), count=1).strip()
 
 
 def _collapse_blank_lines(text: str) -> str:
