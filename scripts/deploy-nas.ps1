@@ -23,13 +23,24 @@ function Run([string]$File, [string[]]$ArgumentList) {
     }
 }
 
-function Run-SshScript([string[]]$SshArgumentList, [string]$RemoteTarget, [string]$Script) {
-    $sshCommandArgs = $SshArgumentList + @($RemoteTarget, "sh", "-s")
+function Run-SshScript(
+    [string[]]$SshArgumentList,
+    [string[]]$ScpArgumentList,
+    [string]$RemoteTarget,
+    [string]$RemoteScriptPath,
+    [string]$Script
+) {
     $normalizedScript = $Script -replace "`r`n", "`n" -replace "`r", "`n"
-    Write-Host ">> ssh $($sshCommandArgs -join ' ')"
-    $normalizedScript | & ssh @sshCommandArgs
-    if ($LASTEXITCODE -ne 0) {
-        Fail "Remote script failed with exit code ${LASTEXITCODE}."
+    $localScriptPath = Join-Path ([System.IO.Path]::GetTempPath()) ([System.IO.Path]::GetFileName($RemoteScriptPath))
+    $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+    [System.IO.File]::WriteAllText($localScriptPath, $normalizedScript, $utf8NoBom)
+
+    try {
+        Run "scp" ($ScpArgumentList + @($localScriptPath, "${RemoteTarget}:$RemoteScriptPath"))
+        $remoteRunner = "sh $RemoteScriptPath; rc=`$?; rm -f $RemoteScriptPath; exit `$rc"
+        Run "ssh" ($SshArgumentList + @($RemoteTarget, $remoteRunner))
+    } finally {
+        Remove-Item -LiteralPath $localScriptPath -Force -ErrorAction SilentlyContinue
     }
 }
 
@@ -165,6 +176,9 @@ $commit = (& git rev-parse --short=12 HEAD).Trim()
 $timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
 $archive = Join-Path ([System.IO.Path]::GetTempPath()) "paotuan-$commit-$timestamp.tar"
 $remoteArchive = "/tmp/paotuan-$commit-$timestamp.tar"
+$remoteDeployScript = "/tmp/paotuan-$commit-$timestamp-deploy.sh"
+$remoteVerifyScriptPath = "/tmp/paotuan-$commit-$timestamp-verify.sh"
+$remoteRestartScriptPath = "/tmp/paotuan-$commit-$timestamp-restart.sh"
 $remote = "$userName@$hostName"
 
 Run "git" @("archive", "--format=tar", "--output", $archive, "HEAD", "astrbot_plugin_auto_trpg_dm")
@@ -235,7 +249,7 @@ if ($DryRun) {
 }
 
 Run "scp" ($scpArgs + @($archive, "${remote}:$remoteArchive"))
-Run-SshScript -SshArgumentList $sshArgs -RemoteTarget $remote -Script $remoteScript
+Run-SshScript -SshArgumentList $sshArgs -ScpArgumentList $scpArgs -RemoteTarget $remote -RemoteScriptPath $remoteDeployScript -Script $remoteScript
 
 $remoteVerifyScript = @"
 set -eu
@@ -244,7 +258,7 @@ echo "Remote plugin metadata:"
 grep '^version:' "`$remote_dir/metadata.yaml"
 "@
 
-Run-SshScript -SshArgumentList $sshArgs -RemoteTarget $remote -Script $remoteVerifyScript
+Run-SshScript -SshArgumentList $sshArgs -ScpArgumentList $scpArgs -RemoteTarget $remote -RemoteScriptPath $remoteVerifyScriptPath -Script $remoteVerifyScript
 
 if ($restartCommand -and -not $SkipRestart) {
     $qRestartCommand = Remote-Quote $restartCommand
@@ -270,7 +284,7 @@ sh -c "`$restart_command"
 "@
 
     Write-Host "Restart command: $restartCommand"
-    Run-SshScript -SshArgumentList $sshArgs -RemoteTarget $remote -Script $remoteRestartScript
+    Run-SshScript -SshArgumentList $sshArgs -ScpArgumentList $scpArgs -RemoteTarget $remote -RemoteScriptPath $remoteRestartScriptPath -Script $remoteRestartScript
 } elseif ($SkipRestart) {
     Write-Host "Restart skipped."
 } else {
