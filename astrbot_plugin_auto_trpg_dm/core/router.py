@@ -18,6 +18,11 @@ from .external_memory import (
 from .memory import MemoryCompressor
 from .modes import GameModeStateMachine
 from .models import GameMode, utc_now_iso
+from .outbound_cleanup import (
+    SemanticReviewCandidate,
+    apply_semantic_menu_judgment,
+    cleanup_menu_like_guidance,
+)
 from .plugin_log import get_plugin_logger
 from .prompts import (
     build_diagnostic_system_prompt,
@@ -98,6 +103,21 @@ LLM_USAGE_DETAIL_FIELDS = {
         "creation_input_tokens": "cache_creation_input_tokens",
     },
 }
+OUTBOUND_MENU_JUDGE_SYSTEM_PROMPT = """你是跑团 DM 回复的尾部菜单分类器。
+只判断候选文本是否在给玩家提供若干行动/意图选项，让玩家从中挑选。
+不要改写、不要补写、不要输出解释段落，只输出一个 JSON 对象。
+分类取值：
+- closed_player_options：候选文本在给玩家多个行动/意图选项。
+- soft_help_options：玩家明确求助时，候选文本仍以菜单形式给多个方向。
+- necessary_clarification：候选文本只是在问一个必要澄清点，例如目标、对象或含义。
+- factual_or_diagnostic：候选文本是事实、规则、骰子、状态、诊断或列表输出。
+- open_world_narrative：候选文本是开放叙事、风险、后果或可感知信息。
+- uncertain：无法可靠判断。
+动作取值：
+- delete_candidate：删除候选文本。
+- replace_with_local_help：仅在玩家明确求助且候选是菜单时使用。
+- keep：保留。
+不确定时必须选择 keep。"""
 
 
 def _extract_llm_usage_summary(response: Any) -> dict[str, int | float]:
@@ -196,6 +216,66 @@ def _first_usage_number(
         if isinstance(value, (int, float)) and not isinstance(value, bool):
             return value
     return None
+
+
+def _build_outbound_menu_judge_prompt(player_message: str, candidate: SemanticReviewCandidate) -> str:
+    player_help = "true" if candidate.player_wants_help else "false"
+    signals = ",".join(candidate.signals)
+    return f"""请只判断下面的“候选尾部文本”是否在给玩家提供若干选项。
+语义判断只服务于删除/保留这个候选段，不允许改写回复。
+
+玩家上一条消息：
+{_short_inferred_text(player_message, 240)}
+
+玩家是否明确求助：
+{player_help}
+
+本地命中的可疑信号：
+{signals}
+
+候选尾部文本：
+{candidate.text}
+
+请输出 JSON：
+{{
+  "classification": "closed_player_options|soft_help_options|necessary_clarification|factual_or_diagnostic|open_world_narrative|uncertain",
+  "action": "delete_candidate|replace_with_local_help|keep",
+  "confidence": 0.0,
+  "reason": "short reason"
+}}"""
+
+
+def _semantic_judge_action(
+    classification: str,
+    requested_action: str,
+    confidence: float,
+    *,
+    player_wants_help: bool,
+) -> str:
+    normalized_classification = str(classification or "").strip().lower()
+    normalized_action = str(requested_action or "").strip().lower()
+    if confidence < 0.65:
+        return "keep"
+    if normalized_classification == "soft_help_options":
+        return "replace_with_local_help" if player_wants_help else "delete_candidate"
+    if normalized_classification == "closed_player_options":
+        if normalized_action == "replace_with_local_help" and player_wants_help:
+            return "replace_with_local_help"
+        return "delete_candidate"
+    return "keep"
+
+
+def _confidence_value(value: Any) -> float:
+    if isinstance(value, bool) or value is None:
+        return 0.0
+    if isinstance(value, (int, float)):
+        number = float(value)
+    else:
+        try:
+            number = float(str(value).strip())
+        except ValueError:
+            return 0.0
+    return max(0.0, min(1.0, number))
 
 
 def _llm_request_shape(kwargs: Mapping[str, Any]) -> dict[str, Any]:
@@ -652,6 +732,98 @@ class IntentRouter:
                         fallback_turn.get("from_entity_id", ""),
                         fallback_turn.get("to_entity_id", ""),
                     )
+            completion_before_cleanup = completion
+            cleanup = cleanup_menu_like_guidance(
+                completion,
+                player_message=message,
+                diagnostic=diagnostic_prompt,
+            )
+            if cleanup.changed:
+                completion = cleanup.text
+                self.repository.append_audit(
+                    session_id,
+                    {
+                        "type": "outbound_menu_guidance_cleaned",
+                        "actor": actor,
+                        "player_message": message,
+                        "reason": cleanup.reason,
+                        "removed_blocks": cleanup.removed_blocks,
+                        "replacement_used": cleanup.replacement_used,
+                        "original_chars": cleanup.original_chars,
+                        "cleaned_chars": cleanup.cleaned_chars,
+                        "original_hash": _short_hash(completion_before_cleanup),
+                        "cleaned_hash": _short_hash(completion),
+                    },
+                )
+                get_plugin_logger().info(
+                    "outbound_menu_guidance_cleaned session=%s mode=%s actor=%s reason=%s removed_blocks=%s original_chars=%s cleaned_chars=%s",
+                    session_id,
+                    mode.value,
+                    actor.get("player_id", ""),
+                    cleanup.reason,
+                    cleanup.removed_blocks,
+                    cleanup.original_chars,
+                    cleanup.cleaned_chars,
+                )
+            elif cleanup.semantic_candidate:
+                semantic_review = await self._judge_outbound_menu_candidate(
+                    chat_provider_id=provider_id,
+                    player_message=message,
+                    candidate=cleanup.semantic_candidate,
+                )
+                self.repository.append_audit(
+                    session_id,
+                    {
+                        "type": "outbound_menu_guidance_semantic_reviewed",
+                        "actor": actor,
+                        "player_message": message,
+                        "candidate_hash": _short_hash(cleanup.semantic_candidate.text),
+                        "candidate_chars": len(cleanup.semantic_candidate.text),
+                        "candidate_start": cleanup.semantic_candidate.start,
+                        "candidate_end": cleanup.semantic_candidate.end,
+                        "signals": list(cleanup.semantic_candidate.signals),
+                        "classification": semantic_review.get("classification", "uncertain"),
+                        "action": semantic_review.get("action", "keep"),
+                        "confidence": semantic_review.get("confidence", 0.0),
+                        "reason": semantic_review.get("reason", ""),
+                        "parse_ok": semantic_review.get("parse_ok", False),
+                    },
+                )
+                semantic_cleanup = apply_semantic_menu_judgment(
+                    completion,
+                    cleanup.semantic_candidate,
+                    str(semantic_review.get("action") or "keep"),
+                )
+                if semantic_cleanup.changed:
+                    completion = semantic_cleanup.text
+                    self.repository.append_audit(
+                        session_id,
+                        {
+                            "type": "outbound_menu_guidance_cleaned",
+                            "actor": actor,
+                            "player_message": message,
+                            "reason": semantic_cleanup.reason,
+                            "removed_blocks": semantic_cleanup.removed_blocks,
+                            "replacement_used": semantic_cleanup.replacement_used,
+                            "original_chars": semantic_cleanup.original_chars,
+                            "cleaned_chars": semantic_cleanup.cleaned_chars,
+                            "original_hash": _short_hash(completion_before_cleanup),
+                            "cleaned_hash": _short_hash(completion),
+                            "semantic_classification": semantic_review.get("classification", "uncertain"),
+                            "semantic_confidence": semantic_review.get("confidence", 0.0),
+                        },
+                    )
+                get_plugin_logger().info(
+                    "outbound_menu_guidance_semantic_reviewed session=%s mode=%s actor=%s classification=%s action=%s confidence=%s parse_ok=%s candidate_chars=%s",
+                    session_id,
+                    mode.value,
+                    actor.get("player_id", ""),
+                    semantic_review.get("classification", "uncertain"),
+                    semantic_review.get("action", "keep"),
+                    semantic_review.get("confidence", 0.0),
+                    semantic_review.get("parse_ok", False),
+                    len(cleanup.semantic_candidate.text),
+                )
             trace_record = self._persist_narrative_trace(
                 latest_session,
                 actor=actor,
@@ -1166,6 +1338,57 @@ class IntentRouter:
         bound_character_id = session.player_character_map.get(player_id, "")
         if bound_character_id and bound_character_id in session.characters:
             session.active_character_id = bound_character_id
+
+    async def _judge_outbound_menu_candidate(
+        self,
+        *,
+        chat_provider_id: str,
+        player_message: str,
+        candidate: SemanticReviewCandidate,
+    ) -> dict[str, Any]:
+        prompt = _build_outbound_menu_judge_prompt(player_message, candidate)
+        try:
+            response = await self._llm_generate(
+                chat_provider_id=chat_provider_id,
+                prompt=prompt,
+                system_prompt=OUTBOUND_MENU_JUDGE_SYSTEM_PROMPT,
+            )
+        except Exception as exc:
+            return {
+                "classification": "uncertain",
+                "action": "keep",
+                "confidence": 0.0,
+                "reason": f"judge_failed:{exc.__class__.__name__}",
+                "parse_ok": False,
+            }
+        raw_text = getattr(response, "completion_text", "") or str(response)
+        payload = _first_json_object_payload(raw_text)
+        if not isinstance(payload, dict):
+            return {
+                "classification": "uncertain",
+                "action": "keep",
+                "confidence": 0.0,
+                "reason": "invalid_json",
+                "parse_ok": False,
+            }
+        classification = str(payload.get("classification") or "uncertain").strip()
+        confidence = _confidence_value(payload.get("confidence"))
+        action = _semantic_judge_action(
+            classification,
+            str(payload.get("action") or "").strip(),
+            confidence,
+            player_wants_help=candidate.player_wants_help,
+        )
+        reason = f"classification:{classification or 'uncertain'}"
+        if action == "keep":
+            reason = f"{reason};not_actionable"
+        return {
+            "classification": classification,
+            "action": action,
+            "confidence": confidence,
+            "reason": reason,
+            "parse_ok": True,
+        }
 
     async def _run_llm_tool_loop(
         self,
@@ -1738,6 +1961,54 @@ def _json_object_payloads(text: str) -> list[tuple[int, int, Any]]:
                         payloads.append((start, index + 1, payload))
                 start = -1
     return payloads
+
+
+def _first_json_object_payload(text: str) -> Any | None:
+    stripped = str(text or "").strip()
+    if stripped.startswith("```"):
+        lines = stripped.splitlines()
+        if len(lines) >= 3:
+            stripped = "\n".join(lines[1:-1]).strip()
+    try:
+        payload = json.loads(stripped)
+    except json.JSONDecodeError:
+        payload = None
+    if isinstance(payload, dict):
+        return payload
+
+    source = stripped
+    start = -1
+    depth = 0
+    in_string = False
+    escape = False
+    for index, char in enumerate(source):
+        if in_string:
+            if escape:
+                escape = False
+            elif char == "\\":
+                escape = True
+            elif char == '"':
+                in_string = False
+            continue
+        if char == '"':
+            in_string = True
+            continue
+        if char == "{":
+            if depth == 0:
+                start = index
+            depth += 1
+            continue
+        if char == "}" and depth:
+            depth -= 1
+            if depth == 0 and start >= 0:
+                try:
+                    payload = json.loads(source[start : index + 1])
+                except json.JSONDecodeError:
+                    payload = None
+                if isinstance(payload, dict):
+                    return payload
+                start = -1
+    return None
 
 
 def _is_retryable_llm_error(exc: Exception) -> bool:

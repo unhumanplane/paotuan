@@ -22,6 +22,7 @@
 - 默认使用 `/dm` 作为显式入口，避免普通群聊被误接入 LLM。
 - 支持 `/DM`、`/Dm`、`/dM` 等大小写误用。
 - 玩家不需要记忆 `/move`、`/attack`、`/roll` 这类命令，Intent Router 会按场景选择工具。
+- 普通 DM 回复会抑制“1/2/3 选项”“还是 A/B/C”“下一步菜单”这类行动菜单，让玩家直接描述想尝试的行动；设计边界见 [docs/dm-outbound-cleanup.md](docs/dm-outbound-cleanup.md)。
 
 ### 跑团状态与角色
 
