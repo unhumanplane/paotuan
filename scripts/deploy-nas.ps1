@@ -245,7 +245,7 @@ timeout_seconds=$restartTimeout
 echo "Restart command timeout: `$timeout_seconds seconds"
 if command -v timeout >/dev/null 2>&1; then
     set +e
-    timeout -s KILL "`$timeout_seconds" sh -lc "`$restart_command"
+    timeout -s KILL "`$timeout_seconds" sh -c "`$restart_command"
     rc=`$?
     set -e
     if [ "`$rc" -eq 124 ] || [ "`$rc" -eq 137 ]; then
@@ -256,7 +256,7 @@ if command -v timeout >/dev/null 2>&1; then
 fi
 
 echo "Warning: remote timeout command not found; running restart command without timeout." >&2
-sh -lc "`$restart_command"
+sh -c "`$restart_command"
 "@
 
     Write-Host "Restart command: $restartCommand"
