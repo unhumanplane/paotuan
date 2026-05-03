@@ -23,6 +23,15 @@ function Run([string]$File, [string[]]$ArgumentList) {
     }
 }
 
+function Run-SshScript([string[]]$SshArgumentList, [string]$RemoteTarget, [string]$Script) {
+    $sshCommandArgs = $SshArgumentList + @($RemoteTarget, "sh", "-s")
+    Write-Host ">> ssh $($sshCommandArgs -join ' ')"
+    $Script | & ssh @sshCommandArgs
+    if ($LASTEXITCODE -ne 0) {
+        Fail "Remote script failed with exit code ${LASTEXITCODE}."
+    }
+}
+
 function Require-Command([string]$Name) {
     if (-not (Get-Command $Name -ErrorAction SilentlyContinue)) {
         Fail "Required command not found: $Name"
@@ -225,7 +234,7 @@ if ($DryRun) {
 }
 
 Run "scp" ($scpArgs + @($archive, "${remote}:$remoteArchive"))
-Run "ssh" ($sshArgs + @($remote, $remoteScript))
+Run-SshScript -SshArgumentList $sshArgs -RemoteTarget $remote -Script $remoteScript
 
 $remoteVerifyScript = @"
 set -eu
@@ -234,7 +243,7 @@ echo "Remote plugin metadata:"
 grep '^version:' "`$remote_dir/metadata.yaml"
 "@
 
-Run "ssh" ($sshArgs + @($remote, $remoteVerifyScript))
+Run-SshScript -SshArgumentList $sshArgs -RemoteTarget $remote -Script $remoteVerifyScript
 
 if ($restartCommand -and -not $SkipRestart) {
     $qRestartCommand = Remote-Quote $restartCommand
@@ -260,7 +269,7 @@ sh -c "`$restart_command"
 "@
 
     Write-Host "Restart command: $restartCommand"
-    Run "ssh" ($sshArgs + @($remote, $remoteRestartScript))
+    Run-SshScript -SshArgumentList $sshArgs -RemoteTarget $remote -Script $remoteRestartScript
 } elseif ($SkipRestart) {
     Write-Host "Restart skipped."
 } else {
