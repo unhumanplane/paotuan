@@ -82,6 +82,8 @@ class RuleTools:
             if rule_ref:
                 session.rules[rule_ref.name] = rule_ref
                 self.repository.save_session(session)
+        elif result.get("error") == "validation_failed":
+            result["hint"] = _rule_validation_hint(str(result.get("reason") or ""))
         self.repository.append_audit(
             self.session_id,
             {
@@ -251,6 +253,15 @@ def _clamp_int(value: Any, *, default: int, minimum: int, maximum: int) -> int:
     except (TypeError, ValueError):
         number = default
     return max(minimum, min(maximum, number))
+
+
+def _rule_validation_hint(reason: str) -> str:
+    lowered = reason.lower()
+    if "reserved helper name" in lowered:
+        return "不要把 roll/randint 当作变量名或参数名；例如把 roll = roll('1d20') 改成 roll_total = roll('1d20')。"
+    if "undefined name" in lowered:
+        return "请检查变量名是否和 input_schema、calculate 参数或 kwargs.get(...) 中的名字一致。"
+    return "请把规则限制为一个 calculate 函数，并只使用允许的纯计算语法。"
 
 
 def _compact_rule_schema(value: Any, *, depth: int = 0) -> Any:

@@ -33,7 +33,7 @@ from .tools.registry import ToolRegistry
 from .tools.turn_tools import TurnTools
 
 
-PLUGIN_VERSION = "0.1.85"
+PLUGIN_VERSION = "0.1.86"
 
 
 @register(
@@ -46,6 +46,7 @@ class AutoTrpgDmPlugin(Star):
     DEDUP_WINDOW_SECONDS = 18.0
     ACTION_PACING_SECONDS = 12
     HEARTBEAT_INTERVAL_SECONDS = 60
+    DM_ACK_COOLDOWN_SECONDS = 10.0
 
     def __init__(self, context: Context, config=None):
         super().__init__(context)
@@ -53,6 +54,7 @@ class AutoTrpgDmPlugin(Star):
         self.astr_context = context
         self.trigger_prefixes = ["/dm"]
         self._recent_dm_messages: dict[tuple[str, str, str], float] = {}
+        self._recent_dm_acks: dict[tuple[str, str], float] = {}
         data_dir = Path(get_astrbot_data_path()) / "plugin_data" / "astrbot_plugin_auto_trpg_dm"
         self.repository = JsonGameRepository(data_dir)
         self.plugin_logger = configure_plugin_logging(self.repository.plugin_log_path())
@@ -303,6 +305,8 @@ class AutoTrpgDmPlugin(Star):
                 },
             )
         try:
+            if self._should_send_dm_ack(session_id, sender_id):
+                yield self._quoted_result(event, "收到，正在结算这一幕……")
             completion = await self.router.handle_message(
                 event,
                 message_override=routed_message,
@@ -317,13 +321,9 @@ class AutoTrpgDmPlugin(Star):
         pending_outputs = self._pop_pending_outputs(session_id)
         dice_outputs = [item for item in pending_outputs if item.get("type") == "dice_check"]
         other_outputs = [item for item in pending_outputs if item.get("type") != "dice_check"]
+        dice_summary = self._format_dice_summary(dice_outputs)
         sent_any = False
-        for item in dice_outputs[:3]:
-            dice_text = self._format_dice_check(item)
-            if dice_text:
-                yield self._quoted_result(event, dice_text)
-                sent_any = True
-        if completion or other_outputs:
+        if completion or other_outputs or dice_summary:
             if not completion and other_outputs:
                 completion = "地图已生成，已附上。"
             self.plugin_logger.info(
@@ -333,7 +333,7 @@ class AutoTrpgDmPlugin(Star):
                 len(completion),
                 len(pending_outputs),
             )
-            yield self._quoted_result(event, completion, pending_outputs=other_outputs)
+            yield self._quoted_result(event, completion, pending_outputs=other_outputs, dice_summary=dice_summary)
             sent_any = True
         if sent_any:
             event.stop_event()
@@ -1708,16 +1708,23 @@ class AutoTrpgDmPlugin(Star):
         self.plugin_logger.warning("ambient_image_independent_send_no_platform session=%s", session_id)
         return False
 
-    def _quoted_result(self, event: AstrMessageEvent, text: str, pending_outputs: list[dict] | None = None):
+    def _quoted_result(
+        self,
+        event: AstrMessageEvent,
+        text: str,
+        pending_outputs: list[dict] | None = None,
+        dice_summary: str = "",
+    ):
         message_id = getattr(getattr(event, "message_obj", None), "message_id", None)
         pending_outputs = pending_outputs or []
         components = []
         if not message_id:
             if not pending_outputs:
-                return event.plain_result(text)
+                body = _join_reply_sections(dice_summary, text)
+                return event.plain_result(body)
         else:
             components.append(Reply(id=message_id))
-        components.append(Plain(text=text))
+        components.append(Plain(text=_join_reply_sections(dice_summary, text)))
         for item in pending_outputs[:2]:
             if item.get("type") != "svg_map":
                 continue
@@ -1748,6 +1755,35 @@ class AutoTrpgDmPlugin(Star):
             result_text = _compact_text(item.get("error_reason") or item.get("error") or "规则执行失败", 160)
         suffix = f" v{version}" if version else ""
         return f"骰子检定：{reason}\n规则：{rule_name}{suffix}\n掷骰：{roll_text}\n结果：{result_text}"
+
+    def _format_dice_summary(self, items: list[dict]) -> str:
+        lines = []
+        for index, item in enumerate(items[:3], start=1):
+            dice_text = self._format_dice_check(item)
+            if dice_text:
+                lines.append(f"{index}. {dice_text}")
+        if not lines:
+            return ""
+        if len(items) > 3:
+            lines.append(f"另有 {len(items) - 3} 条检定已省略。")
+        return "本轮检定摘要：\n" + "\n".join(lines)
+
+    def _should_send_dm_ack(self, session_id: str, sender_id: str, now: float | None = None) -> bool:
+        current = monotonic() if now is None else now
+        recent = getattr(self, "_recent_dm_acks", None)
+        if recent is None:
+            recent = {}
+            self._recent_dm_acks = recent
+        key = (session_id, sender_id)
+        last = recent.get(key)
+        if last is not None and current - last < self.DM_ACK_COOLDOWN_SECONDS:
+            return False
+        recent[key] = current
+        stale_before = current - max(self.DM_ACK_COOLDOWN_SECONDS * 6, 60.0)
+        for old_key, old_time in list(recent.items()):
+            if old_time < stale_before:
+                recent.pop(old_key, None)
+        return True
 
     def _ensure_png_preview(self, svg_path: str, item: dict) -> str:
         path = Path(svg_path)
@@ -3077,6 +3113,10 @@ def _text_halo(fill: object):
     if luminance > 170:
         return (15, 23, 42, 210)
     return (255, 255, 255, 230)
+
+
+def _join_reply_sections(*sections: object) -> str:
+    return "\n\n".join(str(section).strip() for section in sections if str(section or "").strip())
 
 
 def _format_roll_record(record: object) -> str:
