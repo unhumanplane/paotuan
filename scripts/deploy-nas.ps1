@@ -215,6 +215,7 @@ test -f "`$stage/astrbot_plugin_auto_trpg_dm/metadata.yaml"
 
 if [ -d "`$remote_dir" ]; then
     tar -czf "`$backup_dir/`$name.`$stamp.`$commit.tgz" -C "`$parent" "`$name"
+    find "`$remote_dir" -type d -name '__pycache__' -prune -exec rm -rf {} + 2>/dev/null || true
     mv "`$remote_dir" "`$old"
 fi
 
@@ -225,7 +226,13 @@ if ! mv "`$stage/astrbot_plugin_auto_trpg_dm" "`$remote_dir"; then
     exit 23
 fi
 
-rm -rf "`$stage" "`$old"
+rm -rf "`$stage"
+if [ -d "`$old" ]; then
+    find "`$old" -type d -name '__pycache__' -prune -exec rm -rf {} + 2>/dev/null || true
+    if ! rm -rf "`$old"; then
+        echo "warning: previous plugin directory could not be fully removed: `$old" >&2
+    fi
+fi
 rm -f "`$archive"
 
 count=0
