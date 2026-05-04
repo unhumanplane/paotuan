@@ -33,7 +33,7 @@ from .tools.registry import ToolRegistry
 from .tools.turn_tools import TurnTools
 
 
-PLUGIN_VERSION = "0.1.87"
+PLUGIN_VERSION = "0.1.88"
 
 
 @register(
@@ -107,6 +107,10 @@ class AutoTrpgDmPlugin(Star):
             similarity_retry_enabled=self._config_bool("ambient_image_similarity_retry_enabled", True),
         )
         self.ambient_image_config = ambient_image_config
+        prompt_snapshot_projection_enabled = self._config_bool("prompt_snapshot_projection_enabled", True)
+        heartbeat_idle_log_interval = max(1, self._config_int("heartbeat_idle_log_interval", 10))
+        self.prompt_snapshot_projection_enabled = prompt_snapshot_projection_enabled
+        self.heartbeat_idle_log_interval = heartbeat_idle_log_interval
         ambient_image_provider = AmbientImageProvider(ambient_image_config)
         tool_registry = ToolRegistry(
             repository=self.repository,
@@ -126,6 +130,7 @@ class AutoTrpgDmPlugin(Star):
             ra_enabled=self._config_bool("ra_enabled", False),
             ra_model_provider=self._config_str("ra_model_provider", "default") or "default",
             ra_max_tokens=self._config_int("ra_max_tokens", 2048),
+            prompt_snapshot_projection_enabled=prompt_snapshot_projection_enabled,
         )
         migrated = self._migrate_legacy_turn_fields()
         if migrated:
@@ -137,15 +142,18 @@ class AutoTrpgDmPlugin(Star):
         if live_scene_migrations:
             self.plugin_logger.info("legacy_live_scene_state_migrated saves=%s", live_scene_migrations)
         self._heartbeat_task: asyncio.Task | None = None
+        self._heartbeat_idle_ticks = 0
         self._start_heartbeat_task()
         self.plugin_logger.info(
-            "plugin_initialized version=%s data_dir=%s honcho_enabled=%s honcho_workspace=%s ambient_image_enabled=%s ambient_image_mode=%s",
+            "plugin_initialized version=%s data_dir=%s honcho_enabled=%s honcho_workspace=%s ambient_image_enabled=%s ambient_image_mode=%s prompt_snapshot_projection_enabled=%s heartbeat_idle_log_interval=%s",
             PLUGIN_VERSION,
             data_dir,
             honcho_config.enabled,
             bool(honcho_config.workspace_id),
             ambient_image_config.enabled,
             ambient_image_config.api_mode,
+            prompt_snapshot_projection_enabled,
+            heartbeat_idle_log_interval,
         )
         logger.info("Auto TRPG DM plugin initialized.")
 
@@ -1271,15 +1279,25 @@ class AutoTrpgDmPlugin(Star):
             notice = str(result.get("notice") or "").strip()
             if notice and await self._send_heartbeat_message(session_id, notice):
                 notified += 1
-        self.plugin_logger.info(
-            "turn_heartbeat_tick scanned=%s active=%s advanced=%s initialized=%s notified=%s auto_paused=%s",
-            scanned,
-            active,
-            advanced,
-            initialized,
-            notified,
-            auto_paused,
+        important_tick = any((active, advanced, initialized, notified, auto_paused))
+        if important_tick:
+            self._heartbeat_idle_ticks = 0
+        else:
+            self._heartbeat_idle_ticks += 1
+        should_log_idle = self._heartbeat_idle_ticks == 1 or (
+            self._heartbeat_idle_ticks % self.heartbeat_idle_log_interval == 0
         )
+        if important_tick or should_log_idle:
+            self.plugin_logger.info(
+                "turn_heartbeat_tick scanned=%s active=%s advanced=%s initialized=%s notified=%s auto_paused=%s idle_ticks=%s",
+                scanned,
+                active,
+                advanced,
+                initialized,
+                notified,
+                auto_paused,
+                self._heartbeat_idle_ticks,
+            )
 
     async def _heartbeat_check_session(self, session_id: str) -> dict[str, object]:
         session = self.repository.load_session(session_id)

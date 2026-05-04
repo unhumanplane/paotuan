@@ -535,6 +535,35 @@ def test_pause_resume_trigger_bypasses_activity_gate():
     assert result["trigger"] == "pause_resume"
 
 
+def test_narrative_continue_text_does_not_trigger_pause_resume_image():
+    session = GameSession.new("group")
+    session.scene["summary"] = "黑塔城的雾夜调查仍在继续。"
+    session.scene["ambient_image_state"] = {
+        "warmup_started_at": (datetime.now(timezone.utc) - timedelta(minutes=20)).isoformat(),
+        "interaction_count": 12,
+        "last_turn_index": 10,
+        "last_generated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    session.scene["_recent_narrative_events"] = [
+        {"at": str(index), "message": f"行动 {index}", "outcome": "剧情推进"}
+        for index in range(10)
+    ]
+    session.scene["_recent_narrative_events"].append(
+        {
+            "at": datetime.now(timezone.utc).isoformat(),
+            "message": "我继续沿着雾里的脚印调查。",
+            "outcome": "队伍继续调查，街巷尽头出现蓝灯。",
+        }
+    )
+    _add_recent_player_messages(session, count=10, players=("player-a", "player-b"))
+    config = AmbientImageConfig(enabled=True)
+
+    result = ambient_image_gate(session, config)
+
+    assert result["reason"] == "ambient_image_frequency_wait"
+    assert result["turns_elapsed"] == 1
+
+
 def test_direct_user_image_request_does_not_trigger_ambient_image():
     session = GameSession.new("group")
     session.scene["summary"] = "雾气笼罩黑塔城，城门前响起钟声。"

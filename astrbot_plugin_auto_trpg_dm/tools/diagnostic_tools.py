@@ -13,6 +13,7 @@ from ..core.prompts import (
     build_system_prompt,
     build_user_prompt,
     prompt_component_chars,
+    prompt_snapshot_projection_stats,
     snapshot_projection_shadow_stats,
 )
 from ..storage.json_repository import JsonGameRepository
@@ -26,6 +27,7 @@ class EstimateTokenUsageArgs(BaseModel):
 
 
 ToolSpecsProvider = Callable[..., Tuple[List[str], List[Dict[str, Any]]]]
+PROMPT_BUDGET_SAMPLE_MESSAGE = "sample player action"
 
 
 class DiagnosticTools:
@@ -100,6 +102,13 @@ class DiagnosticTools:
                 "observability": self._external_memory_observability(),
             },
             "prompt_budget": self._prompt_budget(session),
+            "prompt_snapshot_projection": prompt_snapshot_projection_stats(
+                session,
+                session.mode,
+                PROMPT_BUDGET_SAMPLE_MESSAGE,
+                actor={"player_id": "<diagnostic>"},
+                snapshot_projection_enabled=True,
+            ),
             "snapshot_projection_shadow": snapshot_projection_shadow_stats(
                 session,
                 session.mode,
@@ -160,7 +169,15 @@ class DiagnosticTools:
             ensure_ascii=False,
             separators=(",", ":"),
         )
-        system_prompt = build_system_prompt(session, session.mode, tool_names, tool_specs, actor=actor)
+        system_prompt = build_system_prompt(
+            session,
+            session.mode,
+            tool_names,
+            tool_specs,
+            actor=actor,
+            message=PROMPT_BUDGET_SAMPLE_MESSAGE,
+            snapshot_projection_enabled=True,
+        )
         diagnostic_system_prompt = build_diagnostic_system_prompt(
             session,
             session.mode,
@@ -172,6 +189,8 @@ class DiagnosticTools:
             session.mode,
             tool_names,
             actor=actor,
+            message=PROMPT_BUDGET_SAMPLE_MESSAGE,
+            snapshot_projection_enabled=True,
         )
         component_chars["system_prompt_chars"] = len(system_prompt)
         component_chars["tool_schema_chars"] = len(tool_schema_text)
@@ -282,7 +301,15 @@ class DiagnosticTools:
                 "included_in_budget": False,
                 "estimated_section_chars": 0,
             }
-        base_prompt = build_system_prompt(session, session.mode, tool_names, tool_specs, actor=actor)
+        base_prompt = build_system_prompt(
+            session,
+            session.mode,
+            tool_names,
+            tool_specs,
+            actor=actor,
+            message=PROMPT_BUDGET_SAMPLE_MESSAGE,
+            snapshot_projection_enabled=True,
+        )
         placeholder_context = "x" * configured_max
         prompt_with_external_memory = build_system_prompt(
             session,
@@ -291,6 +318,8 @@ class DiagnosticTools:
             tool_specs,
             actor=actor,
             external_memory_context=placeholder_context,
+            message=PROMPT_BUDGET_SAMPLE_MESSAGE,
+            snapshot_projection_enabled=True,
         )
         return {
             "enabled": True,

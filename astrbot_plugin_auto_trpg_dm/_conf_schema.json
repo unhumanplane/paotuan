@@ -104,6 +104,16 @@
     "type": "int",
     "hint": "2048"
   },
+  "prompt_snapshot_projection_enabled": {
+    "description": "是否启用 prompt 用的安全快照投影：减少 LLM 上下文里的冗余字段和过长历史，不修改存档。",
+    "type": "bool",
+    "hint": "true"
+  },
+  "heartbeat_idle_log_interval": {
+    "description": "轮次心跳空闲时 info 日志采样间隔；有活跃、推进、初始化、通知或暂停时仍每次记录。",
+    "type": "int",
+    "hint": "10"
+  },
   "ambient_image_enabled": {
     "description": "是否启用 TRPG 氛围图片生成。默认关闭；关闭时不会生成 prompt、不会调用图片 API。",
     "type": "bool",

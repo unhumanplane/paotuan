@@ -28,8 +28,8 @@ from .prompts import (
     build_diagnostic_system_prompt,
     build_system_prompt,
     build_user_prompt,
+    prompt_snapshot_projection_stats,
     prompt_component_chars,
-    snapshot_projection_shadow_stats,
 )
 from ..storage.json_repository import JsonGameRepository
 from ..tools.ambient_image_tools import (
@@ -354,6 +354,7 @@ class IntentRouter:
         ra_enabled: bool = False,
         ra_model_provider: str = "default",
         ra_max_tokens: int = 2048,
+        prompt_snapshot_projection_enabled: bool = True,
     ):
         self.astr_context = astr_context
         self.repository = repository
@@ -368,6 +369,7 @@ class IntentRouter:
         self.ra_enabled = ra_enabled
         self.ra_model_provider = ra_model_provider
         self.ra_max_tokens = ra_max_tokens
+        self.prompt_snapshot_projection_enabled = prompt_snapshot_projection_enabled
         self._session_locks: dict[str, asyncio.Lock] = {}
         self._session_turn_locks: dict[str, asyncio.Lock] = {}
 
@@ -574,6 +576,8 @@ class IntentRouter:
                     actor=actor,
                     external_memory_context=external_memory_context,
                     include_ra_context=self.ra_enabled,
+                    message=message,
+                    snapshot_projection_enabled=self.prompt_snapshot_projection_enabled,
                 )
             tool_schema_text = json.dumps(tool_specs, ensure_ascii=False, separators=(",", ":"))
             prompt_profile = "diagnostic" if diagnostic_prompt else "standard"
@@ -585,6 +589,8 @@ class IntentRouter:
                 external_memory_context=external_memory_context,
                 include_ra_context=self.ra_enabled,
                 profile=prompt_profile,
+                message=message,
+                snapshot_projection_enabled=self.prompt_snapshot_projection_enabled,
             )
             component_chars["system_prompt_chars"] = len(system_prompt)
             component_chars["tool_schema_chars"] = len(tool_schema_text)
@@ -611,20 +617,23 @@ class IntentRouter:
                 ensure_ascii=False,
                 separators=(",", ":"),
             )
-            projection_shadow = snapshot_projection_shadow_stats(
+            projection_stats = prompt_snapshot_projection_stats(
                 session,
                 mode,
                 message,
                 actor=actor,
                 include_ra_context=self.ra_enabled,
+                snapshot_projection_enabled=(
+                    self.prompt_snapshot_projection_enabled and not diagnostic_prompt
+                ),
             )
-            projection_shadow_text = json.dumps(
-                projection_shadow,
+            projection_stats_text = json.dumps(
+                projection_stats,
                 ensure_ascii=False,
                 separators=(",", ":"),
             )
             get_plugin_logger().info(
-                "router_prepared session=%s mode=%s actor=%s tools=%s snapshot_chars=%s system_prompt_chars=%s system_prompt_hash=%s tool_schema_chars=%s tool_schema_hash=%s external_memory_chars=%s prompt_profile=%s prompt_component_chars=%s prompt_component_tokens=%s snapshot_projection_shadow=%s rough_total_tokens=%s",
+                "router_prepared session=%s mode=%s actor=%s tools=%s snapshot_chars=%s system_prompt_chars=%s system_prompt_hash=%s tool_schema_chars=%s tool_schema_hash=%s external_memory_chars=%s prompt_profile=%s prompt_component_chars=%s prompt_component_tokens=%s snapshot_projection=%s rough_total_tokens=%s",
                 session_id,
                 mode.value,
                 actor.get("player_id", ""),
@@ -638,7 +647,7 @@ class IntentRouter:
                 prompt_profile,
                 component_chars_text,
                 component_tokens_text,
-                projection_shadow_text,
+                projection_stats_text,
                 _rough_token_count(len(system_prompt) + len(tool_schema_text)),
             )
 

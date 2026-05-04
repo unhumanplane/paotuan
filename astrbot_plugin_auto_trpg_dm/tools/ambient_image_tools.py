@@ -1079,16 +1079,6 @@ def _pause_resume_event(session: Any) -> dict[str, str]:
         return {"kind": "pause", "key": "pause:" + _short_text(str(scene.get("summary", "") or "paused"), 80)}
     if explicit in {"resumed", "resume", "恢复", "继续"}:
         return {"kind": "resume", "key": "resume:" + _short_text(str(scene.get("summary", "") or "resumed"), 80)}
-    recent = scene.get("_recent_narrative_events")
-    if isinstance(recent, list) and recent:
-        latest = dict(recent[-1])
-        text = f"{latest.get('message', '')}\n{latest.get('outcome', '')}".lower()
-        pause_terms = ("暂停", "休整", "暂时离开", "中场休息", "先到这里", "pause")
-        resume_terms = ("恢复", "继续", "回到故事", "接着上次", "resume")
-        if any(term in text for term in pause_terms):
-            return {"kind": "pause", "key": "pause:" + _short_text(str(latest.get("at", "") or "pause"), 80)}
-        if any(term in text for term in resume_terms):
-            return {"kind": "resume", "key": "resume:" + _short_text(str(latest.get("at", "") or "resume"), 80)}
     return {}
 
 

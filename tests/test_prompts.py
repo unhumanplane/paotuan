@@ -6,6 +6,8 @@ from astrbot_plugin_auto_trpg_dm.core.prompts import (
     build_ra_system_prompt,
     build_system_prompt,
     prompt_component_chars,
+    prompt_snapshot_data,
+    prompt_snapshot_projection_stats,
     snapshot_projection_shadow_stats,
 )
 
@@ -232,6 +234,134 @@ def test_snapshot_projection_shadow_estimates_savings_without_changing_prompt():
     assert "participants" in stats["safety_kept_keys"]
     assert "player_character_map" in stats["safety_kept_keys"]
     assert "battle" in stats["safety_kept_keys"]
+
+
+def test_prompt_snapshot_projection_applies_without_mutating_session():
+    session = GameSession.new("group")
+    session.mode = GameMode.TACTICAL
+    session.participants["player-1"] = {"display_name": "Player One"}
+    session.participants["player-2"] = {"display_name": "Player Two"}
+    session.player_character_map["player-1"] = "pc-1"
+    session.player_character_map["player-2"] = "pc-2"
+    session.active_character_id = "pc-1"
+    session.characters["pc-1"] = Character(
+        id="pc-1",
+        name="Scout",
+        player_id="player-1",
+        summary="frontline scout",
+        tags=[TagValue(key="wounded", value="light wound", layer="status")],
+    )
+    session.characters["pc-2"] = Character(
+        id="pc-2",
+        name="Mage",
+        player_id="player-2",
+        summary="ally mage with a long tactical preference note" * 8,
+        tags=[TagValue(key="spellbook", value="utility and control", layer="abilities")],
+    )
+    session.scene["summary"] = "The gatehouse fight has spilled into the courtyard." * 20
+    session.scene["location"] = {"name": "Gatehouse courtyard", "zones": ["gate", "stairs"]}
+    session.scene["npcs"] = [{"name": "Watch captain", "stance": "hostile but wounded"}]
+    session.scene["clues"] = ["A fresh boot print points toward the cistern."]
+    session.scene["ambient_image_state"] = {"large_internal_counter": "x" * 200}
+    session.scene["_recent_narrative_events"] = [
+        {
+            "at": f"t-{index}",
+            "player_id": "player-1",
+            "character_id": "pc-1",
+            "message": "search the gate" * 20,
+            "outcome": "the patrol shifts near the gate" * 20,
+        }
+        for index in range(8)
+    ]
+    session.battle = {
+        "active": True,
+        "turn": {
+            "active": True,
+            "round": 3,
+            "phase": "character_turn",
+            "turn_order": ["pc-1", "pc-2"],
+            "current_entity_id": "pc-1",
+            "actions_this_round": {},
+            "turn_log": [f"log entry {index}: " + ("long detail " * 20) for index in range(8)],
+        },
+        "grid": {
+            "entities": {
+                "pc-1": {"id": "pc-1", "name": "Scout", "x": 1, "y": 2},
+                "pc-2": {"id": "pc-2", "name": "Mage", "x": 2, "y": 2},
+            }
+        },
+    }
+    original_snapshot = session.compact_snapshot()
+
+    full_prompt = build_system_prompt(
+        session,
+        GameMode.TACTICAL,
+        ["get_battle_snapshot"],
+        actor={"player_id": "player-1"},
+        message="attack the closest enemy",
+        snapshot_projection_enabled=False,
+    )
+    projected_prompt = build_system_prompt(
+        session,
+        GameMode.TACTICAL,
+        ["get_battle_snapshot"],
+        actor={"player_id": "player-1"},
+        message="attack the closest enemy",
+        snapshot_projection_enabled=True,
+    )
+    projected_snapshot, stats = prompt_snapshot_data(
+        session,
+        GameMode.TACTICAL,
+        "attack the closest enemy",
+        actor={"player_id": "player-1"},
+        snapshot_projection_enabled=True,
+    )
+
+    assert len(projected_prompt) < len(full_prompt)
+    assert stats["applied"] is True
+    assert stats["shadow_only"] is False
+    assert stats["saved_snapshot_chars"] > 0
+    assert projected_snapshot["participants"][0]["player_id"] == "player-1"
+    assert projected_snapshot["player_character_map"]["player-1"] == "pc-1"
+    assert projected_snapshot["battle"]["active"] is True
+    assert projected_snapshot["characters"]["relevant"][0]["id"] == "pc-1"
+    assert projected_snapshot["scene"]["location"]["name"] == "Gatehouse courtyard"
+    assert projected_snapshot["scene"]["npcs"][0]["name"] == "Watch captain"
+    assert "ambient_image_state" not in projected_snapshot["scene"]
+    assert session.compact_snapshot() == original_snapshot
+
+
+def test_prompt_snapshot_projection_can_be_disabled_for_full_snapshot():
+    session = GameSession.new("group")
+    session.mode = GameMode.TACTICAL
+    session.scene["_recent_narrative_events"] = [
+        {"message": "long event" * 20, "outcome": "long outcome" * 20}
+        for _ in range(6)
+    ]
+    session.battle = {"active": True}
+
+    full_snapshot, stats = prompt_snapshot_data(
+        session,
+        GameMode.TACTICAL,
+        "attack",
+        snapshot_projection_enabled=False,
+    )
+    projection_stats = prompt_snapshot_projection_stats(
+        session,
+        GameMode.TACTICAL,
+        "attack",
+        snapshot_projection_enabled=False,
+    )
+
+    assert "memory_summary" not in full_snapshot
+    assert "environment_summaries" not in full_snapshot
+    assert full_snapshot["scene"]["_recent_narrative_events"] == session.compact_snapshot()["scene"]["_recent_narrative_events"]
+    assert full_snapshot["battle"] == session.compact_snapshot()["battle"]
+    assert stats["enabled"] is False
+    assert stats["applied"] is False
+    assert stats["saved_snapshot_chars"] == 0
+    assert projection_stats["enabled"] is False
+    assert projection_stats["projected_snapshot_chars"] == projection_stats["full_snapshot_chars"]
 
 
 def test_snapshot_projection_shadow_classifies_state_query_without_actions():

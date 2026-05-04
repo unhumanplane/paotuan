@@ -73,11 +73,79 @@ def snapshot_projection_shadow_stats(
         projection_profile,
         actor or {},
     )
+    return _snapshot_projection_stats(
+        full_snapshot,
+        projected_snapshot,
+        projection_profile,
+        shadow_only=True,
+        enabled=True,
+    )
+
+
+def prompt_snapshot_data(
+    session: GameSession,
+    mode: GameMode,
+    message: str = "",
+    actor: dict | None = None,
+    include_ra_context: bool = False,
+    snapshot_projection_enabled: bool = True,
+) -> tuple[dict[str, Any], dict[str, object]]:
+    """Return the snapshot actually used in the prompt plus projection telemetry."""
+    full_snapshot = _standard_snapshot_data(session, include_ra_context)
+    projection_profile = _snapshot_projection_profile(session, mode, message)
+    projected_snapshot = (
+        _project_snapshot_for_profile(
+            full_snapshot,
+            session,
+            projection_profile,
+            actor or {},
+        )
+        if snapshot_projection_enabled
+        else full_snapshot
+    )
+    return projected_snapshot, _snapshot_projection_stats(
+        full_snapshot,
+        projected_snapshot,
+        projection_profile,
+        shadow_only=False,
+        enabled=snapshot_projection_enabled,
+    )
+
+
+def prompt_snapshot_projection_stats(
+    session: GameSession,
+    mode: GameMode,
+    message: str = "",
+    actor: dict | None = None,
+    include_ra_context: bool = False,
+    snapshot_projection_enabled: bool = True,
+) -> dict[str, object]:
+    """Report the projection that will be applied to a standard DM prompt."""
+    _, stats = prompt_snapshot_data(
+        session,
+        mode,
+        message=message,
+        actor=actor,
+        include_ra_context=include_ra_context,
+        snapshot_projection_enabled=snapshot_projection_enabled,
+    )
+    return stats
+
+
+def _snapshot_projection_stats(
+    full_snapshot: dict[str, Any],
+    projected_snapshot: dict[str, Any],
+    projection_profile: str,
+    shadow_only: bool,
+    enabled: bool,
+) -> dict[str, object]:
     full_text = _compact_json(full_snapshot)
     projected_text = _compact_json(projected_snapshot)
     saved_chars = max(0, len(full_text) - len(projected_text))
     return {
-        "shadow_only": True,
+        "shadow_only": shadow_only,
+        "enabled": enabled,
+        "applied": bool(enabled and not shadow_only),
         "profile": projection_profile,
         "full_snapshot_chars": len(full_text),
         "projected_snapshot_chars": len(projected_text),
@@ -164,20 +232,13 @@ def _project_snapshot_for_profile(
 def _project_scene(scene: Any, profile: str) -> Any:
     if not isinstance(scene, dict):
         return scene
-    keep_keys = (
-        "summary",
-        "current_conflict",
-        "last_resolution",
-        "last_player_intent",
-        "immediate_hooks",
-        "_post_game",
-        "_encounter_ended_at",
-    )
-    projected: dict[str, Any] = {
-        key: scene[key]
-        for key in keep_keys
-        if key in scene and scene.get(key) not in (None, "", [], {})
-    }
+    projected: dict[str, Any] = {}
+    for key, value in scene.items():
+        if value in (None, "", [], {}):
+            continue
+        if key in SCENE_PROJECTION_DROP_KEYS or key.startswith(SCENE_PROJECTION_DROP_PREFIXES):
+            continue
+        projected[key] = _project_scene_value(key, value, profile)
     if scene.get("last_map_svg"):
         projected["last_map_svg"] = _project_map_ref(scene.get("last_map_svg"))
     recent_limit = 2 if profile in {"state_query", "character_profile"} else 4
@@ -189,6 +250,38 @@ def _project_scene(scene: Any, profile: str) -> Any:
         if scene.get("_dm_pause_reason"):
             projected["_dm_pause_reason"] = _short_text(scene.get("_dm_pause_reason"), 180)
     return projected
+
+
+SCENE_PROJECTION_DROP_KEYS = {
+    "_recent_narrative_events",
+    "ambient_image_prompts",
+    "ambient_image_recent_player_messages",
+    "ambient_image_state",
+    "ambient_image_style",
+    "last_ambient_image",
+    "last_map_svg",
+    "history",
+    "transcript",
+    "raw_events",
+}
+SCENE_PROJECTION_DROP_PREFIXES = (
+    "_honcho_",
+    "_ra_",
+)
+
+
+def _project_scene_value(key: str, value: Any, profile: str) -> Any:
+    if key in {"summary", "current_conflict", "_opening_intro"}:
+        return _short_text(value, 1200 if profile not in {"state_query", "character_profile"} else 800)
+    if key in {"_player_guidance", "last_resolution", "last_player_intent"}:
+        return _short_text(value, 500)
+    if isinstance(value, dict):
+        return _project_mapping(value, depth=2, text_limit=360, item_limit=16)
+    if isinstance(value, list):
+        return _project_list(value, depth=2, text_limit=280, item_limit=16)
+    if isinstance(value, str):
+        return _short_text(value, 500)
+    return value
 
 
 def _project_map_ref(value: Any) -> Any:
@@ -268,6 +361,38 @@ def _minimal_character(character: dict[str, Any]) -> dict[str, Any]:
     if status:
         minimal["status"] = status
     return minimal
+
+
+def _project_mapping(value: dict[str, Any], depth: int, text_limit: int, item_limit: int) -> dict[str, Any]:
+    if depth <= 0:
+        return {"keys": sorted(str(key) for key in value.keys())[:item_limit]}
+    projected: dict[str, Any] = {}
+    for index, (key, item) in enumerate(value.items()):
+        if index >= item_limit:
+            projected["_truncated_items"] = max(0, len(value) - item_limit)
+            break
+        projected[str(key)] = _project_generic_value(item, depth - 1, text_limit, item_limit)
+    return projected
+
+
+def _project_list(value: list[Any], depth: int, text_limit: int, item_limit: int) -> list[Any]:
+    items = [
+        _project_generic_value(item, depth - 1, text_limit, item_limit)
+        for item in value[:item_limit]
+    ]
+    if len(value) > item_limit:
+        items.append({"_truncated_items": len(value) - item_limit})
+    return items
+
+
+def _project_generic_value(value: Any, depth: int, text_limit: int, item_limit: int) -> Any:
+    if isinstance(value, str):
+        return _short_text(value, text_limit)
+    if isinstance(value, dict):
+        return _project_mapping(value, depth, text_limit, item_limit)
+    if isinstance(value, list):
+        return _project_list(value, depth, text_limit, item_limit)
+    return value
 
 
 def _relevant_character_ids(session: GameSession, actor: dict[str, Any]) -> set[str]:
@@ -522,8 +647,17 @@ def build_system_prompt(
     actor: dict | None = None,
     external_memory_context: str = "",
     include_ra_context: bool = False,
+    message: str = "",
+    snapshot_projection_enabled: bool = True,
 ) -> str:
-    snapshot_data = _standard_snapshot_data(session, include_ra_context)
+    snapshot_data, _projection_stats = prompt_snapshot_data(
+        session,
+        mode,
+        message=message,
+        actor=actor,
+        include_ra_context=include_ra_context,
+        snapshot_projection_enabled=snapshot_projection_enabled,
+    )
     snapshot = _compact_json(snapshot_data)
     tools = ", ".join(tool_names) if tool_names else "无"
     actor_snapshot = _compact_json(actor or {})
@@ -748,6 +882,8 @@ def prompt_component_chars(
     external_memory_context: str = "",
     include_ra_context: bool = False,
     profile: str = "standard",
+    message: str = "",
+    snapshot_projection_enabled: bool = True,
 ) -> dict[str, object]:
     tools = ", ".join(tool_names) if tool_names else "无"
     actor_snapshot = _compact_json(actor or {})
@@ -768,7 +904,14 @@ def prompt_component_chars(
             "\n上一周期 RA 摘要上下文：\n"
             + build_cycle_start_prompt(session.environment_summaries[-1])
         )
-    snapshot_data = _standard_snapshot_data(session, include_ra_context)
+    snapshot_data, projection_stats = prompt_snapshot_data(
+        session,
+        mode,
+        message=message,
+        actor=actor,
+        include_ra_context=include_ra_context,
+        snapshot_projection_enabled=snapshot_projection_enabled,
+    )
     adjudication_profile = _compact_json(
         session.world_tags.get("adjudication", DEFAULT_ADJUDICATION_PROFILE),
     )
@@ -788,6 +931,7 @@ def prompt_component_chars(
         "memory_summary_chars": len(memory_summary_text),
         "external_memory_chars": len(external_memory_context) if external_memory_context.strip() else 0,
         "cycle_context_chars": cycle_context_chars,
+        "snapshot_projection": projection_stats,
     }
 
 
