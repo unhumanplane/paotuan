@@ -19,7 +19,9 @@ jobs:
           python-version: "3.11"
 
       - name: Install test dependencies
-        run: python -m pip install --upgrade pip pytest pydantic
+        run: |
+          python -m pip install --upgrade pip pytest
+          python -m pip install -r astrbot_plugin_auto_trpg_dm/requirements.txt
 
       - name: Compile Python files
         run: python -m compileall -q astrbot_plugin_auto_trpg_dm tests
