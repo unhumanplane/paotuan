@@ -240,6 +240,7 @@ def test_snapshot_projection_shadow_estimates_savings_without_changing_prompt():
     assert stats["saved_snapshot_chars"] > 0
     assert "scene" in stats["changed_top_level_keys"]
     assert "characters" in stats["changed_top_level_keys"]
+    assert "battle" in stats["changed_top_level_keys"]
     assert "participants" in stats["safety_kept_keys"]
     assert "player_character_map" in stats["safety_kept_keys"]
     assert "battle" in stats["safety_kept_keys"]
@@ -333,6 +334,7 @@ def test_prompt_snapshot_projection_applies_without_mutating_session():
     assert projected_snapshot["participants"][0]["player_id"] == "player-1"
     assert projected_snapshot["player_character_map"]["player-1"] == "pc-1"
     assert projected_snapshot["battle"]["active"] is True
+    assert "grid" not in projected_snapshot["battle"]
     assert projected_snapshot["characters"]["relevant"][0]["id"] == "pc-1"
     assert projected_snapshot["scene"]["location"]["name"] == "Gatehouse courtyard"
     assert projected_snapshot["scene"]["npcs"][0]["name"] == "Watch captain"
@@ -472,6 +474,17 @@ def test_prompt_snapshot_projection_uses_safe_dm_map_view():
 
 def test_prompt_snapshot_projection_does_not_expose_raw_strict_grid():
     session = GameSession.new("group")
+    session.battle = {
+        "active": True,
+        "turn_entity_id": "pc-1",
+        "grid": {
+            "width": 5,
+            "height": 5,
+            "entities": {
+                "secret-stalker": {"id": "secret-stalker", "name": "Stalker", "x": 4, "y": 4},
+            },
+        },
+    }
     save_active_strict_grid(
         session.maps,
         {
@@ -506,5 +519,7 @@ def test_prompt_snapshot_projection_does_not_expose_raw_strict_grid():
     assert record["type"] == MAP_TYPE_STRICT_LOCAL
     assert record["facts"][0]["id"] == "visible-pressure"
     assert "grid" not in record
+    assert "grid" not in projected_snapshot["battle"]
     assert "secret-stalker" not in rendered
+    assert "secret-stalker" not in str(projected_snapshot["battle"])
     assert "'x': 4" not in rendered
