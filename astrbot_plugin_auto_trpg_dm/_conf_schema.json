@@ -139,6 +139,11 @@
     "type": "string",
     "hint": ""
   },
+  "ambient_image_user_agent": {
+    "description": "独立生图 API 请求使用的 User-Agent。通常留空使用默认浏览器 UA；只有服务商规则变化时才需要改。",
+    "type": "string",
+    "hint": ""
+  },
   "ambient_image_model": {
     "description": "图片生成模型名。",
     "type": "string",

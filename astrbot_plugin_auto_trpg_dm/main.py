@@ -37,7 +37,7 @@ from .tools.registry import ToolRegistry
 from .tools.turn_tools import TurnTools
 
 
-PLUGIN_VERSION = "0.1.88"
+PLUGIN_VERSION = "0.1.89"
 
 
 @register(
@@ -94,6 +94,7 @@ class AutoTrpgDmPlugin(Star):
             base_url=self._config_str("ambient_image_base_url", "https://www.packyapi.com"),
             api_key=self._config_str("ambient_image_api_key", ""),
             api_key_env=self._config_str("ambient_image_api_key_env", "PACKYAPI_SORA_API_KEY"),
+            user_agent=self._config_str("ambient_image_user_agent", ""),
             model=self._config_str("ambient_image_model", "gpt-image-2"),
             prompt_model=self._config_str("ambient_image_prompt_model", ""),
             size=self._config_str("ambient_image_size", "1536x1024"),

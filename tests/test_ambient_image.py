@@ -129,6 +129,7 @@ def test_images_api_payload_defaults_to_single_medium_quality_1_5k_and_parses_ur
 
     def fake_get(url, headers, timeout):
         assert url == "https://cdn.example/img.png"
+        captured["download_headers"] = headers
         return 200, {"content-type": "image/png"}, b"png-bytes"
 
     provider = AmbientImageProvider(
@@ -147,9 +148,35 @@ def test_images_api_payload_defaults_to_single_medium_quality_1_5k_and_parses_ur
     assert captured["payload"]["n"] == 1
     assert captured["payload"]["size"] == "1536x1024"
     assert captured["payload"]["quality"] == "medium"
+    assert "Mozilla/5.0" in captured["headers"]["User-Agent"]
+    assert "Mozilla/5.0" in captured["download_headers"]["User-Agent"]
     assert captured["timeout"] == 120
     assert result["image_bytes"] == b"png-bytes"
     assert result["extension"] == "png"
+
+
+def test_ambient_image_custom_user_agent_is_used_for_provider_request():
+    captured = {}
+
+    def fake_post(url, headers, payload, timeout):
+        captured.update({"headers": headers})
+        return 200, {"content-type": "application/json"}, json.dumps({"data": [{"b64_json": base64.b64encode(b"png").decode()}]}).encode()
+
+    provider = AmbientImageProvider(
+        AmbientImageConfig(
+            enabled=True,
+            api_key_env="PACKY_KEY",
+            response_format="b64_json",
+            user_agent="CustomAmbientClient/1.0",
+        ),
+        environ={"PACKY_KEY": "secret"},
+        http_post=fake_post,
+    )
+
+    result = asyncio.run(provider.generate("城堡夜色"))
+
+    assert result["ok"] is True
+    assert captured["headers"]["User-Agent"] == "CustomAmbientClient/1.0"
 
 
 def test_images_api_parses_b64_json():

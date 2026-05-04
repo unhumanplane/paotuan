@@ -18,6 +18,11 @@ from typing import Any, Callable, Dict, List, Tuple
 
 AMBIENT_IMAGE_API_MODES = {"images", "chat_completions"}
 DEFAULT_AMBIENT_IMAGE_BASE_URL = "https://www.packyapi.com"
+DEFAULT_AMBIENT_IMAGE_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/124.0.0.0 Safari/537.36"
+)
 MAX_AMBIENT_IMAGE_BYTES = 20 * 1024 * 1024
 MAX_AMBIENT_IMAGE_RESPONSE_BYTES = 30 * 1024 * 1024
 
@@ -29,6 +34,7 @@ class AmbientImageConfig:
     base_url: str = DEFAULT_AMBIENT_IMAGE_BASE_URL
     api_key: str = ""
     api_key_env: str = "PACKYAPI_SORA_API_KEY"
+    user_agent: str = DEFAULT_AMBIENT_IMAGE_USER_AGENT
     model: str = "gpt-image-2"
     prompt_model: str = ""
     size: str = "1536x1024"
@@ -158,6 +164,7 @@ class AmbientImageProvider:
         headers = {
             "Content-Type": "application/json",
             "Accept": "application/json",
+            "User-Agent": self._user_agent(),
             "Authorization": f"Bearer {api_key}",
         }
         timeout = max(1, int(self.config.timeout_seconds or 120))
@@ -252,6 +259,12 @@ class AmbientImageProvider:
         # the old env-name field from the AstrBot UI.
         return api_key_env, "config_legacy_api_key_env", ""
 
+    def _user_agent(self) -> str:
+        return (
+            str(getattr(self.config, "user_agent", "") or DEFAULT_AMBIENT_IMAGE_USER_AGENT).strip()
+            or DEFAULT_AMBIENT_IMAGE_USER_AGENT
+        )
+
     def _materialize_image(self, parse_result: dict[str, Any], timeout: int) -> dict[str, Any]:
         if parse_result.get("b64_json"):
             b64_text = str(parse_result["b64_json"])
@@ -301,7 +314,11 @@ class AmbientImageProvider:
                 "url": image_url,
             }
         try:
-            status, headers, image_bytes = self.http_get(image_url, {"Accept": "image/*"}, timeout)
+            status, headers, image_bytes = self.http_get(
+                image_url,
+                {"Accept": "image/*", "User-Agent": self._user_agent()},
+                timeout,
+            )
         except AmbientImageSizeLimitError as exc:
             return {**_too_large_result(exc), "url": image_url}
         except AmbientImageUrlBlockedError as exc:
