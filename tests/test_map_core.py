@@ -4,6 +4,8 @@ from astrbot_plugin_auto_trpg_dm.core.map_core import (
     MAP_AUTHORITY_RA_CANDIDATE,
     MAP_AUTHORITY_SPATIAL,
     MAP_SCHEMA_VERSION,
+    MAP_EVENT_ADD_FACT,
+    MAP_EVENT_CREATE_RECORD,
     MAP_VIEW_DIAGNOSTIC,
     MAP_VIEW_DM_NARRATION,
     MAP_VIEW_PLAYER,
@@ -21,6 +23,7 @@ from astrbot_plugin_auto_trpg_dm.core.map_core import (
     project_active_map_record,
     project_map_store,
     update_map_record,
+    validate_candidate_map_event,
 )
 from astrbot_plugin_auto_trpg_dm.core.models import GameSession
 
@@ -214,3 +217,103 @@ def test_diagnostic_projection_reports_counts_without_fact_payloads():
     assert diagnostic["records"]["overview-1"]["hidden_fact_count"] == 1
     assert "hidden-trap-trigger" not in str(diagnostic)
     assert '"x": 3' not in str(diagnostic)
+
+
+def test_candidate_map_event_validates_proposal_without_mutating_store():
+    store = default_map_store()
+    create_map_record(store, "overview-1", visibility=MAP_VISIBILITY_DM, set_active=True)
+    before = normalize_map_store(store)
+
+    validation = validate_candidate_map_event(
+        store,
+        {
+            "event_type": MAP_EVENT_ADD_FACT,
+            "map_id": "overview-1",
+            "payload": {
+                "fact_id": "loose-stone",
+                "kind": "feature",
+                "text": "A loose stone marks the old drain.",
+                "visibility": MAP_VISIBILITY_DM,
+            },
+            "source": "ra",
+            "confidence": 0.8,
+        },
+    )
+
+    assert validation["ok"] is True
+    assert validation["status"] == "candidate_valid"
+    assert validation["event"]["payload"]["fact_id"] == "loose-stone"
+    assert normalize_map_store(store) == before
+
+
+def test_candidate_map_event_rejects_raw_patch_attempts():
+    store = default_map_store()
+    create_map_record(store, "overview-1")
+
+    validation = validate_candidate_map_event(
+        store,
+        {
+            "event_type": MAP_EVENT_ADD_FACT,
+            "map_id": "overview-1",
+            "patch": {"records": {"overview-1": {"facts": []}}},
+            "payload": {"fact_id": "f1", "kind": "feature"},
+        },
+    )
+
+    assert validation["ok"] is False
+    assert validation["reason"] == "raw_patch_not_allowed"
+    assert "patch" in validation["blocked_keys"]
+
+
+def test_candidate_map_event_rejects_hidden_visibility_from_agents():
+    store = default_map_store()
+    create_map_record(store, "overview-1")
+
+    validation = validate_candidate_map_event(
+        store,
+        {
+            "event_type": MAP_EVENT_ADD_FACT,
+            "map_id": "overview-1",
+            "payload": {
+                "fact_id": "hidden-trigger",
+                "kind": "trap",
+                "visibility": MAP_VISIBILITY_HIDDEN,
+            },
+        },
+    )
+
+    assert validation["ok"] is False
+    assert validation["reason"] == "candidate_visibility_not_allowed"
+
+
+def test_candidate_map_event_rejects_unknown_map_or_unsupported_event():
+    store = default_map_store()
+
+    unknown = validate_candidate_map_event(
+        store,
+        {
+            "event_type": MAP_EVENT_ADD_FACT,
+            "map_id": "missing",
+            "payload": {"fact_id": "f1", "kind": "feature"},
+        },
+    )
+    unsupported = validate_candidate_map_event(
+        store,
+        {
+            "event_type": "direct_state_patch",
+            "map_id": "missing",
+            "payload": {},
+        },
+    )
+    create_candidate = validate_candidate_map_event(
+        store,
+        {
+            "event_type": MAP_EVENT_CREATE_RECORD,
+            "map_id": "new-map",
+            "payload": {"title": "New map"},
+        },
+    )
+
+    assert unknown["reason"] == "unknown_map_id"
+    assert unsupported["reason"] == "unsupported_event_type"
+    assert create_candidate["ok"] is True

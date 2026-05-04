@@ -39,6 +39,31 @@ MAP_AUTHORITIES = {
     MAP_AUTHORITY_VISUAL,
 }
 
+MAP_EVENT_CREATE_RECORD = "create_map_record"
+MAP_EVENT_ADD_FACT = "add_fact"
+MAP_EVENT_LINK_RENDER_REF = "link_render_ref"
+MAP_EVENT_SET_ACTIVE = "set_active_map"
+
+MAP_CANDIDATE_EVENT_TYPES = {
+    MAP_EVENT_CREATE_RECORD,
+    MAP_EVENT_ADD_FACT,
+    MAP_EVENT_LINK_RENDER_REF,
+    MAP_EVENT_SET_ACTIVE,
+}
+MAP_CANDIDATE_BLOCKED_KEYS = {
+    "maps",
+    "raw_map_store",
+    "raw_store",
+    "state_patch",
+    "patch",
+    "direct_patch",
+}
+MAP_CANDIDATE_ALLOWED_VISIBILITIES = {
+    MAP_VISIBILITY_PUBLIC,
+    MAP_VISIBILITY_PLAYER,
+    MAP_VISIBILITY_DM,
+}
+
 
 def default_map_store() -> dict[str, Any]:
     return {
@@ -239,6 +264,50 @@ def project_active_map_record(
     return deepcopy(record) if isinstance(record, dict) else None
 
 
+def validate_candidate_map_event(store: dict[str, Any], event: Any) -> dict[str, Any]:
+    if not isinstance(event, dict):
+        return _candidate_rejected("invalid_candidate_type")
+    blocked = _blocked_candidate_keys(event)
+    if blocked:
+        return _candidate_rejected("raw_patch_not_allowed", blocked_keys=blocked)
+    event_type = str(event.get("event_type") or event.get("type") or "").strip()
+    if event_type not in MAP_CANDIDATE_EVENT_TYPES:
+        return _candidate_rejected("unsupported_event_type", event_type=event_type)
+    map_id = str(event.get("map_id") or "").strip()
+    if not map_id:
+        return _candidate_rejected("map_id_required", event_type=event_type)
+    normalized = normalize_map_store(store)
+    payload = event.get("payload", {})
+    if payload in (None, ""):
+        payload = {}
+    if not isinstance(payload, dict):
+        return _candidate_rejected("invalid_payload_type", event_type=event_type, map_id=map_id)
+    if event_type != MAP_EVENT_CREATE_RECORD and map_id not in normalized["records"]:
+        return _candidate_rejected("unknown_map_id", event_type=event_type, map_id=map_id)
+    visibility = str(payload.get("visibility") or event.get("visibility") or MAP_VISIBILITY_DM)
+    if visibility not in MAP_CANDIDATE_ALLOWED_VISIBILITIES:
+        return _candidate_rejected(
+            "candidate_visibility_not_allowed",
+            event_type=event_type,
+            map_id=map_id,
+            visibility=visibility,
+        )
+    field_error = _candidate_field_error(event_type, payload)
+    if field_error:
+        return _candidate_rejected(field_error, event_type=event_type, map_id=map_id)
+    return {
+        "ok": True,
+        "status": "candidate_valid",
+        "event": {
+            "event_type": event_type,
+            "map_id": map_id,
+            "payload": _candidate_payload(event_type, payload),
+            "source": _short_text(event.get("source") or "", 120),
+            "confidence": _safe_confidence(event.get("confidence")),
+        },
+    }
+
+
 def _new_map_record(
     map_id: str,
     *,
@@ -347,6 +416,77 @@ def _allowed_visibility_for_view(view: str) -> set[str]:
     if view == MAP_VIEW_RA_AUTHORITY:
         return {MAP_VISIBILITY_PUBLIC, MAP_VISIBILITY_PLAYER, MAP_VISIBILITY_DM}
     raise ValueError(f"unsupported_map_view:{view}")
+
+
+def _candidate_field_error(event_type: str, payload: dict[str, Any]) -> str:
+    if event_type == MAP_EVENT_ADD_FACT:
+        if not str(payload.get("fact_id") or payload.get("id") or "").strip():
+            return "fact_id_required"
+        if not str(payload.get("kind") or "").strip():
+            return "fact_kind_required"
+    if event_type == MAP_EVENT_LINK_RENDER_REF and not str(payload.get("ref_type") or payload.get("type") or "").strip():
+        return "render_ref_type_required"
+    if event_type == MAP_EVENT_SET_ACTIVE and not (payload.get("overview") or payload.get("strict")):
+        return "active_slot_required"
+    return ""
+
+
+def _candidate_payload(event_type: str, payload: dict[str, Any]) -> dict[str, Any]:
+    if event_type == MAP_EVENT_CREATE_RECORD:
+        return {
+            "title": _short_text(payload.get("title") or "", 160),
+            "map_type": _short_text(payload.get("map_type") or payload.get("type") or "overview", 80),
+            "visibility": str(payload.get("visibility") or MAP_VISIBILITY_DM),
+        }
+    if event_type == MAP_EVENT_ADD_FACT:
+        return {
+            "fact_id": _short_text(payload.get("fact_id") or payload.get("id") or "", 120),
+            "kind": _short_text(payload.get("kind") or "", 80),
+            "text": _short_text(payload.get("text") or "", 1000),
+            "payload": _json_safe(payload.get("payload") or {}),
+            "visibility": str(payload.get("visibility") or MAP_VISIBILITY_DM),
+        }
+    if event_type == MAP_EVENT_LINK_RENDER_REF:
+        return {
+            "ref_type": _short_text(payload.get("ref_type") or payload.get("type") or "", 80),
+            "title": _short_text(payload.get("title") or "", 160),
+            "name": _short_text(payload.get("name") or "", 160),
+            "visual_only": bool(payload.get("visual_only", True)),
+        }
+    if event_type == MAP_EVENT_SET_ACTIVE:
+        return {
+            "overview": bool(payload.get("overview")),
+            "strict": bool(payload.get("strict")),
+        }
+    return {}
+
+
+def _blocked_candidate_keys(value: Any) -> list[str]:
+    blocked: set[str] = set()
+    if isinstance(value, dict):
+        for key, item in value.items():
+            key_text = str(key)
+            if key_text in MAP_CANDIDATE_BLOCKED_KEYS:
+                blocked.add(key_text)
+            blocked.update(_blocked_candidate_keys(item))
+    elif isinstance(value, list):
+        for item in value:
+            blocked.update(_blocked_candidate_keys(item))
+    return sorted(blocked)
+
+
+def _candidate_rejected(reason: str, **details: Any) -> dict[str, Any]:
+    result = {"ok": False, "status": "candidate_rejected", "reason": reason}
+    result.update({key: _json_safe(value) for key, value in details.items() if value not in (None, "", [], {})})
+    return result
+
+
+def _safe_confidence(value: Any) -> float:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return 0.0
+    return max(0.0, min(1.0, number))
 
 
 def _normalize_map_record(map_id: Any, value: dict[str, Any]) -> dict[str, Any]:
