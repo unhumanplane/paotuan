@@ -83,6 +83,7 @@ class SpatialTools:
             map_id=DEFAULT_STRICT_LOCAL_MAP_ID,
             title="Battle grid",
             authority=MAP_AUTHORITY_SPATIAL,
+            source="spatial_tool_create_grid",
             authority_assumption="spatial_tool_create_grid",
         )
         session.battle = {
