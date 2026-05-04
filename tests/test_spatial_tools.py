@@ -105,6 +105,26 @@ def test_move_entity_prefers_strict_local_map_over_stale_legacy_mirror():
     assert get_map_record(session.maps, map_id)["grid"]["entities"]["pc"]["x"] == 2
 
 
+def test_check_attack_vector_prefers_strict_local_map_over_stale_legacy_mirror():
+    repo = _repo("attack_vector")
+    repo.save_session(_ready_session())
+    tools = SpatialTools(repo, "group")
+    asyncio.run(tools.create_grid(width=8, height=3))
+    asyncio.run(tools.place_entity("pc", "PC", 0, 1, attack_range=5))
+    asyncio.run(tools.place_entity("npc", "NPC", 5, 1, blocks_move=True))
+
+    session = repo.load_session("group")
+    session.battle["grid"]["entities"]["npc"]["x"] = 7
+    repo.save_session(session)
+
+    result = asyncio.run(tools.check_attack_vector("pc", "npc"))
+
+    assert result["ok"] is True
+    assert result["can_attack"] is True
+    assert result["distance"] == 5
+    assert "calculation" not in result
+
+
 def test_legacy_battle_grid_is_migrated_on_spatial_tool_load():
     repo = _repo("legacy_migration")
     session = GameSession.new("group")
