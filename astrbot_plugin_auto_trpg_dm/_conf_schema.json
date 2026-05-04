@@ -130,9 +130,14 @@
     "hint": "https://www.packyapi.com"
   },
   "ambient_image_api_key_env": {
-    "description": "PackyAPI Sora 分组令牌所在的环境变量名。不要把真实 API key 写进配置。",
+    "description": "PackyAPI Sora 分组令牌所在的环境变量名。高级用法；普通用户可以改填 ambient_image_api_key。",
     "type": "string",
     "hint": "PACKYAPI_SORA_API_KEY"
+  },
+  "ambient_image_api_key": {
+    "description": "PackyAPI Sora 分组令牌。可直接在这里填真实 API key；留空时会改用 ambient_image_api_key_env 指向的环境变量。日志和审计不会记录此值。",
+    "type": "string",
+    "hint": ""
   },
   "ambient_image_model": {
     "description": "图片生成模型名。",

@@ -92,6 +92,7 @@ class AutoTrpgDmPlugin(Star):
             enabled=self._config_bool("ambient_image_enabled", False),
             api_mode=self._config_str("ambient_image_api_mode", "images"),
             base_url=self._config_str("ambient_image_base_url", "https://www.packyapi.com"),
+            api_key=self._config_str("ambient_image_api_key", ""),
             api_key_env=self._config_str("ambient_image_api_key_env", "PACKYAPI_SORA_API_KEY"),
             model=self._config_str("ambient_image_model", "gpt-image-2"),
             prompt_model=self._config_str("ambient_image_prompt_model", ""),
@@ -2578,13 +2579,13 @@ def _format_ambient_image_failure_reply(result: dict[str, Any]) -> str:
         if not _looks_like_env_var_name(env_name):
             return (
                 "独立生图 API key 没有读取到。"
-                "`ambient_image_api_key_env` 应填写环境变量名，不是 key 本身；当前值不像环境变量名，已隐藏。"
-                "请把真实 key 设置到 AstrBot 运行进程的环境变量里，重启 AstrBot 后再试。"
+                "可以直接在插件配置的 `ambient_image_api_key` 填真实 key；"
+                "`ambient_image_api_key_env` 只在你想用环境变量时填写变量名。"
             )
         return (
             "独立生图 API key 没有读取到。"
-            f"当前配置读取环境变量 `{env_name}`；请把真实 key 设置到 AstrBot 运行进程的这个环境变量里，重启 AstrBot 后再试。"
-            "`ambient_image_api_key_env` 填的是环境变量名，不是 key 本身。"
+            "最简单的填法：在插件配置里把 `ambient_image_api_key` 填成真实 key。"
+            f"如果你想继续用环境变量，则当前会读取 `{env_name}`，需要把真实 key 设置到 AstrBot 运行进程的这个环境变量里并重启。"
         )
     if code == "ambient_image_api_mode_invalid":
         return "独立生图 API 模式无效；`ambient_image_api_mode` 只能是 `images` 或 `chat_completions`。"

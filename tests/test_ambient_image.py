@@ -82,6 +82,44 @@ def test_ambient_image_missing_api_key_degrades_without_call():
     assert calls == []
 
 
+def test_ambient_image_direct_config_api_key_avoids_env_requirement():
+    captured = {}
+
+    def fake_post(url, headers, payload, timeout):
+        captured.update({"headers": headers})
+        return 200, {"content-type": "application/json"}, json.dumps({"data": [{"b64_json": base64.b64encode(b"png").decode()}]}).encode()
+
+    provider = AmbientImageProvider(
+        AmbientImageConfig(enabled=True, api_key="direct-secret", response_format="b64_json"),
+        environ={},
+        http_post=fake_post,
+    )
+
+    result = asyncio.run(provider.generate("城堡夜色"))
+
+    assert result["ok"] is True
+    assert captured["headers"]["Authorization"] == "Bearer direct-secret"
+
+
+def test_ambient_image_legacy_env_field_accepts_pasted_key():
+    captured = {}
+
+    def fake_post(url, headers, payload, timeout):
+        captured.update({"headers": headers})
+        return 200, {"content-type": "application/json"}, json.dumps({"data": [{"b64_json": base64.b64encode(b"png").decode()}]}).encode()
+
+    provider = AmbientImageProvider(
+        AmbientImageConfig(enabled=True, api_key_env="sk-pasted-secret", response_format="b64_json"),
+        environ={},
+        http_post=fake_post,
+    )
+
+    result = asyncio.run(provider.generate("城堡夜色"))
+
+    assert result["ok"] is True
+    assert captured["headers"]["Authorization"] == "Bearer sk-pasted-secret"
+
+
 def test_images_api_payload_defaults_to_single_medium_quality_1_5k_and_parses_url():
     captured = {}
 
