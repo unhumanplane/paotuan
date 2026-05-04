@@ -6,6 +6,7 @@ from astrbot_plugin_auto_trpg_dm.core.map_core import (
     MAP_SCHEMA_VERSION,
     MAP_EVENT_ADD_FACT,
     MAP_EVENT_CREATE_RECORD,
+    MAP_TYPE_STRICT_LOCAL,
     MAP_VIEW_DIAGNOSTIC,
     MAP_VIEW_DM_NARRATION,
     MAP_VIEW_PLAYER,
@@ -19,9 +20,12 @@ from astrbot_plugin_auto_trpg_dm.core.map_core import (
     create_map_record,
     default_map_store,
     get_map_record,
+    load_active_strict_grid,
+    migrate_legacy_battle_grid,
     normalize_map_store,
     project_active_map_record,
     project_map_store,
+    save_active_strict_grid,
     update_map_record,
     validate_candidate_map_event,
 )
@@ -56,6 +60,7 @@ def test_map_store_normalization_drops_invalid_active_ids():
 
     assert store["active_overview_map_id"] == ""
     assert store["active_strict_map_id"] == "strict-1"
+    assert store["records"]["strict-1"]["type"] == MAP_TYPE_STRICT_LOCAL
     assert store["records"]["strict-1"]["visibility"] == MAP_VISIBILITY_HIDDEN
     assert store["records"]["strict-1"]["authority"] == MAP_AUTHORITY_SPATIAL
 
@@ -317,3 +322,81 @@ def test_candidate_map_event_rejects_unknown_map_or_unsupported_event():
     assert unknown["reason"] == "unknown_map_id"
     assert unsupported["reason"] == "unsupported_event_type"
     assert create_candidate["ok"] is True
+
+
+def test_create_map_record_sets_strict_local_map_active_slot():
+    store = default_map_store()
+
+    record = create_map_record(
+        store,
+        "combat-room",
+        title="Combat room",
+        map_type=MAP_TYPE_STRICT_LOCAL,
+        authority=MAP_AUTHORITY_SPATIAL,
+        set_active=True,
+    )
+
+    assert record["type"] == MAP_TYPE_STRICT_LOCAL
+    assert store["active_strict_map_id"] == "combat-room"
+    assert store["active_overview_map_id"] == ""
+
+
+def test_load_active_strict_grid_prefers_map_store_over_legacy_battle_grid():
+    store = default_map_store()
+    strict_grid = {"width": 3, "height": 3, "cells": [], "entities": {"pc": {"x": 1, "y": 1}}}
+    legacy_battle = {
+        "active": True,
+        "grid": {"width": 9, "height": 9, "cells": [], "entities": {"legacy": {"x": 8, "y": 8}}},
+    }
+    save_active_strict_grid(store, strict_grid, map_id="strict-room")
+
+    loaded = load_active_strict_grid(store, legacy_battle)
+
+    assert loaded["ok"] is True
+    assert loaded["source"] == "map_store"
+    assert loaded["map_id"] == "strict-room"
+    assert loaded["grid"] == strict_grid
+
+
+def test_load_active_strict_grid_falls_back_to_legacy_battle_grid():
+    store = default_map_store()
+    legacy_grid = {"width": 9, "height": 9, "cells": [], "entities": {"legacy": {"x": 8, "y": 8}}}
+
+    loaded = load_active_strict_grid(store, {"active": True, "grid": legacy_grid})
+
+    assert loaded["ok"] is True
+    assert loaded["source"] == "legacy_battle_grid"
+    assert loaded["grid"] == legacy_grid
+    assert loaded["migration_required"] is True
+
+
+def test_migrate_legacy_battle_grid_wraps_grid_with_auditable_metadata():
+    store = default_map_store()
+    legacy_grid = {"width": 5, "height": 5, "cells": [], "entities": {"pc": {"x": 0, "y": 0}}}
+
+    migration = migrate_legacy_battle_grid(store, {"active": True, "grid": legacy_grid}, map_id="legacy-room")
+
+    assert migration["ok"] is True
+    assert migration["status"] == "legacy_battle_grid_migrated"
+    assert migration["map_id"] == "legacy-room"
+    assert store["active_strict_map_id"] == "legacy-room"
+    record = get_map_record(store, "legacy-room")
+    assert record["type"] == MAP_TYPE_STRICT_LOCAL
+    assert record["grid"] == legacy_grid
+    assert record["archive_identity"]["migration_source"] == "battle.grid"
+    assert record["archive_identity"]["strict_grid_adapter_version"] == 1
+
+
+def test_migrate_legacy_battle_grid_does_not_overwrite_map_store_authority():
+    store = default_map_store()
+    strict_grid = {"width": 3, "height": 3, "cells": [], "entities": {"pc": {"x": 1, "y": 1}}}
+    legacy_grid = {"width": 9, "height": 9, "cells": [], "entities": {"legacy": {"x": 8, "y": 8}}}
+    save_active_strict_grid(store, strict_grid, map_id="strict-room")
+
+    migration = migrate_legacy_battle_grid(store, {"active": True, "grid": legacy_grid}, map_id="legacy-room")
+
+    assert migration["ok"] is True
+    assert migration["status"] == "strict_grid_already_authoritative"
+    assert migration["migrated"] is False
+    assert store["active_strict_map_id"] == "strict-room"
+    assert get_map_record(store, "strict-room")["grid"] == strict_grid
