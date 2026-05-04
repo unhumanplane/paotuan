@@ -7,6 +7,8 @@ from pydantic import BaseModel, Field
 from ..core.map_core import (
     DEFAULT_STRICT_LOCAL_MAP_ID,
     MAP_AUTHORITY_SPATIAL,
+    MAP_LIFECYCLE_ACTIVE_COMBAT_LINKED,
+    get_strict_map_lifecycle,
     load_active_strict_grid,
     migrate_legacy_battle_grid,
     save_active_strict_grid,
@@ -212,8 +214,11 @@ class SpatialTools:
             authority=MAP_AUTHORITY_SPATIAL,
             authority_assumption="spatial_tool_strict_grid_write",
         )
-        battle["active"] = True
-        battle["map_id"] = record["id"]
+        lifecycle = get_strict_map_lifecycle(session.maps, record["id"])
+        combat_linked = bool(battle.get("active") or lifecycle.get("lifecycle") == MAP_LIFECYCLE_ACTIVE_COMBAT_LINKED)
+        battle["active"] = combat_linked
+        if combat_linked:
+            battle["map_id"] = record["id"]
         battle["grid"] = grid_data
         battle.setdefault("turn_entity_id", "")
         session.battle = battle

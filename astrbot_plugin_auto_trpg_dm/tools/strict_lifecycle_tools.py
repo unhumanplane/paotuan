@@ -170,7 +170,7 @@ class StrictLifecycleTools:
             source="strict_lifecycle_end_combat",
         )
         battle["active"] = False
-        battle["map_id"] = selected_id
+        battle["map_id"] = ""
         if isinstance(record.get("grid"), dict):
             battle["grid"] = record["grid"]
         battle["turn_entity_id"] = ""

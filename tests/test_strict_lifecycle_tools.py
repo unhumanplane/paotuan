@@ -10,6 +10,7 @@ from astrbot_plugin_auto_trpg_dm.core.map_core import (
 )
 from astrbot_plugin_auto_trpg_dm.core.models import GameMode, GameSession
 from astrbot_plugin_auto_trpg_dm.storage.json_repository import JsonGameRepository
+from astrbot_plugin_auto_trpg_dm.tools.spatial_tools import SpatialTools
 from astrbot_plugin_auto_trpg_dm.tools.strict_lifecycle_tools import StrictLifecycleTools
 
 
@@ -75,10 +76,32 @@ def test_end_combat_preserves_strict_map_as_active_exploration():
     session = repo.load_session("group")
     assert session.mode == GameMode.NARRATIVE
     assert session.battle["active"] is False
-    assert session.battle["map_id"] == created["map_id"]
+    assert session.battle["map_id"] == ""
     assert session.battle["grid"]["width"] == 5
     assert session.battle["turn"]["active"] is False
     assert session.battle["turn"]["phase"] == "ended"
     lifecycle = get_strict_map_lifecycle(session.maps, created["map_id"])
     assert lifecycle["active"] is True
+    assert lifecycle["combat_linked"] is False
+
+
+def test_spatial_writes_after_end_combat_do_not_reactivate_combat():
+    repo = _repo("post_combat_spatial_write")
+    repo.save_session(_ready_session())
+    lifecycle_tools = StrictLifecycleTools(repo, "group")
+    spatial_tools = SpatialTools(repo, "group")
+    created = asyncio.run(lifecycle_tools.create_strict_map(width=5, height=5))
+    asyncio.run(lifecycle_tools.start_combat_on_map(map_id=created["map_id"]))
+    asyncio.run(lifecycle_tools.end_combat())
+
+    result = asyncio.run(spatial_tools.place_entity("chest", "Chest", 2, 2, blocks_move=False))
+
+    assert result["ok"] is True
+    session = repo.load_session("group")
+    assert session.battle["active"] is False
+    assert session.battle["map_id"] == ""
+    record = get_map_record(session.maps, created["map_id"])
+    assert record["grid"]["entities"]["chest"]["x"] == 2
+    lifecycle = get_strict_map_lifecycle(session.maps, created["map_id"])
+    assert lifecycle["lifecycle"] == MAP_LIFECYCLE_ACTIVE_EXPLORATION
     assert lifecycle["combat_linked"] is False
