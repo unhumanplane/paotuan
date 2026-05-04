@@ -23,6 +23,7 @@
 - 支持 `/DM`、`/Dm`、`/dM` 等大小写误用。
 - 玩家不需要记忆 `/move`、`/attack`、`/roll` 这类命令，Intent Router 会按场景选择工具。
 - 普通 DM 回复会抑制“1/2/3 选项”“还是 A/B/C”“下一步菜单”这类行动菜单，让玩家直接描述想尝试的行动；设计边界见 [docs/dm-outbound-cleanup.md](docs/dm-outbound-cleanup.md)。
+- 当一次 bot-handled `/dm` 请求超过配置阈值仍未完成时，可以发送一条带明确前缀的短等待提示；配置和边界见 [docs/long-running-reassurance.md](docs/long-running-reassurance.md)。
 
 ### 跑团状态与角色
 
