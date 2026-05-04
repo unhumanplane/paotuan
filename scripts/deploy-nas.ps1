@@ -272,35 +272,30 @@ keep=$keep
 parent=`$(dirname "`$remote_dir")
 name=`$(basename "`$remote_dir")
 stage="`$parent/.`$name.deploy.`$stamp"
-old="`$parent/.`$name.previous.`$stamp"
+source_dir="`$stage/astrbot_plugin_auto_trpg_dm"
 
 mkdir -p "`$parent" "`$backup_dir"
 rm -rf "`$stage"
 mkdir -p "`$stage"
 tar -xf "`$archive" -C "`$stage"
-test -f "`$stage/astrbot_plugin_auto_trpg_dm/main.py"
-test -f "`$stage/astrbot_plugin_auto_trpg_dm/metadata.yaml"
+test -f "`$source_dir/main.py"
+test -f "`$source_dir/metadata.yaml"
 
 if [ -d "`$remote_dir" ]; then
     tar -czf "`$backup_dir/`$name.`$stamp.`$commit.tgz" -C "`$parent" "`$name"
-    find "`$remote_dir" -type d -name '__pycache__' -prune -exec rm -rf {} + 2>/dev/null || true
-    mv "`$remote_dir" "`$old"
-fi
-
-if ! mv "`$stage/astrbot_plugin_auto_trpg_dm" "`$remote_dir"; then
-    if [ -d "`$old" ]; then
-        mv "`$old" "`$remote_dir"
-    fi
-    exit 23
+    find "`$remote_dir" -path '*/__pycache__/*' -prune -o -type f ! -name '*.pyc' -print | while IFS= read -r file; do
+        rel=`${file#"`$remote_dir"/}
+        if [ ! -f "`$source_dir/`$rel" ]; then
+            rm -f "`$file"
+        fi
+    done
+    (cd "`$source_dir" && tar -cf - .) | (cd "`$remote_dir" && tar -xf -)
+    find "`$remote_dir" -depth -type d ! -name '__pycache__' -empty -exec rmdir {} + 2>/dev/null || true
+else
+    mv "`$source_dir" "`$remote_dir"
 fi
 
 rm -rf "`$stage"
-if [ -d "`$old" ]; then
-    find "`$old" -type d -name '__pycache__' -prune -exec rm -rf {} + 2>/dev/null || true
-    if ! rm -rf "`$old"; then
-        echo "warning: previous plugin directory could not be fully removed: `$old" >&2
-    fi
-fi
 rm -f "`$archive"
 
 count=0
