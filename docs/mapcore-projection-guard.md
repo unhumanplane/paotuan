@@ -1,0 +1,245 @@
+# MapCore 投影护栏设计
+
+本文说明 paotuan 的 MapCore 骨架、角色投影和候选地图事件边界。它的核心目的不是替换现有战棋引擎，而是在地图事实进入 DM prompt、Recorder Agent 简称 RA、诊断快照或后续地图工具之前，先建立一层可测试的 code-owned contract。
+
+## 目标
+
+- 在 `GameSession` 上提供一等 `maps` store，用于保存地图记录、地图事实、视觉渲染引用和归档身份。
+- 在 code 层提供稳定的投影 API，让不同角色只能看到自己允许消费的地图视图。
+- 防止 DM / RA / LLM 读取 raw map store、隐藏地图事实、本地文件路径、provider URL 或 raw SVG。
+- 让 RA 或其它 agent 只能提出 candidate map event，由本地 code 校验；agent 不能直接 patch 权威状态。
+- 保持旧存档兼容：缺少 `maps` 字段的存档会加载为空 MapCore store。
+
+## 非目标
+
+- 不迁移现有 `session.battle["grid"]`。
+- 不重写 `spatial/` 下的坐标、移动、距离、视线、掩体和路径逻辑。
+- 不改变 `tools/map_tools.py` 的 SVG / PNG 地图生成语义。
+- 不让 RA 获得工具访问权或直接写入地图 store。
+- 不把 `hidden` 地图事实暴露给 DM prompt、RA prompt 或玩家视图。
+- 不引入新的持久化后端、数据库迁移或外部地图服务。
+
+## 当前边界
+
+`battle.grid` 仍是严格战棋事实的权威来源。坐标、实体位置、障碍、视线、距离、掩体、回合顺序和行动结算仍由 `spatial/`、`battle` 和相关工具负责。
+
+MapCore store 负责更高层的地图元数据和语义事实，例如“当前概览地图是哪张”“某张地图有哪些已公开线索”“某张视觉图对应哪个地图记录”。它不替代战棋网格，也不作为绕过 spatial 校验的入口。
+
+SVG / PNG 地图和氛围图片都属于视觉辅助。视觉引用可以被记录为 `render_refs`，但它们不能自行改写地图事实。对 LLM 可见的 render ref 只保留安全描述字段，不包含本地 path、URL 或 raw SVG。
+
+## Store Schema
+
+`GameSession.maps` 由 `core/map_core.py` 管理，默认结构如下：
+
+```json
+{
+  "schema_version": 1,
+  "active_overview_map_id": "",
+  "active_strict_map_id": "",
+  "records": {},
+  "archive_identity": {}
+}
+```
+
+字段含义：
+
+| 字段 | 含义 |
+| --- | --- |
+| `schema_version` | MapCore store schema 版本。当前为 `1`。 |
+| `active_overview_map_id` | 当前概览地图记录 ID。用于剧情、区域和大范围位置理解。 |
+| `active_strict_map_id` | 当前严格战棋地图记录 ID。用于与 `battle.grid` 对齐。 |
+| `records` | 以 `map_id` 为 key 的地图记录集合。 |
+| `archive_identity` | 跨归档、导出或未来迁移时使用的 store 级身份信息。 |
+
+地图记录结构：
+
+```json
+{
+  "id": "overview-1",
+  "record_version": 1,
+  "type": "overview",
+  "title": "废城外环",
+  "authority": "code",
+  "visibility": "dm",
+  "facts": [],
+  "render_refs": [],
+  "archive_identity": {},
+  "created_at": "2026-05-04T00:00:00+00:00",
+  "updated_at": "2026-05-04T00:00:00+00:00"
+}
+```
+
+地图事实结构：
+
+```json
+{
+  "id": "north-gate",
+  "kind": "terrain",
+  "text": "北门内侧有倒塌的马车形成半掩体。",
+  "payload": {},
+  "authority": "code",
+  "visibility": "dm",
+  "source": "dm_note",
+  "created_at": "2026-05-04T00:00:00+00:00"
+}
+```
+
+渲染引用结构：
+
+```json
+{
+  "type": "svg_map",
+  "title": "废城外环 SVG",
+  "name": "outer-ring.svg",
+  "path": "...",
+  "url": "...",
+  "visual_only": true,
+  "created_at": "2026-05-04T00:00:00+00:00"
+}
+```
+
+`path` 和 `url` 可以存在于 code-owned store 中，供本地物化、恢复或调试使用；它们不会进入 DM / RA / player 投影视图。
+
+## Visibility 与 Authority
+
+可见性取值：
+
+| Visibility | 可见范围 |
+| --- | --- |
+| `public` | 玩家、DM、RA 都可消费。 |
+| `player` | 玩家、DM、RA 都可消费，语义上属于玩家已知事实。 |
+| `dm` | DM narration 和 RA authority 可消费，玩家视图不可见。 |
+| `hidden` | 仅 code-owned store 可见，不进入 DM / RA / player 投影。 |
+| `diagnostic` | 仅诊断用途；普通角色投影不消费。 |
+
+权威来源取值：
+
+| Authority | 含义 |
+| --- | --- |
+| `code` | 本地代码或工具确认的地图事实。 |
+| `spatial` | 来自现有 spatial/grid 或战棋逻辑的事实。 |
+| `dm` | DM 已确认并写入的地图事实。 |
+| `ra_candidate` | RA 或 agent 提出的候选事实，必须经过 code 校验后才能应用。 |
+| `visual` | 来自视觉渲染或地图图片的辅助引用，不是规则事实。 |
+
+## Role Projection
+
+所有进入 LLM prompt 或面向玩家的地图数据，都必须先经过 `project_map_store()` 或 `project_active_map_record()`。
+
+| View | 调用方 | 可见 visibility | 额外限制 |
+| --- | --- | --- | --- |
+| `player_view` | 未来玩家可见地图或 UI | `public`, `player` | 不含 `dm` / `hidden` facts，不含 raw render path 或 URL。 |
+| `dm_narration_view` | `core/prompts.py` 的 DM snapshot | `public`, `player`, `dm` | 不含 `hidden` facts，不含 raw render path 或 URL。 |
+| `ra_authority_view` | `core/environment_agent.py` 的 RA authority snapshot | `public`, `player`, `dm` | 不含 `hidden` facts，不含 raw render path 或 URL；RA 仍不能直接写 store。 |
+| `diagnostic_view` | 诊断快照 | 计数型视图 | 只暴露 record count、fact count、hidden fact count、render ref count，不暴露 fact payload。 |
+
+当前 prompt 集成点：
+
+- `_diagnostic_snapshot()` 会注入 `diagnostic_view`，并且只在存在地图记录时写入 `snapshot["maps"]`。
+- `_project_snapshot_for_profile()` 会向 DM prompt 注入 `dm_narration_view`。
+- `build_ra_authority_snapshot()` 会向 RA authority snapshot 注入 `ra_authority_view`，再经过 RA payload sanitizer。
+
+## Candidate Map Event
+
+agent / LLM 不能直接修改 `GameSession.maps`。它们只能提交 candidate map event，并由 `validate_candidate_map_event()` 做结构化校验。该函数只返回校验结果，不会 mutate store。
+
+允许的 candidate event：
+
+| Event | 必要条件 | 输出 payload |
+| --- | --- | --- |
+| `create_map_record` | `map_id` 必填；visibility 只能是 `public`、`player`、`dm` | `title`, `map_type`, `visibility` |
+| `add_fact` | `map_id` 必须已存在；`fact_id` 或 `id` 必填；`kind` 必填 | `fact_id`, `kind`, `text`, `payload`, `visibility` |
+| `link_render_ref` | `map_id` 必须已存在；`ref_type` 或 `type` 必填 | `ref_type`, `title`, `name`, `visual_only` |
+| `set_active_map` | `map_id` 必须已存在；`overview` 或 `strict` 至少一个为 true | `overview`, `strict` |
+
+候选事件允许携带 `source` 和 `confidence`。`confidence` 会被裁剪到 `0.0..1.0`。
+
+拒绝矩阵：
+
+| Reason | 触发条件 |
+| --- | --- |
+| `invalid_candidate_type` | candidate 不是 dict。 |
+| `raw_patch_not_allowed` | candidate 任意嵌套层包含 `maps`、`raw_map_store`、`raw_store`、`state_patch`、`patch`、`direct_patch`。 |
+| `unsupported_event_type` | `event_type` / `type` 不在允许列表。 |
+| `map_id_required` | 缺少 `map_id`。 |
+| `invalid_payload_type` | `payload` 不是 dict。 |
+| `unknown_map_id` | 非 create 事件引用不存在的 map record。 |
+| `candidate_visibility_not_allowed` | candidate 要写入 `hidden` 或 `diagnostic` 可见性。 |
+| `fact_id_required` | `add_fact` 缺少 `fact_id` / `id`。 |
+| `fact_kind_required` | `add_fact` 缺少 `kind`。 |
+| `render_ref_type_required` | `link_render_ref` 缺少 `ref_type` / `type`。 |
+| `active_slot_required` | `set_active_map` 没有指定 `overview` 或 `strict`。 |
+
+## 数据流
+
+```text
+code / tools
+  -> GameSession.maps
+  -> normalize_map_store()
+  -> project_map_store(view)
+  -> DM prompt / RA authority snapshot / player-facing map view
+```
+
+```text
+RA / LLM proposal
+  -> candidate map event
+  -> validate_candidate_map_event()
+  -> validated candidate result
+  -> future code-owned apply path
+```
+
+第一条路径是权威状态投影。第二条路径是候选事件校验。两条路径不能合并：投影不写状态，candidate validation 也不直接写状态。
+
+## Agent-Code Responsibility Split
+
+code 负责：
+
+- map schema、默认值、归一化和旧存档兼容；
+- map record / fact / render ref 的写入 helper；
+- visibility、authority、ID、长度、JSON-safe payload 校验；
+- DM、RA、player、diagnostic 四类投影视图；
+- candidate event allowlist、blocked key 检查和错误矩阵；
+- 未来将 validated candidate 应用到 store 的显式工具或服务层。
+
+agent / LLM 只能负责：
+
+- 基于投影后的地图视图理解当前场景；
+- 生成叙事、总结或建议；
+- 在需要改变地图语义时提出 candidate event。
+
+agent / LLM 不能负责：
+
+- 读取 raw `GameSession.maps`；
+- 读取或推断 `hidden` facts；
+- 读取本地 path、provider URL 或 raw SVG；
+- 直接 patch `maps`、`battle.grid` 或其它权威状态；
+- 绕过 candidate validation 写入地图事实。
+
+## 验证
+
+推荐本地验证：
+
+```powershell
+python -m pytest -q tests/test_map_core.py tests/test_prompts.py tests/test_environment_agent.py tests/test_cycle_buffer.py -p no:cacheprovider
+python -m compileall -q astrbot_plugin_auto_trpg_dm tests
+git diff --check
+```
+
+覆盖重点：
+
+- 旧存档加载时自动补默认 `maps` store。
+- map helper 会 copy-out 返回结果，不让调用方靠返回对象偷改 store。
+- `player_view`、`dm_narration_view`、`ra_authority_view` 都过滤 `hidden` facts。
+- render ref 投影不暴露 `path` 或 `url`。
+- `diagnostic_view` 只暴露计数，不暴露 fact payload。
+- DM prompt 和 RA authority snapshot 只接收投影后的 `maps`。
+- candidate event 只做 validation，不 mutate store。
+- raw patch、hidden visibility、未知 map、缺字段事件都会被拒绝。
+
+## 后续扩展点
+
+- 为 validated candidate 增加 code-owned apply 工具，并继续保持“validate 与 apply 分离”。
+- 将 `battle.grid` 的严格空间事实投影成 MapCore `spatial` authority facts，但不反向迁移 grid。
+- 为玩家 UI 或消息输出接入 `player_view`。
+- 为地图归档、导出和跨版本迁移补充 `archive_identity` 规则。
+- 在 SVG map 生成完成后自动写入 `render_refs`，但仍保持视觉引用不改写事实。

@@ -37,6 +37,7 @@
 - 支持地图实体、回合顺序、行动推进和结算阶段。
 - 回合超时后可以执行保守自动行动，避免多人团长期卡住。
 - SVG / PNG 地图只作为视觉展示，不直接改写战棋事实。
+- MapCore 负责地图记录、可见性投影和候选地图事件校验，防止 DM / RA / LLM 读取隐藏地图事实或 raw 地图存储；设计边界见 [docs/mapcore-projection-guard.md](docs/mapcore-projection-guard.md)。
 
 ### 规则与裁定
 
@@ -92,6 +93,7 @@ astrbot_plugin_auto_trpg_dm/
   core/
     router.py             # Intent Router，多步工具调用与模式切换
     models.py             # GameSession、角色、战斗和周期状态模型
+    map_core.py           # MapCore store、角色投影和候选地图事件校验
     prompts.py            # 系统提示与模式提示
     security.py           # 输入安全预检查
     external_memory.py    # Honcho 外置记忆适配
@@ -126,6 +128,7 @@ docs/
 
 - 坐标、视线、距离、掩体、数值结算由本地工具负责。
 - LLM 负责理解玩家自然语言、组织裁定、调用工具和输出叙事。
+- DM / RA / 玩家侧只能消费 code 投影后的地图视图，不能读取 raw map store 或隐藏地图事实。
 - 存档、规则执行和审计结果写回本地 JSON，避免只存在上下文里。
 
 ## 快速开始
