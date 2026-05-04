@@ -202,6 +202,43 @@ def add_render_ref(
     return deepcopy(ref)
 
 
+def project_map_store(store: dict[str, Any], view: str) -> dict[str, Any]:
+    normalized = normalize_map_store(store)
+    if view == MAP_VIEW_DIAGNOSTIC:
+        return _diagnostic_map_view(normalized)
+    allowed_visibility = _allowed_visibility_for_view(view)
+    return {
+        "schema_version": normalized["schema_version"],
+        "active_overview_map_id": normalized["active_overview_map_id"],
+        "active_strict_map_id": normalized["active_strict_map_id"],
+        "records": {
+            map_id: projected
+            for map_id, record in normalized["records"].items()
+            if (projected := _project_map_record(record, allowed_visibility)) is not None
+        },
+    }
+
+
+def project_active_map_record(
+    store: dict[str, Any],
+    view: str,
+    *,
+    map_id: str = "",
+    strict: bool = False,
+) -> dict[str, Any] | None:
+    projected = project_map_store(store, view)
+    records = projected.get("records", {})
+    if not isinstance(records, dict):
+        return None
+    selected_id = str(map_id or "")
+    if not selected_id:
+        selected_id = str(
+            projected.get("active_strict_map_id" if strict else "active_overview_map_id") or ""
+        )
+    record = records.get(selected_id)
+    return deepcopy(record) if isinstance(record, dict) else None
+
+
 def _new_map_record(
     map_id: str,
     *,
@@ -224,6 +261,92 @@ def _new_map_record(
         "created_at": now,
         "updated_at": now,
     }
+
+
+def _project_map_record(
+    record: dict[str, Any],
+    allowed_visibility: set[str],
+) -> dict[str, Any] | None:
+    if record.get("visibility") not in allowed_visibility:
+        return None
+    facts = [
+        _project_fact(fact)
+        for fact in record.get("facts", [])
+        if isinstance(fact, dict) and fact.get("visibility") in allowed_visibility
+    ]
+    return {
+        "id": record.get("id", ""),
+        "type": record.get("type", ""),
+        "title": record.get("title", ""),
+        "authority": record.get("authority", ""),
+        "visibility": record.get("visibility", ""),
+        "facts": facts,
+        "render_refs": [
+            _project_render_ref(ref)
+            for ref in record.get("render_refs", [])
+            if isinstance(ref, dict)
+        ],
+    }
+
+
+def _project_fact(fact: dict[str, Any]) -> dict[str, Any]:
+    projected = {
+        "id": fact.get("id", ""),
+        "kind": fact.get("kind", ""),
+        "text": fact.get("text", ""),
+        "authority": fact.get("authority", ""),
+        "visibility": fact.get("visibility", ""),
+        "source": fact.get("source", ""),
+    }
+    payload = fact.get("payload")
+    if payload not in (None, "", [], {}):
+        projected["payload"] = _json_safe(payload)
+    return projected
+
+
+def _project_render_ref(ref: dict[str, Any]) -> dict[str, Any]:
+    return {
+        key: ref.get(key)
+        for key in ("type", "title", "name", "visual_only")
+        if ref.get(key) not in (None, "", [], {})
+    }
+
+
+def _diagnostic_map_view(store: dict[str, Any]) -> dict[str, Any]:
+    records = {}
+    for map_id, record in store["records"].items():
+        facts = [item for item in record.get("facts", []) if isinstance(item, dict)]
+        records[map_id] = {
+            "id": record.get("id", map_id),
+            "type": record.get("type", ""),
+            "title": record.get("title", ""),
+            "authority": record.get("authority", ""),
+            "visibility": record.get("visibility", ""),
+            "fact_count": len(facts),
+            "hidden_fact_count": sum(
+                1 for item in facts if item.get("visibility") == MAP_VISIBILITY_HIDDEN
+            ),
+            "render_ref_count": len(
+                [item for item in record.get("render_refs", []) if isinstance(item, dict)]
+            ),
+        }
+    return {
+        "schema_version": store["schema_version"],
+        "active_overview_map_id": store["active_overview_map_id"],
+        "active_strict_map_id": store["active_strict_map_id"],
+        "record_count": len(store["records"]),
+        "records": records,
+    }
+
+
+def _allowed_visibility_for_view(view: str) -> set[str]:
+    if view == MAP_VIEW_PLAYER:
+        return {MAP_VISIBILITY_PUBLIC, MAP_VISIBILITY_PLAYER}
+    if view == MAP_VIEW_DM_NARRATION:
+        return {MAP_VISIBILITY_PUBLIC, MAP_VISIBILITY_PLAYER, MAP_VISIBILITY_DM}
+    if view == MAP_VIEW_RA_AUTHORITY:
+        return {MAP_VISIBILITY_PUBLIC, MAP_VISIBILITY_PLAYER, MAP_VISIBILITY_DM}
+    raise ValueError(f"unsupported_map_view:{view}")
 
 
 def _normalize_map_record(map_id: Any, value: dict[str, Any]) -> dict[str, Any]:

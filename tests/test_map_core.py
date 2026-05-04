@@ -4,14 +4,22 @@ from astrbot_plugin_auto_trpg_dm.core.map_core import (
     MAP_AUTHORITY_RA_CANDIDATE,
     MAP_AUTHORITY_SPATIAL,
     MAP_SCHEMA_VERSION,
+    MAP_VIEW_DIAGNOSTIC,
+    MAP_VIEW_DM_NARRATION,
+    MAP_VIEW_PLAYER,
+    MAP_VIEW_RA_AUTHORITY,
+    MAP_VISIBILITY_DM,
     MAP_VISIBILITY_HIDDEN,
     MAP_VISIBILITY_PLAYER,
+    MAP_VISIBILITY_PUBLIC,
     add_map_fact,
     add_render_ref,
     create_map_record,
     default_map_store,
     get_map_record,
     normalize_map_store,
+    project_active_map_record,
+    project_map_store,
     update_map_record,
 )
 from astrbot_plugin_auto_trpg_dm.core.models import GameSession
@@ -113,3 +121,96 @@ def test_map_helpers_reject_duplicate_or_missing_records():
         update_map_record(store, "missing", title="Nope")
     with pytest.raises(ValueError, match="map_record_not_found:missing"):
         add_map_fact(store, "missing", fact_id="f1", kind="feature")
+
+
+def test_player_and_dm_projection_filter_hidden_facts_and_raw_render_paths():
+    store = default_map_store()
+    create_map_record(store, "overview-1", visibility=MAP_VISIBILITY_PLAYER, set_active=True)
+    add_map_fact(
+        store,
+        "overview-1",
+        fact_id="visible-door",
+        kind="feature",
+        text="The bronze door is visible from the courtyard.",
+        visibility=MAP_VISIBILITY_PUBLIC,
+    )
+    add_map_fact(
+        store,
+        "overview-1",
+        fact_id="secret-tunnel",
+        kind="secret",
+        text="A hidden tunnel starts under the statue.",
+        visibility=MAP_VISIBILITY_HIDDEN,
+    )
+    add_render_ref(
+        store,
+        "overview-1",
+        ref_type="svg_map",
+        title="Overview",
+        name="overview.svg",
+        path="/local/runtime/maps/overview.svg",
+        url="https://example.invalid/overview.svg",
+    )
+
+    player_view = project_map_store(store, MAP_VIEW_PLAYER)
+    dm_view = project_map_store(store, MAP_VIEW_DM_NARRATION)
+
+    player_record = player_view["records"]["overview-1"]
+    dm_record = dm_view["records"]["overview-1"]
+    assert [fact["id"] for fact in player_record["facts"]] == ["visible-door"]
+    assert [fact["id"] for fact in dm_record["facts"]] == ["visible-door"]
+    assert player_record["render_refs"][0] == {
+        "type": "svg_map",
+        "title": "Overview",
+        "name": "overview.svg",
+        "visual_only": True,
+    }
+    assert "path" not in str(player_view)
+    assert "secret-tunnel" not in str(dm_view)
+
+
+def test_ra_authority_projection_still_excludes_hidden_facts():
+    store = default_map_store()
+    create_map_record(store, "overview-1", visibility=MAP_VISIBILITY_DM, set_active=True)
+    add_map_fact(
+        store,
+        "overview-1",
+        fact_id="dm-visible-pressure",
+        kind="pressure",
+        text="The corridor is unstable.",
+        visibility=MAP_VISIBILITY_DM,
+    )
+    add_map_fact(
+        store,
+        "overview-1",
+        fact_id="hidden-trap-trigger",
+        kind="trap",
+        text="The trap trigger is beneath the third tile.",
+        visibility=MAP_VISIBILITY_HIDDEN,
+    )
+
+    ra_record = project_active_map_record(store, MAP_VIEW_RA_AUTHORITY)
+
+    assert ra_record["facts"][0]["id"] == "dm-visible-pressure"
+    assert "hidden-trap-trigger" not in str(ra_record)
+
+
+def test_diagnostic_projection_reports_counts_without_fact_payloads():
+    store = default_map_store()
+    create_map_record(store, "overview-1", visibility=MAP_VISIBILITY_DM, set_active=True)
+    add_map_fact(
+        store,
+        "overview-1",
+        fact_id="hidden-trap-trigger",
+        kind="trap",
+        payload={"x": 3, "y": 4},
+        visibility=MAP_VISIBILITY_HIDDEN,
+    )
+
+    diagnostic = project_map_store(store, MAP_VIEW_DIAGNOSTIC)
+
+    assert diagnostic["record_count"] == 1
+    assert diagnostic["records"]["overview-1"]["fact_count"] == 1
+    assert diagnostic["records"]["overview-1"]["hidden_fact_count"] == 1
+    assert "hidden-trap-trigger" not in str(diagnostic)
+    assert '"x": 3' not in str(diagnostic)
