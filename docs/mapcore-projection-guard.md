@@ -1,6 +1,6 @@
 # MapCore 投影护栏设计
 
-本文说明 paotuan 的 MapCore 骨架、角色投影和候选地图事件边界。它的核心目的不是替换现有战棋引擎，而是在地图事实进入 DM prompt、Recorder Agent 简称 RA、诊断快照或后续地图工具之前，先建立一层可测试的 code-owned contract。
+本文说明 paotuan 的 MapCore 骨架、角色投影、候选地图事件边界和 legacy `battle.grid` adapter。它的核心目的不是替换现有战棋引擎，而是在地图事实进入 DM prompt、Recorder Agent 简称 RA、诊断快照或后续地图工具之前，先建立一层可测试的 code-owned contract。
 
 ## 目标
 
@@ -8,12 +8,16 @@
 - 在 code 层提供稳定的投影 API，让不同角色只能看到自己允许消费的地图视图。
 - 防止 DM / RA / LLM 读取 raw map store、隐藏地图事实、本地文件路径、provider URL 或 raw SVG。
 - 让 RA 或其它 agent 只能提出 candidate map event，由本地 code 校验；agent 不能直接 patch 权威状态。
+- 为严格小尺度空间裁定提供 `strict_local_map` record 和 active strict grid adapter，让现有战棋工具逐步从 legacy `battle.grid` 迁移到 MapCore。
 - 保持旧存档兼容：缺少 `maps` 字段的存档会加载为空 MapCore store。
 
 ## 非目标
 
-- 不迁移现有 `session.battle["grid"]`。
+- 不在 03.1.01 阶段迁移现有 `session.battle["grid"]`；03.1.02 只提供 adapter / migration wrapper，不做最终清理。
+- 不在 03.1.02 中彻底移除 legacy `session.battle["grid"]` mirror。
 - 不重写 `spatial/` 下的坐标、移动、距离、视线、掩体和路径逻辑。
+- 不把 strict map lifecycle 与 combat lifecycle 完全解耦；这属于后续生命周期任务。
+- 不引入 MapCalculator 或完整 map-aware spatial routing；这属于后续工具路由任务。
 - 不改变 `tools/map_tools.py` 的 SVG / PNG 地图生成语义。
 - 不让 RA 获得工具访问权或直接写入地图 store。
 - 不把 `hidden` 地图事实暴露给 DM prompt、RA prompt 或玩家视图。
@@ -21,7 +25,11 @@
 
 ## 当前边界
 
-`battle.grid` 仍是严格战棋事实的权威来源。坐标、实体位置、障碍、视线、距离、掩体、回合顺序和行动结算仍由 `spatial/`、`battle` 和相关工具负责。
+`strict_local_map` 是 MapCore record 的 `type`，不是新的顶层 session 字段。当前活动 strict map 由 `active_strict_map_id` 指向。strict map record 可以保存 raw `grid`，供本地 spatial tools 读取和写入；raw `grid` 不进入 DM / RA / player 投影。
+
+`battle.grid` 现在是 legacy migration source 和 compatibility mirror，不再高于 MapCore strict grid。读取 strict grid 时，如果 `active_strict_map_id` 指向的 record 已有 `grid`，MapStore 是权威来源；legacy mirror 即使过期也不能覆盖它。如果没有 active strict map grid，但旧存档里仍有 `session.battle["grid"]`，adapter 可以把它迁移成 `type: "strict_local_map"` 的 record，并记录 migration source 和 authority assumption。
+
+坐标、实体位置、障碍、视线、距离、掩体、回合顺序和行动结算仍由 `spatial/`、`battle` 和相关工具负责。03.1.02 只是把 strict grid 的读写入口接到 MapCore，不改变底层空间规则。
 
 MapCore store 负责更高层的地图元数据和语义事实，例如“当前概览地图是哪张”“某张地图有哪些已公开线索”“某张视觉图对应哪个地图记录”。它不替代战棋网格，也不作为绕过 spatial 校验的入口。
 
@@ -55,19 +63,35 @@ SVG / PNG 地图和氛围图片都属于视觉辅助。视觉引用可以被记�
 
 ```json
 {
-  "id": "overview-1",
+  "id": "strict-local-map",
   "record_version": 1,
-  "type": "overview",
-  "title": "废城外环",
-  "authority": "code",
+  "type": "strict_local_map",
+  "title": "Battle grid",
+  "authority": "spatial",
   "visibility": "dm",
+  "grid": {},
   "facts": [],
   "render_refs": [],
-  "archive_identity": {},
+  "archive_identity": {
+    "migration_source": "legacy_battle_grid",
+    "authority_assumption": "legacy_battle_grid_until_strict_map_exists",
+    "strict_grid_adapter_version": 1
+  },
   "created_at": "2026-05-04T00:00:00+00:00",
   "updated_at": "2026-05-04T00:00:00+00:00"
 }
 ```
+
+`type` 目前主要使用：
+
+| Type | 含义 |
+| --- | --- |
+| `overview_map` | 概览地图，用于区域、剧情、路线和公开/DM 语义事实。 |
+| `strict_local_map` | 严格本地地图，用于小尺度空间裁定，可承载 `grid`。 |
+
+旧值 `strict` 会在 normalize 阶段归一化为 `strict_local_map`。
+
+`grid` 只保存在 code-owned record 中。projection 会保留 record 的安全元数据、facts 和 render refs，但不会把 raw `grid` 输出给 DM prompt、RA authority snapshot 或玩家视图。
 
 地图事实结构：
 
@@ -139,6 +163,38 @@ SVG / PNG 地图和氛围图片都属于视觉辅助。视觉引用可以被记�
 - `_project_snapshot_for_profile()` 会向 DM prompt 注入 `dm_narration_view`。
 - `build_ra_authority_snapshot()` 会向 RA authority snapshot 注入 `ra_authority_view`，再经过 RA payload sanitizer。
 
+## Legacy Battle Grid Adapter
+
+03.1.02 引入的 adapter 是 code-owned migration layer，目的只是把现有 `battle.grid` 入口接到 MapCore strict map contract。
+
+核心 helper：
+
+| Helper | 责任 |
+| --- | --- |
+| `load_active_strict_grid(store, legacy_battle=None)` | 优先读取 `active_strict_map_id` 指向的 MapCore strict grid；没有 strict grid 时才返回 legacy `battle.grid` fallback。 |
+| `save_active_strict_grid(store, grid, ...)` | 创建或更新 `type: "strict_local_map"` record，写入 raw `grid`，并更新 `active_strict_map_id`。 |
+| `migrate_legacy_battle_grid(store, battle, ...)` | 将 legacy `battle.grid` 包装为 strict map record；如果 MapStore 已有 strict grid，则不迁移、不覆盖。 |
+
+读取优先级：
+
+1. `GameSession.maps.records[active_strict_map_id].grid`
+2. legacy `session.battle["grid"]`，仅当 MapStore 没有 active strict grid 时使用
+3. 无 grid，返回明确错误
+
+`tools/spatial_tools.py` 现在通过 adapter 写 strict grid：
+
+- `create_grid()` 创建或重置 active `strict_local_map` record，并把 `session.battle["map_id"]` 指向该 record。
+- `place_entity()` 和 `move_entity()` 读取 MapCore strict grid，结算成功后写回 MapCore。
+- `session.battle["grid"]` 暂时保留为兼容 mirror，供旧调用方和过渡期存档继续工作。
+- 旧存档第一次通过 spatial tool 读取 legacy grid 时，会迁移到 MapCore，并保存 `map_id` 和 mirror。
+
+authority guard：
+
+- MapStore strict grid 已存在时，legacy mirror 不能覆盖它。
+- migration metadata 写入 record `archive_identity`，用于后续排查来源与清理。
+- agent / LLM 不参与“是否迁移”“哪个 grid 是权威”的判断。
+- RA / DM / player 只能看到投影后的 map view，不能读取 raw strict grid 或 raw store。
+
 ## Candidate Map Event
 
 agent / LLM 不能直接修改 `GameSession.maps`。它们只能提交 candidate map event，并由 `validate_candidate_map_event()` 做结构化校验。该函数只返回校验结果，不会 mutate store。
@@ -195,6 +251,8 @@ RA / LLM proposal
 code 负责：
 
 - map schema、默认值、归一化和旧存档兼容；
+- `strict_local_map` record 类型、`active_strict_map_id` 指针和 strict grid adapter；
+- legacy `battle.grid` fallback、migration、authority precedence 和 compatibility mirror；
 - map record / fact / render ref 的写入 helper；
 - visibility、authority、ID、长度、JSON-safe payload 校验；
 - DM、RA、player、diagnostic 四类投影视图；
@@ -210,8 +268,10 @@ agent / LLM 只能负责：
 agent / LLM 不能负责：
 
 - 读取 raw `GameSession.maps`；
+- 读取 raw strict grid 或 legacy `battle.grid`；
 - 读取或推断 `hidden` facts；
 - 读取本地 path、provider URL 或 raw SVG；
+- 判断 `battle.grid` 是否应该迁移到 `strict_local_map.grid`；
 - 直接 patch `maps`、`battle.grid` 或其它权威状态；
 - 绕过 candidate validation 写入地图事实。
 
@@ -220,7 +280,7 @@ agent / LLM 不能负责：
 推荐本地验证：
 
 ```powershell
-python -m pytest -q tests/test_map_core.py tests/test_prompts.py tests/test_environment_agent.py tests/test_cycle_buffer.py -p no:cacheprovider
+python -m pytest -q tests/test_map_core.py tests/test_spatial_tools.py tests/test_prompts.py tests/test_environment_agent.py -p no:cacheprovider
 python -m compileall -q astrbot_plugin_auto_trpg_dm tests
 git diff --check
 ```
@@ -233,13 +293,22 @@ git diff --check
 - render ref 投影不暴露 `path` 或 `url`。
 - `diagnostic_view` 只暴露计数，不暴露 fact payload。
 - DM prompt 和 RA authority snapshot 只接收投影后的 `maps`。
+- strict map record 可以在 store 内保存 raw `grid`，但 DM prompt 和 RA authority snapshot 不暴露该字段。
+- `load_active_strict_grid()` 优先返回 MapStore strict grid，legacy `battle.grid` 只作为 migration fallback。
+- `save_active_strict_grid()` 写入 `strict_local_map` record 并更新 `active_strict_map_id`。
+- `migrate_legacy_battle_grid()` 不覆盖已经存在的 MapStore strict authority。
+- `create_grid()`、`place_entity()` 和 `move_entity()` 通过 adapter 写回 MapCore strict grid，并暂时维护 legacy mirror。
 - candidate event 只做 validation，不 mutate store。
 - raw patch、hidden visibility、未知 map、缺字段事件都会被拒绝。
 
 ## 后续扩展点
 
 - 为 validated candidate 增加 code-owned apply 工具，并继续保持“validate 与 apply 分离”。
-- 将 `battle.grid` 的严格空间事实投影成 MapCore `spatial` authority facts，但不反向迁移 grid。
+- 让 `create_grid()` 承担更完整的 strict map 创建、重置和 map identity 语义。
+- 引入 MapCalculator 或等价服务层，让 spatial tool routing 不再直接依赖 legacy battle shape。
+- 将 strict map lifecycle 与 combat lifecycle 解耦，让 strict exploration、puzzle、stealth 等场景可以在无 combat 时使用 strict map。
+- 扩展 ownership snapshot 和 projection，把 map / character / battle / rule ownership 边界固定下来。
+- 在最终 cleanup 阶段移除或降级 `battle.grid` mirror，只保留旧存档 migration loader。
 - 为玩家 UI 或消息输出接入 `player_view`。
 - 为地图归档、导出和跨版本迁移补充 `archive_identity` 规则。
 - 在 SVG map 生成完成后自动写入 `render_refs`，但仍保持视觉引用不改写事实。
