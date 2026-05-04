@@ -1,4 +1,11 @@
 from astrbot_plugin_auto_trpg_dm.core.models import Character, GameMode, GameSession, TagValue
+from astrbot_plugin_auto_trpg_dm.core.map_core import (
+    MAP_VISIBILITY_DM,
+    MAP_VISIBILITY_HIDDEN,
+    add_map_fact,
+    add_render_ref,
+    create_map_record,
+)
 from astrbot_plugin_auto_trpg_dm.core.prompts import (
     BASE_RULES,
     build_cycle_start_prompt,
@@ -390,3 +397,53 @@ def test_snapshot_projection_shadow_keeps_mixed_query_action_as_tactical():
     )
 
     assert stats["profile"] == "tactical_action"
+
+
+def test_prompt_snapshot_projection_uses_safe_dm_map_view():
+    session = GameSession.new("group")
+    create_map_record(session.maps, "overview-1", title="Gatehouse", visibility=MAP_VISIBILITY_DM, set_active=True)
+    add_map_fact(
+        session.maps,
+        "overview-1",
+        fact_id="visible-pressure",
+        kind="pressure",
+        text="The gate hinges are cracked.",
+        visibility=MAP_VISIBILITY_DM,
+    )
+    add_map_fact(
+        session.maps,
+        "overview-1",
+        fact_id="hidden-trigger",
+        kind="trap",
+        text="The hidden trigger is under the third tile.",
+        visibility=MAP_VISIBILITY_HIDDEN,
+    )
+    add_render_ref(
+        session.maps,
+        "overview-1",
+        ref_type="svg_map",
+        title="Gatehouse",
+        name="gatehouse.svg",
+        path="/local/runtime/maps/gatehouse.svg",
+        url="https://example.invalid/gatehouse.svg",
+    )
+
+    projected_snapshot, _stats = prompt_snapshot_data(
+        session,
+        GameMode.NARRATIVE,
+        "look around",
+        snapshot_projection_enabled=True,
+    )
+    full_snapshot, _ = prompt_snapshot_data(
+        session,
+        GameMode.NARRATIVE,
+        "look around",
+        snapshot_projection_enabled=False,
+    )
+
+    assert "maps" not in full_snapshot
+    assert projected_snapshot["maps"]["records"]["overview-1"]["facts"][0]["id"] == "visible-pressure"
+    rendered = str(projected_snapshot["maps"])
+    assert "hidden-trigger" not in rendered
+    assert "/local/runtime" not in rendered
+    assert "example.invalid" not in rendered

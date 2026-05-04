@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from .map_core import MAP_VIEW_DIAGNOSTIC, MAP_VIEW_DM_NARRATION, project_map_store
 from .models import GameMode, GameSession
 
 
@@ -54,6 +55,9 @@ def _diagnostic_snapshot(session: GameSession, mode: GameMode) -> dict:
             "current_index": turn.get("current_index", -1),
             "deadline_at": turn.get("deadline_at", ""),
         }
+    map_view = project_map_store(session.maps, MAP_VIEW_DIAGNOSTIC)
+    if map_view.get("record_count"):
+        snapshot["maps"] = map_view
     return snapshot
 
 
@@ -226,6 +230,9 @@ def _project_snapshot_for_profile(
     )
     projected["battle"] = _project_battle(snapshot.get("battle", {}), profile)
     projected["rules"] = _project_rules(snapshot.get("rules", {}), profile)
+    map_view = project_map_store(session.maps, MAP_VIEW_DM_NARRATION)
+    if map_view.get("records"):
+        projected["maps"] = map_view
     return projected
 
 
