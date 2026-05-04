@@ -24,6 +24,7 @@ from .outbound_cleanup import (
     cleanup_menu_like_guidance,
 )
 from .plugin_log import get_plugin_logger
+from .prompt_projection import project_tool_results_for_dm_prompt
 from .prompts import (
     build_diagnostic_system_prompt,
     build_system_prompt,
@@ -1511,8 +1512,8 @@ class IntentRouter:
             contexts.append(
                 {
                     "role": "user",
-                    "content": "本轮工具返回：\n"
-                    + json.dumps(tool_results, ensure_ascii=False, indent=2),
+                    "content": "本轮工具返回（已投影，仅含叙事可用字段）：\n"
+                    + json.dumps(project_tool_results_for_dm_prompt(tool_results), ensure_ascii=False, indent=2),
                 }
             )
             if repeated_error_count >= 2:

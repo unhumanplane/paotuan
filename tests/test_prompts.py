@@ -61,6 +61,15 @@ def test_cycle_start_prompt_uses_validated_summary_not_raw_patch_candidates():
             "patch_candidates": {
                 "character_status": [{"id": "pc-1", "hp": 7}],
             },
+            "patch_validation": {
+                "rejected": [
+                    {
+                        "category": "world_changes",
+                        "reason": "missing_tool_backing",
+                        "value": "隐藏伏击点",
+                    }
+                ],
+            },
         }
     )
 
@@ -69,6 +78,9 @@ def test_cycle_start_prompt_uses_validated_summary_not_raw_patch_candidates():
     assert "不要把未验证的补丁候选当成事实" in prompt
     assert "队伍击退巡逻队" in prompt
     assert "口头叙事伤害高于工具结算" in prompt
+    assert "rejected_count" in prompt
+    assert "hp" not in prompt
+    assert "隐藏伏击点" not in prompt
 
 
 def test_system_prompt_only_includes_ra_summary_when_enabled():

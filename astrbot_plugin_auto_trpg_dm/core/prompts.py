@@ -6,6 +6,7 @@ from typing import Any
 from .combat_lifecycle import combat_lifecycle_active
 from .map_core import MAP_VIEW_DIAGNOSTIC, MAP_VIEW_DM_NARRATION, project_map_store
 from .models import GameMode, GameSession
+from .prompt_projection import project_ra_summary_for_dm_prompt
 
 
 DEFAULT_ADJUDICATION_PROFILE = {
@@ -975,7 +976,7 @@ def build_ra_cycle_prompt(ra_cycle_input: dict, authority_snapshot: dict) -> str
 
 
 def build_cycle_start_prompt(ra_summary: dict | None) -> str:
-    summary = ra_summary or {}
+    summary = project_ra_summary_for_dm_prompt(ra_summary)
     return """下一周期启动上下文：
 请基于以下已经验证的 RA 摘要推进下一幕。若 discrepancies 非空，先用合理场内解释圆回冲突；无法圆回时，简短更正上一段叙事。不要把未验证的补丁候选当成事实。
 
