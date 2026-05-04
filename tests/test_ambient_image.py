@@ -397,6 +397,23 @@ def test_opening_trigger_is_explicit_capability_not_auto_enabled():
     assert explicit["trigger"] == "opening"
 
 
+def test_manual_trigger_bypasses_automatic_warmup_but_not_combat():
+    session = GameSession.new("group")
+    session.scene["summary"] = "黑塔城的雾夜调查仍在继续。"
+    config = AmbientImageConfig(enabled=True)
+
+    automatic = ambient_image_gate(session, config)
+    manual = ambient_image_gate(session, config, trigger_override="manual")
+    session.mode = GameMode.TACTICAL
+    session.battle = {"active": True}
+    combat = ambient_image_gate(session, config, trigger_override="manual")
+
+    assert automatic["reason"] == "ambient_image_warmup_wait"
+    assert manual["ok"] is True
+    assert manual["trigger"] == "manual"
+    assert combat["reason"] == "ambient_image_combat_active"
+
+
 def test_pause_and_resume_cooldowns_are_independent():
     session = GameSession.new("group")
     session.scene["summary"] = "调查暂时告一段落。"

@@ -608,6 +608,8 @@ def explicit_ambient_image_trigger(session: Any, config: AmbientImageConfig, tri
         if pause_resume:
             return pause_resume
         return {"ok": False, "available": False, "reason": "ambient_image_pause_resume_not_ready"}
+    if trigger == "manual":
+        return {"ok": True, "trigger": "manual", "frequency": frequency}
     return {
         "ok": False,
         "available": False,
@@ -730,6 +732,8 @@ def mark_ambient_image_trigger(session: Any, trigger: str) -> None:
         if key and kind in {"pause", "resume"}:
             state[f"last_{kind}_key"] = key
             state[f"last_{kind}_generated_at"] = utc_now_iso()
+    elif trigger == "manual":
+        state["last_manual_generated_at"] = utc_now_iso()
     scene["ambient_image_state"] = state
 
 
@@ -883,7 +887,7 @@ def audit_safe_ambient_image_result(result: dict[str, Any]) -> dict[str, Any]:
             safe[f"{key}_omitted"] = True
         elif key == "prompt":
             safe["prompt_chars"] = len(str(value or ""))
-        elif key in {"reason", "url"}:
+        elif key in {"reason", "url", "api_key_env"}:
             safe[key] = redact_ambient_image_text(value, limit=240)
         else:
             safe[key] = _json_safe(value)

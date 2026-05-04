@@ -1,3 +1,4 @@
+import asyncio
 import sys
 import types
 
@@ -128,6 +129,8 @@ def _install_fake_astrbot_modules():
 
 _install_fake_astrbot_modules()
 
+from astrbot_plugin_auto_trpg_dm.core.ambient_image import AmbientImageConfig
+from astrbot_plugin_auto_trpg_dm.core.models import GameSession
 from astrbot_plugin_auto_trpg_dm.main import AutoTrpgDmPlugin
 
 
@@ -207,3 +210,122 @@ def test_quoted_result_can_prefix_dice_summary_before_completion():
     text = _component_text(result)
     assert text.startswith("本轮检定摘要：")
     assert "\n\n主叙事结果。" in text
+
+
+def test_manual_ambient_image_fast_path_schedules_independent_generation():
+    session = GameSession.new("group")
+    session.scene["summary"] = "黑塔城的雾夜调查仍在继续。"
+    repo = FakeRepository(session)
+    plugin = AutoTrpgDmPlugin.__new__(AutoTrpgDmPlugin)
+    plugin.repository = repo
+    plugin.ambient_image_config = AmbientImageConfig(enabled=True)
+    plugin.plugin_logger = FakeLogger()
+    scheduled = {}
+
+    class Provider:
+        def _unavailable(self):
+            return None
+
+    def mark_generation_started(target_session):
+        state = dict(target_session.scene.get("ambient_image_state") or {})
+        state["generation_started_at"] = "now"
+        target_session.scene["ambient_image_state"] = state
+        repo.save_session(target_session)
+
+    plugin.router = types.SimpleNamespace(
+        ambient_image_provider=Provider(),
+        _mark_ambient_image_generation_started=mark_generation_started,
+    )
+
+    def schedule(event, session_id, actor, message, *, story_moment, rationale):
+        scheduled.update(
+            {
+                "session_id": session_id,
+                "actor": actor,
+                "message": message,
+                "story_moment": story_moment,
+                "rationale": rationale,
+            }
+        )
+
+    plugin._schedule_manual_ambient_image = schedule
+
+    reply = asyncio.run(
+        plugin._local_fast_path(
+            FakeEvent(),
+            "group",
+            {"player_id": "player-a"},
+            "用独立apikey生图 当前雾夜街道",
+        )
+    )
+
+    assert "独立图片 API key" in reply
+    assert scheduled["session_id"] == "group"
+    assert scheduled["story_moment"] == "当前雾夜街道"
+    assert repo.session.scene["ambient_image_state"]["generation_started_at"] == "now"
+    assert repo.audits[-1]["action"] == "manual_ambient_image_scheduled"
+
+
+def test_manual_ambient_image_fast_path_reports_missing_independent_key():
+    session = GameSession.new("group")
+    session.scene["summary"] = "黑塔城的雾夜调查仍在继续。"
+    repo = FakeRepository(session)
+    plugin = AutoTrpgDmPlugin.__new__(AutoTrpgDmPlugin)
+    plugin.repository = repo
+    plugin.ambient_image_config = AmbientImageConfig(enabled=True)
+    plugin.plugin_logger = FakeLogger()
+
+    class Provider:
+        def _unavailable(self):
+            return {
+                "ok": False,
+                "available": False,
+                "error": "ambient_image_api_key_missing",
+                "api_key_env": "PACKYAPI_SORA_API_KEY",
+            }
+
+    plugin.router = types.SimpleNamespace(ambient_image_provider=Provider())
+
+    reply = asyncio.run(
+        plugin._local_fast_path(
+            FakeEvent(),
+            "group",
+            {"player_id": "player-a"},
+            "配图",
+        )
+    )
+
+    assert "独立生图 API key 没有读取到" in reply
+    assert "PACKYAPI_SORA_API_KEY" in reply
+    assert repo.audits[-1]["action"] == "manual_ambient_image_blocked"
+
+
+class FakeLogger:
+    def info(self, *args, **kwargs):
+        pass
+
+    def warning(self, *args, **kwargs):
+        pass
+
+    def exception(self, *args, **kwargs):
+        pass
+
+    def error(self, *args, **kwargs):
+        pass
+
+
+class FakeRepository:
+    def __init__(self, session):
+        self.session = session
+        self.audits = []
+
+    def load_session(self, session_id):
+        assert session_id == self.session.session_id
+        return self.session
+
+    def save_session(self, session):
+        self.session = session
+
+    def append_audit(self, session_id, record):
+        assert session_id == self.session.session_id
+        self.audits.append(record)
