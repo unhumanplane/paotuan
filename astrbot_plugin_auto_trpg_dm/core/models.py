@@ -5,6 +5,8 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Any
 
+from .map_core import default_map_store, normalize_map_store
+
 
 def utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -170,6 +172,7 @@ class GameSession:
     rules: dict[str, RuleRef] = field(default_factory=dict)
     rule_sets: dict[str, Any] = field(default_factory=dict)
     battle: dict[str, Any] = field(default_factory=dict)
+    maps: dict[str, Any] = field(default_factory=default_map_store)
     current_cycle_id: int = 0
     audit_buffer: AuditBuffer = field(default_factory=AuditBuffer)
     ra_cycle_input: RACycleInput = field(default_factory=RACycleInput)
@@ -222,6 +225,7 @@ class GameSession:
             },
             rule_sets=_dict_or_empty(data.get("rule_sets", {})),
             battle=dict(data.get("battle", {"active": False})),
+            maps=normalize_map_store(data.get("maps", {})),
             current_cycle_id=_safe_int(data.get("current_cycle_id", 0)),
             audit_buffer=AuditBuffer.from_dict(_dict_or_empty(data.get("audit_buffer", {}))),
             ra_cycle_input=RACycleInput.from_dict(_dict_or_empty(data.get("ra_cycle_input", {}))),
