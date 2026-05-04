@@ -240,16 +240,22 @@ powershell -ExecutionPolicy Bypass -File scripts/deploy-nas.ps1 -Pull
 
 这个脚本只通过 `git archive` 打包 `astrbot_plugin_auto_trpg_dm/`，不会带上 `.deploy/`、私钥、缓存、运行数据或本地规则书原始资料。
 
-重启命令默认有 120 秒硬超时，可在本地配置里调整：
+脚本默认使用 AstrBot WebUI API 热重载插件，不再重启 Docker 容器。可在本地配置里设置 Dashboard 访问方式：
 
 ```json
 {
-  "restartCommand": "docker restart astrbot",
-  "restartTimeoutSeconds": 120
+  "dashboardUrl": "http://192.168.123.148:6185",
+  "dashboardToken": "",
+  "dashboardUsername": "",
+  "dashboardPasswordMd5": "",
+  "registeredPluginName": "auto_trpg_dm",
+  "failedPluginDirName": "000_auto_trpg_dm",
+  "remotePluginLog": "/volume1/docker/astrbot/data/plugin_data/astrbot_plugin_auto_trpg_dm/logs/auto_trpg_dm.log",
+  "reloadTimeoutSeconds": 45
 }
 ```
 
-如果 NAS 上 Docker / Container Manager 对某个容器的 `inspect`、`restart` 或 `kill` 调用卡住，脚本会在超时后失败并报告；此时插件文件可能已经替换成功，但运行中的 AstrBot 进程未必已加载新版本。可以先用 `-SkipRestart` 只更新文件，再在 DSM 或具备 sudo 权限的 SSH 会话中重启 Container Manager / AstrBot 容器。
+如果没有配置 Dashboard token 或用户名/密码，脚本只会更新插件文件并提示热重载未执行。`-SkipReload` 可显式只复制文件；旧的 `-SkipRestart` 参数仍作为兼容别名处理，但不会执行 Docker 操作。热重载后，脚本只读取插件独立日志，确认 `plugin_initialized version=...` 出现。
 
 ## PR 工作流
 
