@@ -300,6 +300,26 @@ def test_manual_ambient_image_fast_path_reports_missing_independent_key():
     assert repo.audits[-1]["action"] == "manual_ambient_image_blocked"
 
 
+def test_empty_dm_greedystr_sentinel_uses_status_prompt():
+    plugin = AutoTrpgDmPlugin.__new__(AutoTrpgDmPlugin)
+
+    class GreedyStrSentinel:
+        def __str__(self):
+            return "GreedyStr"
+
+    routed_message = plugin._routed_message_from_command_content(GreedyStrSentinel())
+
+    assert routed_message == "查看当前跑团状态；如果还没有开局，请询问玩家想跑什么类型的团。"
+
+
+def test_literal_greedystr_text_is_preserved():
+    plugin = AutoTrpgDmPlugin.__new__(AutoTrpgDmPlugin)
+
+    routed_message = plugin._routed_message_from_command_content("GreedyStr")
+
+    assert routed_message == "GreedyStr"
+
+
 class FakeLogger:
     def info(self, *args, **kwargs):
         pass

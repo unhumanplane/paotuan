@@ -188,11 +188,22 @@ class AutoTrpgDmPlugin(Star):
             yield result
 
     async def _handle_dm_command_content(self, event: AstrMessageEvent, content: GreedyStr):
-        routed_message = str(content or "").strip()
-        if not routed_message:
-            routed_message = "查看当前跑团状态；如果还没有开局，请询问玩家想跑什么类型的团。"
+        routed_message = self._routed_message_from_command_content(content)
         async for result in self._handle_dm_event(event, routed_message):
             yield result
+
+    def _routed_message_from_command_content(self, content: Any) -> str:
+        if isinstance(content, str):
+            routed_message = content.strip()
+        elif content is None:
+            routed_message = ""
+        else:
+            routed_message = str(content or "").strip()
+            if routed_message == "GreedyStr":
+                routed_message = ""
+        if not routed_message:
+            return "查看当前跑团状态；如果还没有开局，请询问玩家想跑什么类型的团。"
+        return routed_message
 
     @filter.event_message_type(filter.EventMessageType.ALL)
     async def on_any_message(self, event: AstrMessageEvent):
