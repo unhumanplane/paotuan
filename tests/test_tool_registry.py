@@ -101,7 +101,9 @@ def test_tool_registry_exposes_strict_lifecycle_tools_for_map_setup():
     assert "create_strict_map" in names
     assert "start_combat_on_map" in names
     assert "create_grid" in names
+    assert "render_strict_grid_svg" in names
     assert any(spec["name"] == "create_strict_map" for spec in specs)
+    assert any(spec["name"] == "render_strict_grid_svg" for spec in specs)
 
 
 def test_tool_registry_exposes_end_combat_for_battle_resolution():
