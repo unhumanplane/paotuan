@@ -4,6 +4,13 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from pydantic import BaseModel, Field
 
+from ..core.map_core import (
+    DEFAULT_STRICT_LOCAL_MAP_ID,
+    MAP_AUTHORITY_SPATIAL,
+    load_active_strict_grid,
+    migrate_legacy_battle_grid,
+    save_active_strict_grid,
+)
 from ..core.models import GameMode
 from ..spatial.engine import SpatialEngine
 from ..spatial.grid import Cell, Entity, GridState, Point
@@ -69,9 +76,19 @@ class SpatialTools:
             if grid.in_bounds(Point(cell.x, cell.y)):
                 grid.cells[(cell.x, cell.y)] = cell
         session.mode = GameMode.TACTICAL
+        grid_data = grid.to_dict()
+        strict_record = save_active_strict_grid(
+            session.maps,
+            grid_data,
+            map_id=DEFAULT_STRICT_LOCAL_MAP_ID,
+            title="Battle grid",
+            authority=MAP_AUTHORITY_SPATIAL,
+            authority_assumption="spatial_tool_create_grid",
+        )
         session.battle = {
             "active": True,
-            "grid": grid.to_dict(),
+            "map_id": strict_record["id"],
+            "grid": grid_data,
             "turn_entity_id": "",
             "turn": {
                 "active": False,
@@ -88,7 +105,7 @@ class SpatialTools:
             },
         }
         self.repository.save_session(session)
-        result = {"ok": True, "grid": grid.to_dict()}
+        result = {"ok": True, "grid": grid_data, "map_id": strict_record["id"]}
         self._audit("create_grid", {"width": width, "height": height, "cells": cells or []}, result)
         return result
 
@@ -126,7 +143,7 @@ class SpatialTools:
             )
         )
         if result.get("ok"):
-            session.battle["grid"] = grid.to_dict()
+            self._save_grid(session, grid)
             self.repository.save_session(session)
         self._audit("place_entity", locals_without_self(locals()), result)
         return result
@@ -141,7 +158,7 @@ class SpatialTools:
         engine = SpatialEngine(grid)
         result = engine.move_entity(entity_id, int(target_x), int(target_y))
         if result.get("ok"):
-            session.battle["grid"] = grid.to_dict()
+            self._save_grid(session, grid)
             self.repository.save_session(session)
         self._audit("move_entity", {"entity_id": entity_id, "target_x": target_x, "target_y": target_y}, result)
         return result
@@ -165,11 +182,40 @@ class SpatialTools:
     def _load_grid(self) -> Tuple[Any, GridState]:
         session = self.repository.load_session(self.session_id)
         battle = session.battle or {}
-        grid_data = battle.get("grid") or {"width": 12, "height": 12, "cells": [], "entities": {}}
+        loaded = load_active_strict_grid(session.maps, battle)
+        if loaded.get("source") == "legacy_battle_grid":
+            migrated = migrate_legacy_battle_grid(session.maps, battle)
+            if migrated.get("ok") and migrated.get("map_id"):
+                battle = session.battle or {}
+                battle["map_id"] = migrated["map_id"]
+                battle["grid"] = migrated["grid"]
+                session.battle = battle
+                loaded = {"ok": True, "grid": migrated["grid"]}
+                self.repository.save_session(session)
+        grid_data = loaded.get("grid") if loaded.get("ok") else None
+        if not isinstance(grid_data, dict):
+            grid_data = {"width": 12, "height": 12, "cells": [], "entities": {}}
         grid = GridState.from_dict(grid_data)
         if not session.battle:
-            session.battle = {"active": True, "grid": grid.to_dict(), "turn_entity_id": ""}
+            self._save_grid(session, grid)
         return session, grid
+
+    def _save_grid(self, session: Any, grid: GridState) -> None:
+        grid_data = grid.to_dict()
+        battle = session.battle or {}
+        record = save_active_strict_grid(
+            session.maps,
+            grid_data,
+            map_id=str(battle.get("map_id") or session.maps.get("active_strict_map_id") or DEFAULT_STRICT_LOCAL_MAP_ID),
+            title="Battle grid",
+            authority=MAP_AUTHORITY_SPATIAL,
+            authority_assumption="spatial_tool_strict_grid_write",
+        )
+        battle["active"] = True
+        battle["map_id"] = record["id"]
+        battle["grid"] = grid_data
+        battle.setdefault("turn_entity_id", "")
+        session.battle = battle
 
     def _validate_turn_actor(self, session: Any, entity_id: str) -> Optional[Dict[str, Any]]:
         turn = dict((session.battle or {}).get("turn") or {})

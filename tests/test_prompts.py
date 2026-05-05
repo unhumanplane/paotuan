@@ -1,10 +1,12 @@
 from astrbot_plugin_auto_trpg_dm.core.models import Character, GameMode, GameSession, TagValue
 from astrbot_plugin_auto_trpg_dm.core.map_core import (
+    MAP_TYPE_STRICT_LOCAL,
     MAP_VISIBILITY_DM,
     MAP_VISIBILITY_HIDDEN,
     add_map_fact,
     add_render_ref,
     create_map_record,
+    save_active_strict_grid,
 )
 from astrbot_plugin_auto_trpg_dm.core.prompts import (
     BASE_RULES,
@@ -447,3 +449,43 @@ def test_prompt_snapshot_projection_uses_safe_dm_map_view():
     assert "hidden-trigger" not in rendered
     assert "/local/runtime" not in rendered
     assert "example.invalid" not in rendered
+
+
+def test_prompt_snapshot_projection_does_not_expose_raw_strict_grid():
+    session = GameSession.new("group")
+    save_active_strict_grid(
+        session.maps,
+        {
+            "width": 5,
+            "height": 5,
+            "cells": [],
+            "entities": {
+                "secret-stalker": {"id": "secret-stalker", "name": "Stalker", "x": 4, "y": 4},
+            },
+        },
+        map_id="strict-room",
+        title="Strict room",
+    )
+    add_map_fact(
+        session.maps,
+        "strict-room",
+        fact_id="visible-pressure",
+        kind="pressure",
+        text="The room is tight and dangerous.",
+        visibility=MAP_VISIBILITY_DM,
+    )
+
+    projected_snapshot, _stats = prompt_snapshot_data(
+        session,
+        GameMode.TACTICAL,
+        "where is everyone",
+        snapshot_projection_enabled=True,
+    )
+
+    record = projected_snapshot["maps"]["records"]["strict-room"]
+    rendered = str(record)
+    assert record["type"] == MAP_TYPE_STRICT_LOCAL
+    assert record["facts"][0]["id"] == "visible-pressure"
+    assert "grid" not in record
+    assert "secret-stalker" not in rendered
+    assert "'x': 4" not in rendered

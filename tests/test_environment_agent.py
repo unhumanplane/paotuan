@@ -11,11 +11,13 @@ from astrbot_plugin_auto_trpg_dm.core.environment_agent import (
     validate_ra_patch_candidates,
 )
 from astrbot_plugin_auto_trpg_dm.core.map_core import (
+    MAP_TYPE_STRICT_LOCAL,
     MAP_VISIBILITY_DM,
     MAP_VISIBILITY_HIDDEN,
     add_map_fact,
     add_render_ref,
     create_map_record,
+    save_active_strict_grid,
 )
 from astrbot_plugin_auto_trpg_dm.core.models import Character, CycleState, GameSession
 
@@ -98,6 +100,41 @@ def test_ra_authority_snapshot_uses_projected_map_view_without_hidden_facts():
     assert snapshot["maps"]["records"]["overview-1"]["facts"][0]["id"] == "dm-visible-pressure"
     assert "hidden-trigger" not in rendered
     assert "/local/runtime" not in rendered
+
+
+def test_ra_authority_snapshot_does_not_expose_raw_strict_grid():
+    session = GameSession.new("group")
+    save_active_strict_grid(
+        session.maps,
+        {
+            "width": 5,
+            "height": 5,
+            "cells": [],
+            "entities": {
+                "secret-stalker": {"id": "secret-stalker", "name": "Stalker", "x": 4, "y": 4},
+            },
+        },
+        map_id="strict-room",
+        title="Strict room",
+    )
+    add_map_fact(
+        session.maps,
+        "strict-room",
+        fact_id="dm-visible-pressure",
+        kind="pressure",
+        text="The room is tight and dangerous.",
+        visibility=MAP_VISIBILITY_DM,
+    )
+
+    snapshot = build_ra_authority_snapshot(session)
+    record = snapshot["maps"]["records"]["strict-room"]
+    rendered = json.dumps(record, ensure_ascii=False)
+
+    assert record["type"] == MAP_TYPE_STRICT_LOCAL
+    assert record["facts"][0]["id"] == "dm-visible-pressure"
+    assert "grid" not in record
+    assert "secret-stalker" not in rendered
+    assert '"x": 4' not in rendered
 
 
 def test_recorder_agent_runs_once_and_accepts_code_fenced_json():

@@ -39,6 +39,17 @@ MAP_AUTHORITIES = {
     MAP_AUTHORITY_VISUAL,
 }
 
+MAP_TYPE_OVERVIEW = "overview"
+MAP_TYPE_OVERVIEW_MAP = "overview_map"
+MAP_TYPE_LEGACY_STRICT = "strict"
+MAP_TYPE_STRICT_LOCAL = "strict_local_map"
+
+DEFAULT_STRICT_LOCAL_MAP_ID = "strict-local-map"
+
+STRICT_GRID_SOURCE_MAP_STORE = "map_store"
+STRICT_GRID_SOURCE_LEGACY_BATTLE = "legacy_battle_grid"
+STRICT_GRID_SOURCE_NONE = "none"
+
 MAP_EVENT_CREATE_RECORD = "create_map_record"
 MAP_EVENT_ADD_FACT = "add_fact"
 MAP_EVENT_LINK_RENDER_REF = "link_render_ref"
@@ -119,10 +130,11 @@ def create_map_record(
         visibility=visibility,
     )
     normalized["records"][safe_id] = record
-    if set_active or not normalized["active_overview_map_id"]:
+    if _is_strict_map_record(record):
+        if set_active or not normalized["active_strict_map_id"]:
+            normalized["active_strict_map_id"] = safe_id
+    elif set_active or not normalized["active_overview_map_id"]:
         normalized["active_overview_map_id"] = safe_id
-    if map_type == "strict" and (set_active or not normalized["active_strict_map_id"]):
-        normalized["active_strict_map_id"] = safe_id
     _replace_store(store, normalized)
     return deepcopy(record)
 
@@ -264,6 +276,134 @@ def project_active_map_record(
     return deepcopy(record) if isinstance(record, dict) else None
 
 
+def load_active_strict_grid(store: dict[str, Any], legacy_battle: Any | None = None) -> dict[str, Any]:
+    normalized = normalize_map_store(store)
+    map_id = str(normalized.get("active_strict_map_id") or "")
+    record = normalized["records"].get(map_id) if map_id else None
+    if isinstance(record, dict):
+        grid = record.get("grid")
+        if isinstance(grid, dict):
+            return {
+                "ok": True,
+                "source": STRICT_GRID_SOURCE_MAP_STORE,
+                "map_id": map_id,
+                "grid": deepcopy(grid),
+                "record": deepcopy(record),
+                "migration_required": False,
+            }
+        return {
+            "ok": False,
+            "source": STRICT_GRID_SOURCE_MAP_STORE,
+            "map_id": map_id,
+            "reason": "active_strict_grid_missing",
+            "migration_required": False,
+        }
+    legacy_grid = _legacy_battle_grid(legacy_battle)
+    if legacy_grid is not None:
+        return {
+            "ok": True,
+            "source": STRICT_GRID_SOURCE_LEGACY_BATTLE,
+            "map_id": "",
+            "grid": legacy_grid,
+            "migration_required": True,
+            "authority_assumption": "legacy_battle_grid_until_strict_map_exists",
+        }
+    return {
+        "ok": False,
+        "source": STRICT_GRID_SOURCE_NONE,
+        "reason": "strict_grid_not_found",
+        "migration_required": False,
+    }
+
+
+def save_active_strict_grid(
+    store: dict[str, Any],
+    grid: dict[str, Any],
+    *,
+    map_id: str = "",
+    title: str = "",
+    authority: str = MAP_AUTHORITY_SPATIAL,
+    migration_source: str = "",
+    authority_assumption: str = "map_store_strict_grid",
+) -> dict[str, Any]:
+    if not isinstance(grid, dict):
+        raise ValueError("strict_grid_invalid")
+    normalized = normalize_map_store(store)
+    safe_id = _require_id(map_id or normalized.get("active_strict_map_id") or DEFAULT_STRICT_LOCAL_MAP_ID)
+    record = normalized["records"].get(safe_id)
+    if not isinstance(record, dict):
+        record = _new_map_record(
+            safe_id,
+            title=title or "Strict local map",
+            map_type=MAP_TYPE_STRICT_LOCAL,
+            authority=authority,
+            visibility=MAP_VISIBILITY_DM,
+        )
+        normalized["records"][safe_id] = record
+    elif not _is_strict_map_record(record):
+        raise ValueError(f"strict_map_record_type_mismatch:{safe_id}")
+    record["type"] = MAP_TYPE_STRICT_LOCAL
+    record["authority"] = _safe_authority(authority)
+    if title:
+        record["title"] = _short_text(title, 160)
+    record["grid"] = _json_safe(grid)
+    record["archive_identity"] = _strict_grid_archive_identity(
+        record.get("archive_identity"),
+        migration_source=migration_source,
+        authority_assumption=authority_assumption,
+    )
+    record["updated_at"] = _utc_now_iso()
+    normalized["active_strict_map_id"] = safe_id
+    _replace_store(store, normalized)
+    return deepcopy(record)
+
+
+def migrate_legacy_battle_grid(
+    store: dict[str, Any],
+    battle: Any,
+    *,
+    map_id: str = DEFAULT_STRICT_LOCAL_MAP_ID,
+    title: str = "Legacy battle grid",
+) -> dict[str, Any]:
+    loaded = load_active_strict_grid(store, battle)
+    if loaded.get("source") == STRICT_GRID_SOURCE_MAP_STORE:
+        return {
+            "ok": bool(loaded.get("ok")),
+            "status": "strict_grid_already_authoritative" if loaded.get("ok") else "strict_grid_not_migrated",
+            "source": STRICT_GRID_SOURCE_MAP_STORE,
+            "map_id": loaded.get("map_id", ""),
+            "grid": deepcopy(loaded.get("grid")) if isinstance(loaded.get("grid"), dict) else {},
+            "migrated": False,
+            "reason": loaded.get("reason", ""),
+        }
+    if loaded.get("source") != STRICT_GRID_SOURCE_LEGACY_BATTLE or not isinstance(loaded.get("grid"), dict):
+        return {
+            "ok": False,
+            "status": "strict_grid_not_migrated",
+            "source": loaded.get("source", STRICT_GRID_SOURCE_NONE),
+            "reason": loaded.get("reason", "strict_grid_not_found"),
+            "migrated": False,
+        }
+    record = save_active_strict_grid(
+        store,
+        loaded["grid"],
+        map_id=map_id,
+        title=title,
+        authority=MAP_AUTHORITY_SPATIAL,
+        migration_source="battle.grid",
+        authority_assumption="legacy_battle_grid_wrapped_until_spatial_tools_write_map_store",
+    )
+    return {
+        "ok": True,
+        "status": "legacy_battle_grid_migrated",
+        "source": STRICT_GRID_SOURCE_LEGACY_BATTLE,
+        "map_id": record["id"],
+        "grid": deepcopy(record["grid"]),
+        "record": record,
+        "migrated": True,
+    }
+
+
 def validate_candidate_map_event(store: dict[str, Any], event: Any) -> dict[str, Any]:
     if not isinstance(event, dict):
         return _candidate_rejected("invalid_candidate_type")
@@ -320,7 +460,7 @@ def _new_map_record(
     return {
         "id": map_id,
         "record_version": 1,
-        "type": _short_text(map_type or "overview", 80),
+        "type": _safe_map_type(map_type),
         "title": _short_text(title or map_id, 160),
         "authority": _safe_authority(authority),
         "visibility": _safe_visibility(visibility),
@@ -510,6 +650,9 @@ def _normalize_map_record(map_id: Any, value: dict[str, Any]) -> dict[str, Any]:
         if isinstance(item, dict)
     ]
     record["archive_identity"] = _json_safe(_dict_or_empty(value.get("archive_identity")))
+    grid = value.get("grid")
+    if isinstance(grid, dict):
+        record["grid"] = _json_safe(grid)
     record["created_at"] = str(value.get("created_at") or record["created_at"])
     record["updated_at"] = str(value.get("updated_at") or record["updated_at"])
     return record
@@ -531,6 +674,39 @@ def _normalize_fact(value: dict[str, Any]) -> dict[str, Any]:
 def _replace_store(target: dict[str, Any], normalized: dict[str, Any]) -> None:
     target.clear()
     target.update(normalized)
+
+
+def _is_strict_map_record(record: dict[str, Any]) -> bool:
+    return _safe_map_type(record.get("type")) == MAP_TYPE_STRICT_LOCAL
+
+
+def _safe_map_type(value: Any) -> str:
+    text = _short_text(value or MAP_TYPE_OVERVIEW, 80)
+    if text == MAP_TYPE_LEGACY_STRICT:
+        return MAP_TYPE_STRICT_LOCAL
+    return text
+
+
+def _legacy_battle_grid(value: Any) -> dict[str, Any] | None:
+    if not isinstance(value, dict):
+        return None
+    grid = value.get("grid")
+    return deepcopy(grid) if isinstance(grid, dict) else None
+
+
+def _strict_grid_archive_identity(
+    value: Any,
+    *,
+    migration_source: str,
+    authority_assumption: str,
+) -> dict[str, Any]:
+    identity = _json_safe(_dict_or_empty(value))
+    if migration_source:
+        identity["migration_source"] = _short_text(migration_source, 120)
+    if authority_assumption:
+        identity["authority_assumption"] = _short_text(authority_assumption, 240)
+    identity["strict_grid_adapter_version"] = 1
+    return identity
 
 
 def _require_id(value: str) -> str:
