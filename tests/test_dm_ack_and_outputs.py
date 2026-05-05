@@ -135,8 +135,9 @@ from astrbot_plugin_auto_trpg_dm.main import AutoTrpgDmPlugin
 
 
 class FakeEvent:
-    def __init__(self, message_id="msg-1"):
+    def __init__(self, message_id="msg-1", message_str=""):
         self.message_obj = type("MessageObj", (), {"message_id": message_id})()
+        self.message_str = message_str
 
     def plain_result(self, text):
         return {"kind": "plain", "text": text}
@@ -316,6 +317,28 @@ def test_literal_greedystr_text_is_preserved():
     plugin = AutoTrpgDmPlugin.__new__(AutoTrpgDmPlugin)
 
     routed_message = plugin._routed_message_from_command_content("GreedyStr")
+
+    assert routed_message == "GreedyStr"
+
+
+def test_empty_dm_string_greedystr_sentinel_uses_status_prompt_from_event_message():
+    plugin = AutoTrpgDmPlugin.__new__(AutoTrpgDmPlugin)
+
+    routed_message = plugin._routed_message_from_command_content(
+        "GreedyStr",
+        event=FakeEvent(message_str="/dm"),
+    )
+
+    assert routed_message == "查看当前跑团状态；如果还没有开局，请询问玩家想跑什么类型的团。"
+
+
+def test_explicit_greedystr_argument_is_preserved_from_event_message():
+    plugin = AutoTrpgDmPlugin.__new__(AutoTrpgDmPlugin)
+
+    routed_message = plugin._routed_message_from_command_content(
+        "GreedyStr",
+        event=FakeEvent(message_str="/dm GreedyStr"),
+    )
 
     assert routed_message == "GreedyStr"
 
