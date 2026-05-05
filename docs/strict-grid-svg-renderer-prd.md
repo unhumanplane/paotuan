@@ -26,6 +26,21 @@ The existing `generate_map_svg` path is still an LLM-written SVG generator. It i
 a legacy visual fallback and migration asset for this task, not a source of map
 truth.
 
+## Implementation Notes
+
+This PRD is now backed by these implementation entrypoints:
+
+| Layer | Public name | Responsibility |
+| --- | --- | --- |
+| Renderer core | `astrbot_plugin_auto_trpg_dm.rendering.strict_grid_svg.render_strict_grid_svg()` | Render deterministic SVG from `StrictGridRenderInput` dataclasses. |
+| Layout core | `calculate_strict_grid_canvas()` | Compute margin, header, legend, grid origin, canvas size, and cell pixel geometry. |
+| Player-safe adapter | `build_strict_grid_render_input()` | Accept only `projection: "player_view"`, crop to `visible_bounds`, translate integer coordinates, and filter non-player-visible overlays. |
+| Tool entrypoint | `render_strict_grid_svg` | Load active MapCore strict grid, migrate legacy-only `battle.grid` when needed, write SVG, add a visual-only render ref, and optionally enqueue `_pending_outputs`. |
+
+The renderer uses Python XML construction rather than LLM-written SVG/XML. It
+does not call `generate_map_svg()` and does not write rendered SVG text back to
+map facts or `grid`.
+
 ## Prerequisite Status
 
 This task starts from current `upstream/main` after the coordinate renderer
@@ -156,28 +171,33 @@ Validation rules:
 
 ## Output Contract
 
-The renderer returns an artifact record, not map facts:
+The renderer returns tool metadata and stores a render ref, not map facts. The
+actual tool result shape is:
 
 ```json
 {
-  "status": "rendered",
-  "artifact_type": "svg",
-  "render_type": "strict_grid_svg",
-  "visual_only": true,
+  "ok": true,
   "map_id": "strict-local-map",
-  "map_revision": 1,
-  "projection": "player_view",
-  "name": "strict-local-map.svg",
   "title": "Gatehouse tactical map",
-  "delivery": {
-    "pending_output": true,
-    "preview_png": true
+  "file_path": "...",
+  "file_name": "20260505_000000_Gatehouse_tactical_map.svg",
+  "svg_chars": 4096,
+  "send_to_chat": true,
+  "visual_only": true,
+  "render_ref": {
+    "type": "strict_grid_svg",
+    "title": "Gatehouse tactical map",
+    "name": "20260505_000000_Gatehouse_tactical_map.svg",
+    "visual_only": true
   }
 }
 ```
 
-Code-owned storage may keep a local path for file delivery, but projected
-consumer views must not expose path, URL, raw SVG, raw grid, or hidden metadata.
+Code-owned storage may keep a local path for file delivery. Projected consumer
+views must not expose path, URL, raw SVG, raw grid, or hidden metadata. Prompt
+projection keeps safe metadata such as `file_name`, `strict_grid_svg`, and
+`visual_only`, while removing `file_path`, nested `path`, raw SVG, and raw grid
+payloads.
 
 ## Player View / Hidden Fact Leakage Guard
 
@@ -218,8 +238,8 @@ The hidden-data guard must happen before SVG generation:
 
 Renderer artifacts should use the existing delivery shape when possible:
 
-- write sanitized SVG through existing file-writing conventions or a narrow
-  renderer-owned wrapper;
+- write deterministic SVG through a narrow renderer-owned wrapper under the
+  repository maps directory;
 - create a visual-only render reference for MapCore when the artifact is tied to
   a strict map;
 - optionally append a pending output record compatible with current chat
@@ -236,8 +256,8 @@ This task does not implement:
 
 ## SVG Sanitization / PNG Delivery Reuse Plan
 
-The deterministic renderer should emit only simple SVG elements that the current
-sanitizer and preview path already support:
+The deterministic renderer emits only simple SVG elements through code-owned XML
+construction:
 
 - `svg`, `rect`, `line`, `circle`/`ellipse`, `polygon`/`polyline`, `text`, and
   grouped elements where accepted;
@@ -246,21 +266,26 @@ sanitizer and preview path already support:
 - no scripts, external images, foreign objects, remote links, event handlers, or
   raw embedded provider payloads.
 
-If sanitizer or preview support is insufficient for a required strict-grid
-primitive, prefer simplifying the renderer output over adding a broad preview
-subsystem in this PR.
+This task does not introduce a new PNG preview subsystem. If the existing chat
+delivery path later converts strict-grid SVG to PNG, it should consume this
+fixed SVG subset rather than accepting provider-authored XML.
 
 ## This Task Adds
 
-- A deterministic strict-grid SVG renderer core in a dedicated renderer module.
-- A player-safe strict-grid render envelope and adapter boundary.
+- A deterministic strict-grid SVG renderer core in
+  `astrbot_plugin_auto_trpg_dm/rendering/strict_grid_svg.py`.
+- A player-safe strict-grid render envelope adapter in
+  `astrbot_plugin_auto_trpg_dm/rendering/strict_grid_adapter.py`.
 - Stable layout calculation for margin, header, legend, grid bounds, and
   `cell_size`.
-- Rendering for visible grid lines, rule-scale legend, terrain, blockers, LOS
-  blockers, cover, doors, hazards, discovered areas, obstacles, and tokens.
+- Rendering for visible grid lines, rule-scale legend, terrain, movement
+  blockers, LOS blockers, cover, doors, hazards, discovered areas, obstacles,
+  labels, and tokens.
+- A minimal tool entrypoint in `tools/strict_grid_render_tools.py` registered as
+  `render_strict_grid_svg`.
 - Targeted tests for deterministic geometry, hidden leakage prevention,
   structured coordinate source, no LLM SVG generation, no SVG-to-fact writeback,
-  and delivery metadata projection.
+  delivery metadata projection, and legacy-only `battle.grid` compatibility.
 - Public documentation for strict-grid renderer behavior and compatibility
   routing.
 
@@ -269,6 +294,10 @@ subsystem in this PR.
 - `tools/map_tools.py` is already close to the file-size threshold, so the new
   renderer should not be added there. Keep renderer core in a new cohesive
   module.
+- `tools/registry.py` crossed the soft 1200-line threshold by a minimal
+  registration hunk. This is a short-term exception for tool exposure only; any
+  future registry size work should split by registration responsibility or tool
+  domain, not by generic constants/interfaces/utilities.
 - `generate_map_svg` remains prompt-visible during this task. Replacing normal
   map request routing too early would merge renderer implementation with
   delivery migration.
@@ -357,6 +386,8 @@ Agent or LLM must not:
    - Updates relevant public design docs after implementation reveals exact
      function names and payloads.
    - Does not upload local workflow notes.
+   - Confirms `generate_map_svg` remains legacy fallback and delivery cadence is
+     still out of scope.
 
 ## Work Rounds / Commit Checkpoints
 
@@ -398,8 +429,7 @@ concept, or testable feature boundary.
 Targeted verification should include:
 
 ```powershell
-python -m pytest -q tests/test_strict_grid_svg_renderer.py -p no:cacheprovider
-python -m pytest -q tests/test_map_core.py tests/test_prompt_projection.py -p no:cacheprovider
+python -m pytest -q tests/test_strict_grid_svg_renderer.py tests/test_strict_grid_render_envelope.py tests/test_strict_grid_render_tools.py tests/test_tool_registry.py tests/test_map_core.py tests/test_prompt_projection.py -p no:cacheprovider
 python -m compileall -q astrbot_plugin_auto_trpg_dm tests
 git diff --check
 ```
