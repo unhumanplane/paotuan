@@ -1,0 +1,1 @@
+"""Deterministic player-facing renderers."""
