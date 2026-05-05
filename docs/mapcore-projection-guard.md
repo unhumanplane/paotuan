@@ -186,6 +186,7 @@ SVG / PNG 地图和氛围图片都属于视觉辅助。视觉引用可以被记�
 - `create_grid()` 作为 legacy 兼容入口，固定创建或重置 `DEFAULT_STRICT_LOCAL_MAP_ID` 对应的 `strict_local_map` record，并把 `session.battle["map_id"]` 指向该 record。
 - `create_grid()` 会在 record `archive_identity` 中记录 `source: "spatial_tool_create_grid"` 和 authority assumption，便于后续区分 MapStore 创建与 legacy migration。
 - `place_entity()` 和 `move_entity()` 读取 MapCore strict grid，结算成功后写回 MapCore。
+- `move_entity()` 和 `check_attack_vector()` 现在通过内部 `MapCalculator` 路由执行 deterministic spatial calculation。公开工具名、参数 schema、turn guard、audit、MapStore load/save 和 legacy mirror 仍由 `SpatialTools` 维护。
 - `session.battle["grid"]` 暂时保留为兼容 mirror，供旧调用方和过渡期存档继续工作。
 - 旧存档第一次通过 spatial tool 读取 legacy grid 时，会迁移到 MapCore，并保存 `map_id` 和 mirror。
 
@@ -195,6 +196,22 @@ authority guard：
 - migration metadata 写入 record `archive_identity`，用于后续排查来源与清理。
 - agent / LLM 不参与“是否迁移”“哪个 grid 是权威”的判断。
 - RA / DM / player 只能看到投影后的 map view，不能读取 raw strict grid 或 raw store。
+
+## MapCalculator Routing
+
+03.1.04 引入的 `MapCalculator` 是 code-owned calculation route，不是新的 LLM 工具。它的当前职责很窄：
+
+- 按 operation、map type、rule scale、strictness、purpose、map id 等 route metadata 选择 deterministic calculator。
+- 对 `strict_local_map` / grid-like strict maps，委派现有 `SpatialEngine` 计算 movement、distance、line of sight、range、blocking 和 cover。
+- 对当前不支持的非 strict / 非 grid route 返回结构化 `unsupported_map_calculator_route`，而不是让 LLM 判断。
+
+边界：
+
+- `MapCalculator` 不读写 repository，不迁移 legacy grid，不保存 session，也不写 audit。
+- `SpatialTools` 继续负责 `load_active_strict_grid()` / `save_active_strict_grid()`、turn actor guard、audit、session 保存和 legacy `battle.grid` mirror。
+- 公开 LLM-callable 工具名仍是 `move_entity` 和 `check_attack_vector`；`MapCalculator` 只改变内部 ownership，不改变 prompt-facing schema。
+- `place_entity()` 暂不迁移到 `MapCalculator`，它属于 map setup / entity placement 后续阶段。
+- parent map plan 中的 `provisional` / `established` / `locked` authority-state lifecycle 仍是后续 schema work。当前 `authority` 字段仍表示 source owner，例如 `code`、`spatial`、`dm` 或 `ra_candidate`。
 
 ## Candidate Map Event
 
@@ -300,13 +317,16 @@ git diff --check
 - `migrate_legacy_battle_grid()` 不覆盖已经存在的 MapStore strict authority。
 - `create_grid()` 固定重置默认 strict local map、写入 auditable source，并同步 `battle.map_id` 和 legacy mirror。
 - `place_entity()` 和 `move_entity()` 通过 adapter 写回 MapCore strict grid，并暂时维护 legacy mirror。
+- `move_entity()` 和 `check_attack_vector()` 通过 `MapCalculator` 路由到 `SpatialEngine`，且成功 result shape 与旧工具结果保持兼容。
+- `check_attack_vector()` 和 `move_entity()` 都优先使用 MapStore strict grid；stale legacy mirror 不能影响攻击距离、视线或移动结果。
 - candidate event 只做 validation，不 mutate store。
 - raw patch、hidden visibility、未知 map、缺字段事件都会被拒绝。
 
 ## 后续扩展点
 
 - 为 validated candidate 增加 code-owned apply 工具，并继续保持“validate 与 apply 分离”。
-- 引入 MapCalculator 或等价服务层，让 spatial tool routing 不再直接依赖 legacy battle shape。
+- 扩展 MapCalculator 支持 ruler distance、zone bands、topology maps 或 puzzle-specific calculators。
+- 后续再决定是否把 `place_entity()`、`create_grid()` 和 map setup lifecycle 迁入 calculator / lifecycle route。
 - 将 strict map lifecycle 与 combat lifecycle 解耦，让 strict exploration、puzzle、stealth 等场景可以在无 combat 时使用 strict map。
 - 在 strict lifecycle 阶段再引入 `create_strict_map`、`start_combat_on_map`、`end_combat` 或 active map 复用语义；当前 `create_grid()` 仍是兼容入口。
 - 扩展 ownership snapshot 和 projection，把 map / character / battle / rule ownership 边界固定下来。

@@ -14,6 +14,7 @@ from ..core.map_core import (
 from ..core.models import GameMode
 from ..spatial.engine import SpatialEngine
 from ..spatial.grid import Cell, Entity, GridState, Point
+from ..spatial.map_calculator import MapCalculator
 from ..storage.json_repository import JsonGameRepository
 from .memory_tools import background_required_result
 
@@ -156,8 +157,7 @@ class SpatialTools:
         if turn_error:
             self._audit("move_entity", {"entity_id": entity_id, "target_x": target_x, "target_y": target_y}, turn_error)
             return turn_error
-        engine = SpatialEngine(grid)
-        result = engine.move_entity(entity_id, int(target_x), int(target_y))
+        result = MapCalculator(grid).move_entity(entity_id, int(target_x), int(target_y))
         if result.get("ok"):
             self._save_grid(session, grid)
             self.repository.save_session(session)
@@ -171,7 +171,7 @@ class SpatialTools:
         if turn_error:
             self._audit("check_attack_vector", {"source_id": source_id, "target_id": target_id}, turn_error)
             return turn_error
-        result = SpatialEngine(grid).check_attack_vector(source_id, target_id)
+        result = MapCalculator(grid).check_attack_vector(source_id, target_id)
         self._audit("check_attack_vector", {"source_id": source_id, "target_id": target_id}, result)
         return result
 
