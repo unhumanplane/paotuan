@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from html import escape
 from math import isfinite
 from typing import Any
 
@@ -95,6 +96,14 @@ class OverviewTopologyRenderInput:
     current_node_id: str = ""
 
 
+@dataclass(frozen=True)
+class OverviewLayoutResult:
+    positions: dict[str, OverviewPoint]
+    reused_node_ids: tuple[str, ...]
+    generated_node_ids: tuple[str, ...]
+    bounds: tuple[float, float, float, float]
+
+
 def build_overview_topology_render_input(envelope: dict[str, Any]) -> OverviewTopologyRenderInput:
     """Build a player-safe overview render input from a projected envelope."""
     if not isinstance(envelope, dict):
@@ -137,6 +146,148 @@ def build_overview_topology_render_input(envelope: dict[str, Any]) -> OverviewTo
         landmarks=landmarks,
         current_node_id=current_node_id,
     )
+
+
+def layout_overview_topology(render_input: OverviewTopologyRenderInput) -> OverviewLayoutResult:
+    """Return stable player-visible positions for overview nodes."""
+    if not render_input.nodes:
+        raise ValueError("overview_nodes_required")
+    node_by_id = {node.id: node for node in render_input.nodes}
+    adjacency: dict[str, list[str]] = {node.id: [] for node in render_input.nodes}
+    for edge in render_input.edges:
+        adjacency[edge.source_id].append(edge.target_id)
+        adjacency[edge.target_id].append(edge.source_id)
+    for neighbors in adjacency.values():
+        neighbors.sort(key=lambda node_id: _node_sort_key(node_by_id[node_id]))
+
+    root_id = render_input.current_node_id if render_input.current_node_id in node_by_id else _stable_root(render_input.nodes)
+    depths = _bfs_depths(root_id, adjacency)
+    max_depth = max(depths.values(), default=0)
+    layers: dict[int, list[OverviewNode]] = {}
+    for node in sorted(render_input.nodes, key=_node_sort_key):
+        depth = depths.get(node.id, max_depth + 1)
+        layers.setdefault(depth, []).append(node)
+
+    positions: dict[str, OverviewPoint] = {}
+    reused: list[str] = []
+    generated: list[str] = []
+    fallback_width = max(1, render_input.display.width - render_input.display.padding * 2)
+    fallback_height = max(1, render_input.display.height - render_input.display.padding * 2)
+    layer_count = max(1, len(layers))
+    for depth, nodes in sorted(layers.items()):
+        x = render_input.display.padding + (fallback_width * depth / max(1, layer_count - 1))
+        slot_count = len(nodes)
+        for slot, node in enumerate(nodes):
+            if node.layout_pos is not None:
+                positions[node.id] = node.layout_pos
+                reused.append(node.id)
+                continue
+            y = render_input.display.padding + (fallback_height * (slot + 1) / (slot_count + 1))
+            if depth > 0:
+                parent_pos = _first_parent_position(node.id, positions, adjacency, depths)
+                if parent_pos is not None:
+                    y = parent_pos.y + (slot - (slot_count - 1) / 2) * 82
+            positions[node.id] = OverviewPoint(x=x, y=_clamp(y, render_input.display.padding, render_input.display.height - render_input.display.padding))
+            generated.append(node.id)
+
+    return OverviewLayoutResult(
+        positions=positions,
+        reused_node_ids=tuple(reused),
+        generated_node_ids=tuple(generated),
+        bounds=_visible_bounds(positions),
+    )
+
+
+def render_overview_topology_svg(render_input: OverviewTopologyRenderInput) -> str:
+    """Render a deterministic, player-safe overview topology SVG."""
+    layout = layout_overview_topology(render_input)
+    width = render_input.display.width
+    height = render_input.display.height
+    parts = [
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}" role="img">',
+        f"<title>{escape(render_input.title)}</title>",
+        '<rect width="100%" height="100%" fill="#f7f4ed"/>',
+        '<g data-layer="edges">',
+    ]
+    for edge in sorted(render_input.edges, key=lambda item: item.id):
+        source = layout.positions[edge.source_id]
+        target = layout.positions[edge.target_id]
+        classes = "edge"
+        dash = ' stroke-dasharray="8 7"' if edge.status in {"suspected", "known_but_unseen"} else ""
+        opacity = "0.48" if edge.status == "known_but_unseen" else "0.78"
+        parts.append(
+            f'<line class="{classes}" data-edge-id="{escape(edge.id)}" x1="{_svg_num(source.x)}" y1="{_svg_num(source.y)}" '
+            f'x2="{_svg_num(target.x)}" y2="{_svg_num(target.y)}" stroke="#58616a" stroke-width="3" '
+            f'stroke-linecap="round" opacity="{opacity}"{dash}/>'
+        )
+        label = _edge_label(edge)
+        if label:
+            mid_x = (source.x + target.x) / 2
+            mid_y = (source.y + target.y) / 2 - 8
+            parts.append(
+                f'<text class="edge-label" x="{_svg_num(mid_x)}" y="{_svg_num(mid_y)}" '
+                f'text-anchor="middle" font-size="13" fill="#4b535c">{escape(label)}</text>'
+            )
+    parts.append("</g>")
+    parts.append('<g data-layer="areas">')
+    for area in sorted(render_input.areas, key=lambda item: item.id):
+        area_points = [layout.positions[node_id] for node_id in area.node_ids if node_id in layout.positions]
+        if not area_points:
+            continue
+        min_x, min_y, max_x, max_y = _visible_bounds({str(index): point for index, point in enumerate(area_points)})
+        parts.append(
+            f'<rect class="area" data-area-id="{escape(area.id)}" x="{_svg_num(min_x - 34)}" y="{_svg_num(min_y - 28)}" '
+            f'width="{_svg_num(max_x - min_x + 68)}" height="{_svg_num(max_y - min_y + 56)}" '
+            f'rx="14" fill="#d7e6de" stroke="#8aa595" stroke-width="1.5" opacity="0.42"/>'
+        )
+        parts.append(
+            f'<text class="area-label" x="{_svg_num(min_x - 24)}" y="{_svg_num(min_y - 34)}" '
+            f'font-size="12" fill="#4d6659">{escape(area.label)}</text>'
+        )
+    parts.append("</g>")
+    parts.append('<g data-layer="landmarks">')
+    for landmark in sorted(render_input.landmarks, key=lambda item: item.id):
+        point = _landmark_position(landmark, render_input.edges, layout.positions)
+        if point is None:
+            continue
+        parts.append(
+            f'<path class="landmark" data-landmark-id="{escape(landmark.id)}" d="M {_svg_num(point.x)} {_svg_num(point.y - 16)} '
+            f'l 6 12 h -12 z" fill="#b7791f" opacity="0.9"/>'
+        )
+        parts.append(
+            f'<text class="landmark-label" x="{_svg_num(point.x + 10)}" y="{_svg_num(point.y - 8)}" '
+            f'font-size="12" fill="#79520f">{escape(landmark.label)}</text>'
+        )
+    parts.append("</g>")
+    parts.append('<g data-layer="nodes">')
+    for node in sorted(render_input.nodes, key=_node_sort_key):
+        point = layout.positions[node.id]
+        is_current = node.id == render_input.current_node_id
+        fill = "#2f6f73" if is_current else "#ffffff"
+        stroke = "#184d52" if is_current else "#52606d"
+        text_fill = "#ffffff" if is_current else "#25313b"
+        parts.append(
+            f'<circle class="node" data-node-id="{escape(node.id)}" cx="{_svg_num(point.x)}" cy="{_svg_num(point.y)}" '
+            f'r="18" fill="{fill}" stroke="{stroke}" stroke-width="2.5"/>'
+        )
+        parts.append(
+            f'<text class="node-label" x="{_svg_num(point.x)}" y="{_svg_num(point.y + 5)}" '
+            f'text-anchor="middle" font-size="13" font-weight="600" fill="{text_fill}">{escape(_fit_label(node.label, 10))}</text>'
+        )
+        if node.label and len(node.label) > 10:
+            parts.append(
+                f'<text class="node-caption" x="{_svg_num(point.x)}" y="{_svg_num(point.y + 36)}" '
+                f'text-anchor="middle" font-size="12" fill="#25313b">{escape(_fit_label(node.label, 18))}</text>'
+            )
+    parts.append("</g>")
+    parts.append('<g data-layer="labels">')
+    parts.append(
+        f'<text x="{width - render_input.display.padding}" y="{height - 24}" text-anchor="end" '
+        f'font-size="12" fill="#65717d">overview topology - visual only</text>'
+    )
+    parts.append("</g>")
+    parts.append("</svg>")
+    return "\n".join(parts)
 
 
 def _parse_display_profile(value: Any) -> OverviewDisplayProfile:
@@ -249,14 +400,22 @@ def _parse_areas(value: Any, node_ids: set[str]) -> tuple[OverviewArea, ...]:
         if not area_id:
             raise ValueError("overview_area_id_required")
         _require_player_safe_visibility(raw_area, area_id)
+        status = _status(raw_area.get("status") or "")
+        if status in HIDDEN_STATUSES:
+            raise ValueError(f"overview_area_status_invalid:{area_id}")
         raw_node_ids = raw_area.get("node_ids") or []
-        safe_node_ids = tuple(_short_text(item, 120) for item in raw_node_ids if _short_text(item, 120) in node_ids)
+        safe_node_ids = []
+        for item in raw_node_ids:
+            node_id = _short_text(item, 120)
+            if node_id not in node_ids:
+                raise ValueError(f"overview_area_node_missing:{area_id}")
+            safe_node_ids.append(node_id)
         areas.append(
             OverviewArea(
                 id=area_id,
                 label=_short_text(raw_area.get("label") or area_id, 80),
                 kind=_short_text(raw_area.get("kind") or "area", 40),
-                node_ids=safe_node_ids,
+                node_ids=tuple(safe_node_ids),
             )
         )
     return tuple(areas)
@@ -274,6 +433,9 @@ def _parse_landmarks(value: Any, node_ids: set[str], edge_ids: set[str]) -> tupl
         if not landmark_id:
             raise ValueError("overview_landmark_id_required")
         _require_player_safe_visibility(raw_landmark, landmark_id)
+        status = _status(raw_landmark.get("status") or "")
+        if status in HIDDEN_STATUSES:
+            raise ValueError(f"overview_landmark_status_invalid:{landmark_id}")
         node_id = _short_text(raw_landmark.get("node_id") or "", 120)
         edge_id = _short_text(raw_landmark.get("edge_id") or "", 120)
         if node_id and node_id not in node_ids:
@@ -336,3 +498,77 @@ def _bounded_int(value: Any, *, default: int, minimum: int, maximum: int) -> int
 def _short_text(value: Any, limit: int) -> str:
     text = str(value or "").strip()
     return text[:limit]
+
+
+def _bfs_depths(root_id: str, adjacency: dict[str, list[str]]) -> dict[str, int]:
+    depths = {root_id: 0}
+    queue = [root_id]
+    for node_id in queue:
+        for neighbor in adjacency.get(node_id, []):
+            if neighbor not in depths:
+                depths[neighbor] = depths[node_id] + 1
+                queue.append(neighbor)
+    return depths
+
+
+def _stable_root(nodes: tuple[OverviewNode, ...]) -> str:
+    return sorted(nodes, key=_node_sort_key)[0].id
+
+
+def _node_sort_key(node: OverviewNode) -> tuple[int, str, str]:
+    return (node.order, node.label, node.id)
+
+
+def _first_parent_position(
+    node_id: str,
+    positions: dict[str, OverviewPoint],
+    adjacency: dict[str, list[str]],
+    depths: dict[str, int],
+) -> OverviewPoint | None:
+    node_depth = depths.get(node_id, 0)
+    for neighbor in adjacency.get(node_id, []):
+        if depths.get(neighbor, node_depth + 1) < node_depth and neighbor in positions:
+            return positions[neighbor]
+    return None
+
+
+def _visible_bounds(positions: dict[str, OverviewPoint]) -> tuple[float, float, float, float]:
+    xs = [point.x for point in positions.values()]
+    ys = [point.y for point in positions.values()]
+    return (min(xs), min(ys), max(xs), max(ys))
+
+
+def _landmark_position(
+    landmark: OverviewLandmark,
+    edges: tuple[OverviewEdge, ...],
+    positions: dict[str, OverviewPoint],
+) -> OverviewPoint | None:
+    if landmark.node_id:
+        point = positions.get(landmark.node_id)
+        return OverviewPoint(point.x + 18, point.y - 18) if point else None
+    if landmark.edge_id:
+        edge = next((item for item in edges if item.id == landmark.edge_id), None)
+        if edge and edge.source_id in positions and edge.target_id in positions:
+            source = positions[edge.source_id]
+            target = positions[edge.target_id]
+            return OverviewPoint((source.x + target.x) / 2, (source.y + target.y) / 2)
+    return None
+
+
+def _edge_label(edge: OverviewEdge) -> str:
+    values = [edge.relationship, edge.direction, edge.distance_band, edge.route_group]
+    return " / ".join(_fit_label(value, 18) for value in values if value)
+
+
+def _fit_label(value: str, limit: int) -> str:
+    text = _short_text(value, limit + 1)
+    return text if len(text) <= limit else text[: max(1, limit - 3)] + "..."
+
+
+def _svg_num(value: float) -> str:
+    rounded = round(value, 2)
+    return str(int(rounded)) if rounded.is_integer() else f"{rounded:.2f}"
+
+
+def _clamp(value: float, minimum: float, maximum: float) -> float:
+    return max(minimum, min(maximum, value))

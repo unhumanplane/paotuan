@@ -3,6 +3,8 @@ import pytest
 from astrbot_plugin_auto_trpg_dm.rendering.overview_topology import (
     OVERVIEW_TOPOLOGY_RENDER_TYPE,
     build_overview_topology_render_input,
+    layout_overview_topology,
+    render_overview_topology_svg,
 )
 
 
@@ -90,3 +92,69 @@ def test_build_overview_topology_input_rejects_unknown_layout_position():
 
     with pytest.raises(ValueError, match="overview_layout_node_missing:hidden-room"):
         build_overview_topology_render_input(envelope)
+
+
+def test_build_overview_topology_input_rejects_area_with_missing_node():
+    envelope = _base_envelope()
+    envelope["areas"][0]["node_ids"].append("hidden-room")
+
+    with pytest.raises(ValueError, match="overview_area_node_missing:outer-ring"):
+        build_overview_topology_render_input(envelope)
+
+
+def test_build_overview_topology_input_rejects_hidden_landmark_status():
+    envelope = _base_envelope()
+    envelope["landmarks"][0]["status"] = "hidden"
+
+    with pytest.raises(ValueError, match="overview_landmark_status_invalid:bell"):
+        build_overview_topology_render_input(envelope)
+
+
+def test_layout_overview_topology_reuses_stored_positions_and_generates_missing_nodes():
+    render_input = build_overview_topology_render_input(_base_envelope())
+
+    layout = layout_overview_topology(render_input)
+
+    assert layout.positions["gate"].x == 10
+    assert layout.positions["gate"].y == 20
+    assert layout.reused_node_ids == ("gate",)
+    assert layout.generated_node_ids == ("market",)
+    assert layout.positions["market"].x > layout.positions["gate"].x
+
+
+def test_layout_overview_topology_does_not_reserve_space_for_rejected_hidden_nodes():
+    visible = _base_envelope()
+    with_hidden_layout = _base_envelope()
+    with_hidden_layout["layout"]["positions"]["hidden-room"] = {"x": 999, "y": 999}
+
+    visible_layout = layout_overview_topology(build_overview_topology_render_input(visible))
+    with pytest.raises(ValueError, match="overview_layout_node_missing:hidden-room"):
+        build_overview_topology_render_input(with_hidden_layout)
+
+    assert visible_layout.bounds[2] < 900
+    assert visible_layout.bounds[3] < 700
+
+
+def test_render_overview_topology_svg_outputs_layered_visual_only_svg_without_coordinates():
+    render_input = build_overview_topology_render_input(_base_envelope())
+
+    svg = render_overview_topology_svg(render_input)
+
+    assert '<g data-layer="edges">' in svg
+    assert '<g data-layer="areas">' in svg
+    assert '<g data-layer="landmarks">' in svg
+    assert '<g data-layer="nodes">' in svg
+    assert '<g data-layer="labels">' in svg
+    assert 'stroke-dasharray="8 7"' in svg
+    assert 'overview topology - visual only' in svg
+    assert "10,20" not in svg
+    assert "hidden-room" not in svg
+
+
+def test_render_overview_topology_svg_marks_current_location():
+    render_input = build_overview_topology_render_input(_base_envelope())
+
+    svg = render_overview_topology_svg(render_input)
+
+    assert 'data-node-id="gate"' in svg
+    assert 'fill="#2f6f73"' in svg
