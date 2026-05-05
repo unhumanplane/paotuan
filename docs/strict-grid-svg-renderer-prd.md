@@ -35,7 +35,7 @@ This PRD is now backed by these implementation entrypoints:
 | Renderer core | `astrbot_plugin_auto_trpg_dm.rendering.strict_grid_svg.render_strict_grid_svg()` | Render deterministic SVG from `StrictGridRenderInput` dataclasses. |
 | Layout core | `calculate_strict_grid_canvas()` | Compute margin, header, legend, grid origin, canvas size, and cell pixel geometry. |
 | Player-safe adapter | `build_strict_grid_render_input()` | Accept only `projection: "player_view"`, crop to `visible_bounds`, translate integer coordinates, and filter non-player-visible overlays. |
-| Tool entrypoint | `render_strict_grid_svg` | Load active MapCore strict grid, migrate legacy-only `battle.grid` when needed, write SVG, add a visual-only render ref, and optionally enqueue `_pending_outputs`. |
+| Tool entrypoint | `render_strict_grid_svg` | Load active MapCore strict grid, migrate legacy-only `battle.grid` when needed, write SVG, add a visual-only render ref, and optionally enqueue `_pending_outputs` using `type: "svg_map"` plus `render_type: "strict_grid_svg"` for existing chat delivery compatibility. |
 
 The renderer uses Python XML construction rather than LLM-written SVG/XML. It
 does not call `generate_map_svg()` and does not write rendered SVG text back to
@@ -243,7 +243,9 @@ Renderer artifacts should use the existing delivery shape when possible:
 - create a visual-only render reference for MapCore when the artifact is tied to
   a strict map;
 - optionally append a pending output record compatible with current chat
-  delivery;
+  delivery. The pending record keeps `type: "svg_map"` so existing PNG preview
+  attachment code consumes it, and adds `render_type: "strict_grid_svg"` to
+  preserve renderer identity;
 - keep delivery metadata separate from map facts and spatial state.
 
 This task does not implement:

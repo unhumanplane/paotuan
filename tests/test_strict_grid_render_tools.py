@@ -58,7 +58,8 @@ def test_render_strict_grid_svg_writes_visual_artifact_and_render_ref():
     assert record["type"] == MAP_TYPE_STRICT_LOCAL
     assert record["grid"]["entities"]["hero"]["x"] == 1
     assert record["render_refs"][0]["path"] == result["file_path"]
-    assert saved.scene["_pending_outputs"][0]["type"] == "strict_grid_svg"
+    assert saved.scene["_pending_outputs"][0]["type"] == "svg_map"
+    assert saved.scene["_pending_outputs"][0]["render_type"] == "strict_grid_svg"
 
 
 def test_render_strict_grid_svg_migrates_legacy_grid_without_llm_or_generate_map_svg():

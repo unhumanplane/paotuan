@@ -79,7 +79,8 @@ class StrictGridRenderTools:
             visual_only=True,
         )
         map_record = {
-            "type": "strict_grid_svg",
+            "type": "svg_map",
+            "render_type": "strict_grid_svg",
             "title": envelope["title"],
             "name": path.name,
             "path": str(path),

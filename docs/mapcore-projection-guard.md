@@ -38,8 +38,10 @@ SVG / PNG 地图和氛围图片都属于视觉辅助。视觉引用可以被记�
 strict-grid SVG renderer 也是视觉辅助。`render_strict_grid_svg` 从
 MapCore strict grid 和 `player_view` envelope 生成 deterministic SVG，
 并用 `render_refs` 记录 `type: "strict_grid_svg"`、`name`、`title` 和
-`visual_only`。本地 `path` 只服务文件交付；DM prompt projection 和
-player-facing projection 不消费 raw `path`、raw SVG 或 raw `grid`。
+`visual_only`。`_pending_outputs` 为了复用现有 PNG preview 交付通道，
+继续使用 `type: "svg_map"`，并用 `render_type: "strict_grid_svg"` 标记来源。
+本地 `path` 只服务文件交付；DM prompt projection 和 player-facing
+projection 不消费 raw `path`、raw SVG 或 raw `grid`。
 
 ## Strict Map Lifecycle 与 Combat Lifecycle
 
@@ -223,7 +225,7 @@ map authority。它的读取和写入边界如下：
 | Load strict grid | `load_active_strict_grid(session.maps, session.battle)` | Active MapCore `strict_local_map.grid`; legacy-only `battle.grid` as migration source. | Letting stale `battle.grid` override an existing MapCore strict map. |
 | Build player-safe envelope | `project_active_map_record(..., MAP_VIEW_PLAYER, strict=True)` plus renderer adapter | `projection: "player_view"`, player/public visibility, integer coordinates, visible bounds, structured overlays. | `dm` / `hidden` overlays, raw hidden facts, diagnostic records, non-player projections. |
 | Render SVG | `build_strict_grid_render_input()` and `render_strict_grid_svg()` | Deterministic XML from structured coordinates, visible grid lines, rule scale legend, terrain, blockers, cover, doors, hazards, obstacles, labels, tokens. | LLM-written SVG/XML, remote images, scriptable SVG features, hidden labels or hidden coordinates. |
-| Persist artifact | `add_render_ref(..., ref_type="strict_grid_svg", visual_only=True)` and optional `_pending_outputs` record | Visual-only metadata and local file delivery state. | Writing SVG, PNG, path, or rendered geometry back into `facts` or `grid`. |
+| Persist artifact | `add_render_ref(..., ref_type="strict_grid_svg", visual_only=True)` and optional `_pending_outputs` record | Visual-only metadata and local file delivery state. Pending delivery uses `type: "svg_map"` plus `render_type: "strict_grid_svg"` for current chat attachment compatibility. | Writing SVG, PNG, path, or rendered geometry back into `facts` or `grid`. |
 | Prompt projection | `project_tool_results_for_dm_prompt()` | Safe fields such as `file_name`, `strict_grid_svg`, `visual_only`, title, and non-sensitive counts. | `file_path`, nested `path`, `url`, raw `grid`, raw SVG, hidden payloads. |
 
 The renderer may load raw strict-grid state inside code to produce a visual
