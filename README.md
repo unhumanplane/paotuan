@@ -38,6 +38,7 @@
 - 支持地图实体、回合顺序、行动推进和结算阶段。
 - 回合超时后可以执行保守自动行动，避免多人团长期卡住。
 - SVG / PNG 地图只作为视觉展示，不直接改写战棋事实。
+- 后续玩家地图渲染必须从结构化坐标、边界、锚点、路径点和连接记录生成，不能把 SVG / PNG 或模糊空间短语当成权威地图事实；坐标与布局合同见 [docs/coordinate-renderer-contract.md](docs/coordinate-renderer-contract.md)。
 - MapCore 负责地图记录、可见性投影和候选地图事件校验，防止 DM / RA / LLM 读取隐藏地图事实或 raw 地图存储；设计边界见 [docs/mapcore-projection-guard.md](docs/mapcore-projection-guard.md)。
 
 ### 规则与裁定
