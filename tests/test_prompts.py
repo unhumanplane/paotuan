@@ -313,6 +313,16 @@ def test_prompt_snapshot_projection_applies_without_mutating_session():
     session.scene["npcs"] = [{"name": "Watch captain", "stance": "hostile but wounded"}]
     session.scene["clues"] = ["A fresh boot print points toward the cistern."]
     session.scene["ambient_image_state"] = {"large_internal_counter": "x" * 200}
+    session.scene["_map_delivery_cadence"] = {
+        "schema_version": 1,
+        "sent": {
+            "internal": {
+                "render_type": "strict_grid_svg",
+                "map_id": "strict-local-map",
+                "trigger": "combat_round",
+            }
+        },
+    }
     session.scene["_recent_narrative_events"] = [
         {
             "at": f"t-{index}",
@@ -379,6 +389,7 @@ def test_prompt_snapshot_projection_applies_without_mutating_session():
     assert projected_snapshot["scene"]["location"]["name"] == "Gatehouse courtyard"
     assert projected_snapshot["scene"]["npcs"][0]["name"] == "Watch captain"
     assert "ambient_image_state" not in projected_snapshot["scene"]
+    assert "_map_delivery_cadence" not in projected_snapshot["scene"]
     assert session.compact_snapshot() == original_snapshot
 
 
