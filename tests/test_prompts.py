@@ -51,8 +51,10 @@ def test_system_prompt_prefers_overview_topology_renderer_before_llm_svg_fallbac
     )
 
     assert "优先调用 render_overview_topology_svg" in prompt
+    assert "优先调用 render_strict_grid_svg" in prompt
     assert "不调用 LLM 写 SVG/XML" in prompt
-    assert "再调用 generate_map_svg" in prompt
+    assert "才退回 generate_map_svg" in prompt
+    assert "不要把普通地图请求直接交给 LLM 写 SVG" in prompt
 
 
 def test_user_prompt_routes_overview_map_requests_to_deterministic_renderer_hint():
@@ -63,7 +65,9 @@ def test_user_prompt_routes_overview_map_requests_to_deterministic_renderer_hint
     assert "overview_topology_missing" in overview_prompt
     assert "不要让 LLM 直接根据隐藏事实写 topology SVG" in overview_prompt
     assert "优先调用 generate_map_svg" not in overview_prompt
-    assert "优先调用 generate_map_svg" in tactical_prompt
+    assert "优先调用 render_strict_grid_svg" in tactical_prompt
+    assert "strict_grid_not_found" in tactical_prompt
+    assert "优先调用 generate_map_svg" not in tactical_prompt
     assert "render_overview_topology_svg" not in tactical_prompt
 
 

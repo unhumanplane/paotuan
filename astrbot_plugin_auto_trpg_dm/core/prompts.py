@@ -5,6 +5,11 @@ from typing import Any
 
 from .combat_lifecycle import combat_lifecycle_active
 from .map_core import MAP_VIEW_DIAGNOSTIC, MAP_VIEW_DM_NARRATION, project_map_store
+from .map_tool_routing import (
+    looks_overview_map_request,
+    looks_strict_grid_map_request,
+    looks_visual_map_request,
+)
 from .models import GameMode, GameSession
 from .prompt_projection import project_ra_summary_for_dm_prompt
 
@@ -775,7 +780,8 @@ def build_system_prompt(
     全局结算、个人结局、后日谈或间幕休息后，视为 post-game/interlude；不要继续推进战斗轮次，不要追加“现在轮到谁”，不要把赛后评价或自封头衔写成角色卡新能力。
 25. 在战棋角色回合，移动和攻击只能针对“当前发言人本轮未行动且持有的角色”，或无持有人时的 current_entity_id；如果工具返回 wrong_turn_actor、entity_already_acted_this_round 或 character_control_denied，必须说明限制，不要强行移动、攻击或跳过其他玩家角色。
 26. 如果玩家需要区域路线、地点关系或大地图概览，且本轮允许 render_overview_topology_svg、当前 maps 已有 player_view 可见的结构化 overview topology/layout facts，优先调用 render_overview_topology_svg；它由代码确定性渲染 SVG，不调用 LLM 写 SVG/XML。
-    如果只是普通视觉地图、战场示意、地形草图，或 overview topology 结构化事实缺失，再调用 generate_map_svg；不要依赖固定关键词。generate_map_svg 会使用独立 LLM 子上下文生成视觉草图。
+    如果玩家需要战场、站位、战棋、格子或地形地图，且本轮允许 render_strict_grid_svg、当前 maps/battle 中已有 player_view 可见的 strict grid，优先调用 render_strict_grid_svg；它也由代码确定性渲染，不调用 LLM 写 SVG/XML。
+    只有 deterministic renderer 不可用、返回 missing 类错误，且本轮明确允许 generate_map_svg 作为 legacy fallback、风格实验或迁移用草图时，才退回 generate_map_svg；不要把普通地图请求直接交给 LLM 写 SVG。
     SVG 只是视觉层，不能替代 create_grid、move_entity、check_attack_vector 的物理事实；不要根据 SVG 自行改写坐标、视线或距离。
     地图生成成功后，只需简短说明“地图已生成/已附上”，不要把 SVG 源码贴进聊天。
 27. 当前会话快照里的 rules 是二级摘要：level_1 给出规则名索引和标签统计，level_2 只给近期/重要规则详情。
@@ -999,13 +1005,14 @@ def build_user_prompt(message: str, security_notes: list[str] | None = None) -> 
     visual_hint = ""
     if _looks_like_visual_map_request(message):
         visual_hint = """本地意图提示：玩家这句话很可能是在请求视觉地图、站位图或战场示意。
-如果本轮允许 generate_map_svg，并且玩家不是明确只要文字说明，请优先调用 generate_map_svg；生成成功后只用一句短回复说明地图已附上，不要输出 SVG 源码。
+如果本轮允许 render_strict_grid_svg，并且当前 maps/battle 中已有 player_view 可见的 strict grid，请优先调用 render_strict_grid_svg。
+只有 deterministic strict-grid renderer 不可用或返回 strict_grid_not_found，且本轮明确暴露 generate_map_svg 作为 legacy fallback、风格实验或迁移用草图时，才退回 generate_map_svg；生成成功后只用一句短回复说明地图已附上，不要输出 SVG 源码。
 
 """
         if _looks_like_overview_topology_map_request(message):
             visual_hint = """本地意图提示：玩家这句话很可能是在请求区域路线、地点关系或大地图概览。
 如果本轮允许 render_overview_topology_svg，并且当前 maps 中已有 player_view 可见的结构化 overview topology/layout facts，请优先调用 render_overview_topology_svg。
-如果没有结构化 overview topology，或该工具返回 overview_topology_missing，再退回 generate_map_svg 作为视觉草图；不要让 LLM 直接根据隐藏事实写 topology SVG。
+如果没有结构化 overview topology，或该工具返回 overview_topology_missing，且本轮明确暴露 generate_map_svg 作为 legacy fallback、风格实验或迁移用草图时，才退回 generate_map_svg；不要让 LLM 直接根据隐藏事实写 topology SVG。
 
 """
     full_output_hint = ""
@@ -1104,68 +1111,15 @@ def _has_campaign_background(session: GameSession) -> bool:
 
 
 def _looks_like_visual_map_request(message: str) -> bool:
-    text = str(message or "").strip().lower()
-    if not text:
-        return False
-    visual_terms = (
-        "地图",
-        "图",
-        "画",
-        "绘制",
-        "生成",
-        "示意",
-        "站位",
-        "俯视",
-        "布局",
-        "可视化",
-        "标出来",
-        "svg",
-        "map",
-        "draw",
-    )
-    map_terms = (
-        "地图",
-        "战场",
-        "场景",
-        "站位",
-        "位置",
-        "地形",
-        "格子",
-        "网格",
-        "路线",
-        "障碍",
-        "入口",
-        "出口",
-        "敌我",
-        "触手",
-        "map",
-    )
-    if not any(term in text for term in visual_terms):
-        return False
-    return any(term in text for term in map_terms)
+    return looks_visual_map_request(message)
 
 
 def _looks_like_overview_topology_map_request(message: str) -> bool:
-    text = str(message or "").strip().lower()
-    if not text or not _looks_like_visual_map_request(text):
-        return False
-    overview_terms = (
-        "overview",
-        "topology",
-        "拓扑",
-        "概览",
-        "总览",
-        "大地图",
-        "路线",
-        "路径",
-        "关系",
-        "区域",
-        "地标",
-        "地点",
-        "当前在哪",
-        "我在哪里",
-    )
-    return any(term in text for term in overview_terms)
+    return looks_overview_map_request(message)
+
+
+def _looks_like_strict_grid_map_request(message: str) -> bool:
+    return looks_strict_grid_map_request(message)
 
 
 def _looks_like_full_status_request(message: str) -> bool:
