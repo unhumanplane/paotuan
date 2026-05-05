@@ -13,6 +13,8 @@ from astrbot_plugin_auto_trpg_dm.core.map_delivery_cadence import (
     MapDeliveryRequest,
     decide_map_delivery,
     default_map_delivery_cadence_state,
+    enqueue_map_pending_output,
+    filter_map_pending_outputs_for_delivery,
     get_map_delivery_cadence_state,
     record_map_delivery_sent,
     set_map_delivery_cadence_state,
@@ -173,6 +175,122 @@ def test_renderer_unavailable_requires_explicit_legacy_fallback_permission():
     assert allowed.render_type == MAP_RENDER_LEGACY_LLM_SVG
     assert allowed.preferred_render_type == MAP_RENDER_OVERVIEW_TOPOLOGY
     assert allowed.legacy_fallback is True
+
+
+def test_enqueue_pending_output_adds_delivery_metadata_and_marks_sent():
+    scene = {}
+    request = MapDeliveryRequest(
+        trigger=MAP_DELIVERY_TRIGGER_OVERVIEW_TRANSITION,
+        render_type=MAP_RENDER_OVERVIEW_TOPOLOGY,
+        map_id="overview-1",
+        map_revision="3",
+        layout_revision="layout-1",
+        trigger_id="scene:gate",
+    )
+
+    decision, state = enqueue_map_pending_output(
+        scene,
+        {"type": "svg_map", "title": "Gate", "path": "internal.svg", "visual_only": False},
+        request,
+    )
+
+    assert decision.should_send is True
+    assert len(state["sent"]) == 1
+    pending = scene["_pending_outputs"][0]
+    assert pending["visual_only"] is True
+    assert pending["render_type"] == MAP_RENDER_OVERVIEW_TOPOLOGY
+    assert pending["preferred_render_type"] == MAP_RENDER_OVERVIEW_TOPOLOGY
+    assert pending["delivery_trigger"] == MAP_DELIVERY_TRIGGER_OVERVIEW_TRANSITION
+    assert pending["delivery_reason"] == "eligible"
+    assert pending["delivery_enqueued"] is True
+    assert pending["map_id"] == "overview-1"
+    assert pending["map_revision"] == "3"
+    assert pending["layout_revision"] == "layout-1"
+    assert pending["cadence_key"]
+
+
+def test_filter_pending_outputs_records_sent_and_suppresses_duplicates():
+    scene = {
+        "_pending_outputs": [
+            {
+                "type": "svg_map",
+                "render_type": MAP_RENDER_OVERVIEW_TOPOLOGY,
+                "map_id": "overview-1",
+                "map_revision": "3",
+                "layout_revision": "layout-1",
+                "delivery_trigger": MAP_DELIVERY_TRIGGER_OVERVIEW_TRANSITION,
+                "trigger_id": "scene:gate",
+            },
+            {
+                "type": "svg_map",
+                "render_type": MAP_RENDER_OVERVIEW_TOPOLOGY,
+                "map_id": "overview-1",
+                "map_revision": "3",
+                "layout_revision": "layout-1",
+                "delivery_trigger": MAP_DELIVERY_TRIGGER_OVERVIEW_TRANSITION,
+                "trigger_id": "scene:gate",
+            },
+        ]
+    }
+
+    kept, state, decisions = filter_map_pending_outputs_for_delivery(scene, scene["_pending_outputs"])
+
+    assert len(kept) == 1
+    assert kept[0]["delivery_reason"] == "eligible"
+    assert decisions[0].should_send is True
+    assert decisions[1].should_send is False
+    assert decisions[1].reason == "duplicate_suppressed"
+    assert len(state["sent"]) == 1
+    assert scene[MAP_DELIVERY_CADENCE_SCENE_KEY] == state
+
+
+def test_filter_queued_pending_output_keeps_already_enqueued_map_once():
+    scene = {}
+    request = MapDeliveryRequest(
+        trigger=MAP_DELIVERY_TRIGGER_OVERVIEW_TRANSITION,
+        render_type=MAP_RENDER_OVERVIEW_TOPOLOGY,
+        map_id="overview-1",
+        map_revision="3",
+        layout_revision="layout-1",
+        trigger_id="scene:gate",
+    )
+    enqueue_map_pending_output(
+        scene,
+        {"type": "svg_map", "title": "Gate", "path": "internal.svg"},
+        request,
+    )
+
+    kept, state, decisions = filter_map_pending_outputs_for_delivery(scene, scene["_pending_outputs"])
+
+    assert len(kept) == 1
+    assert decisions[0].should_send is True
+    assert decisions[0].reason == "eligible"
+    assert len(state["sent"]) == 1
+
+
+def test_filter_old_pending_svg_map_without_render_type_as_legacy_visual_only():
+    scene = {
+        "_pending_outputs": [
+            {
+                "type": "svg_map",
+                "title": "Old generated map",
+                "path": "internal/old.svg",
+            }
+        ]
+    }
+
+    kept, state, decisions = filter_map_pending_outputs_for_delivery(scene, scene["_pending_outputs"])
+
+    assert len(kept) == 1
+    output = kept[0]
+    assert output["visual_only"] is True
+    assert output["render_type"] == MAP_RENDER_LEGACY_LLM_SVG
+    assert output["preferred_render_type"] == MAP_RENDER_LEGACY_LLM_SVG
+    assert output["delivery_trigger"] == MAP_DELIVERY_TRIGGER_PLAYER_REQUEST
+    assert output["delivery_enqueued"] is True
+    assert decisions[0].should_send is True
+    assert decisions[0].render_type == MAP_RENDER_LEGACY_LLM_SVG
+    assert list(state["sent"].values())[0]["render_type"] == MAP_RENDER_LEGACY_LLM_SVG
 
 
 def test_scene_cadence_state_normalizes_old_or_missing_values():

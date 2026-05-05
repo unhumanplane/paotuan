@@ -274,6 +274,7 @@ SCENE_PROJECTION_DROP_KEYS = {
     "ambient_image_style",
     "last_ambient_image",
     "last_map_svg",
+    "_pending_outputs",
     "_map_delivery_cadence",
     "history",
     "transcript",

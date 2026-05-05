@@ -7,6 +7,7 @@ DM_PROMPT_BLOCKED_KEYS = {
     "api_key",
     "audit",
     "authorization",
+    "cadence_key",
     "debug",
     "diagnostic",
     "diagnostics",
@@ -48,6 +49,7 @@ DM_PROMPT_BLOCKED_KEYS = {
 DM_PROMPT_BLOCKED_KEY_TOKENS = (
     "api_key",
     "authorization",
+    "cadence",
     "credential",
     "debug",
     "diagnostic",

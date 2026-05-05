@@ -21,6 +21,7 @@ from astrbot.core.utils.astrbot_path import get_astrbot_data_path
 
 from .core.ambient_image import AmbientImageConfig, AmbientImageProvider
 from .core.external_memory import HonchoExternalMemory, HonchoMemoryConfig
+from .core.map_delivery_cadence import filter_map_pending_outputs_for_delivery
 from .core.plugin_log import configure_plugin_logging
 from .core.router import IntentRouter
 from .core.security import security_precheck
@@ -2673,6 +2674,7 @@ class AutoTrpgDmPlugin(Star):
                 return []
             visible_pending = [item for item in pending if item.get("type") != "ambient_image"]
             dropped_ambient = len(pending) - len(visible_pending)
+            visible_pending, _state, delivery_decisions = filter_map_pending_outputs_for_delivery(session.scene, visible_pending)
             session.scene["_pending_outputs"] = []
             self.repository.save_session(session)
             if dropped_ambient:
@@ -2680,6 +2682,14 @@ class AutoTrpgDmPlugin(Star):
                     "ambient_image_pending_outputs_dropped session=%s count=%s",
                     session_id,
                     dropped_ambient,
+                )
+            skipped_maps = [decision for decision in delivery_decisions if not decision.should_send]
+            if skipped_maps:
+                self.plugin_logger.info(
+                    "map_pending_outputs_suppressed session=%s count=%s reasons=%s",
+                    session_id,
+                    len(skipped_maps),
+                    ",".join(sorted({decision.reason for decision in skipped_maps})),
                 )
             return visible_pending
         except Exception as exc:
