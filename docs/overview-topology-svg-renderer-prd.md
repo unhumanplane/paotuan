@@ -23,8 +23,16 @@
   `scene["_pending_outputs"]`.
 - Chat delivery in `astrbot_plugin_auto_trpg_dm/main.py` already consumes
   `_pending_outputs` and attaches only records with `type == "svg_map"`.
-- Prompt guidance in `astrbot_plugin_auto_trpg_dm/core/prompts.py` still tells
-  the DM to call `generate_map_svg` for visual map requests.
+- Prompt guidance in `astrbot_plugin_auto_trpg_dm/core/prompts.py` now prefers
+  `render_overview_topology_svg` for non-combat overview requests when a
+  structured overview topology exists, while keeping `generate_map_svg` as a
+  legacy compatibility path.
+- `render_overview_topology_svg` now renders deterministic overview topology
+  SVG from player-projected topology facts and records visual refs / pending
+  delivery metadata without asking an LLM to write SVG/XML.
+- Generated layout positions are cached under
+  `record["archive_identity"]["overview_topology_layout"]`; renderer output
+  does not create or modify topology map facts.
 - PR #18 has landed on `main` and brought in the coordinate renderer contract.
 - PR #19 is the sibling strict-grid SVG renderer work. It is not part of this
   PRD's baseline and should be treated as a parallel renderer path.
@@ -353,11 +361,11 @@ The renderer should return an `OverviewTopologyRenderResult` with:
 | `map_id` | Source map id. |
 | `map_revision` | Source map revision. |
 | `layout_revision` | Existing or newly created layout revision. |
-| `svg` or `svg_path` | Internal artifact result. Raw SVG should not enter prompt/player projection. |
+| `file_path` / `file_name` | Internal artifact result. Local paths should not enter prompt/player projection. |
 | `width` / `height` | Display dimensions, not physical scale. |
 | `render_ref` | Safe render ref payload; internal path/url omitted when projected. |
 | `pending_output` | Optional `type: "svg_map"` delivery record. |
-| `layout_updates` | Code-owned layout positions to persist separately from map facts. |
+| `layout_updates` | Non-coordinate summary of newly cached layout updates; ordinary DM prompt projection blocks this key. |
 | `warnings` | Non-fatal validation or fallback notes. |
 
 Pending delivery records should use:
@@ -376,7 +384,8 @@ Pending delivery records should use:
 ```
 
 The `path` field is internal delivery metadata only. Prompt/player projection
-must continue to expose only safe render ref fields.
+must continue to expose only safe render ref fields. Raw SVG is written to the
+artifact file, not returned as prompt-safe content.
 
 ## Hidden Topology Leakage Guard
 
@@ -428,7 +437,14 @@ Persistence rules:
 - `map_revision` tracks authoritative topology/fact changes.
 - `layout_revision` tracks render placement, label density, style, masks, and
   display profile choices.
-- Layout updates may be cached in a render-layout record or render refs.
+- Generated layout positions are cached in
+  `record["archive_identity"]["overview_topology_layout"]["positions"]`.
+- Cached positions are merged back into the next render envelope only for node
+  ids already present in the player-projected topology payload.
+- `layout_updates` in the raw tool result reports non-coordinate update
+  metadata such as `cached`, `layout_revision`, and `generated_node_ids`.
+- `layout_updates`, `layout`, and `positions` remain blocked from ordinary DM
+  prompt projection.
 - Layout updates must not create or modify map facts.
 - Returning to an archived scene may reuse layout only when map identity and
   relevant revisions still match.
@@ -439,7 +455,7 @@ Persistence rules:
 | --- | --- | --- |
 | Player asks for a non-combat overview map and a player-visible overview topology exists. | `render_overview_topology_svg` | Preferred deterministic path. |
 | Player asks for tactical grid / strict local map. | Strict-grid renderer if available; otherwise existing strict/tactical path. | This PRD does not implement strict grid. |
-| Player asks for visual map but no structured overview topology exists. | Return a safe message or use legacy fallback only if explicitly allowed. | Do not make LLM SVG authoritative. |
+| Player asks for visual map but no structured overview topology exists. | Return a stable `overview_topology_missing` error or use legacy fallback only if explicitly allowed by later routing work. | Do not make LLM SVG authoritative. |
 | Legacy prompt calls `generate_map_svg`. | Keep compatibility. | Do not remove in this task. |
 | Pending output has `type: "svg_map"` and `render_type: "overview_topology_svg"`. | Existing chat delivery can attach it. | Delivery code may need only minimal metadata handling. |
 | Pending output has `type: "svg_map"` and legacy/no render type. | Existing delivery behavior. | Keep for compatibility. |
@@ -447,25 +463,27 @@ Persistence rules:
 
 ## Delivery / Pending Output Plan
 
-V1 should reuse `_pending_outputs` and `type: "svg_map"` for chat attachment
+V1 reuses `_pending_outputs` and `type: "svg_map"` for chat attachment
 compatibility. The overview renderer adds `render_type:
-"overview_topology_svg"` and renderer-specific metadata.
+"overview_topology_svg"`, `width`, `height`, `visual_only`, and
+renderer-specific metadata.
 
 This task should not redesign delivery cadence. Major delivery policy,
 legacy-downgrade policy, and broad migration from `generate_map_svg` belong to a
 later delivery/legacy migration PR.
 
-The overview render tool should support a `send_to_chat` option. When true, it
-appends a pending output record with an internal SVG path. When false, it should
-still create or return a render ref if rendering succeeded.
+The overview render tool supports a `send_to_chat` option. When true, it appends
+a pending output record with an internal SVG path. When false, it still writes
+the SVG artifact and records a visual-only render ref if rendering succeeded.
 
 ## This Task Adds
 
 - A deterministic overview topology SVG renderer.
-- A player-view overview render envelope builder or adapter.
-- A bounded tool schema such as `render_overview_topology_svg`.
+- A player-view overview render envelope builder / adapter.
+- A bounded `render_overview_topology_svg` tool schema.
 - Registry exposure that does not remove legacy `generate_map_svg`.
-- Layout persistence or layout-update return semantics.
+- Layout persistence in record archive metadata plus layout-update return
+  semantics.
 - Additive tests for:
   - deterministic layout stability;
   - new node placement without old-node reshuffle;
@@ -486,6 +504,9 @@ still create or return a render ref if rendering succeeded.
 - Current map facts do not yet have a dedicated overview topology schema. The
   implementation may need a minimal shape that is strict enough to test without
   forcing a full map fact migration.
+- This PR uses the existing overview topology fact payload shape as the
+  structured input. A future stable map fact model can formalize that payload
+  further without making renderer output authoritative.
 - `main.py` only checks `type == "svg_map"` and has no renderer-family routing
   today. Overview should add metadata conservatively rather than redesigning
   delivery.
@@ -621,18 +642,21 @@ Targeted tests:
 - hidden topology does not change bounds or reserve obvious blank space;
 - SVG structure includes expected layer order and current-location marker;
 - render result produces visual-only render ref metadata;
+- render result includes `map_revision`, `layout_revision`, `width`, `height`,
+  and non-coordinate `layout_updates`;
+- generated layout positions are persisted under map record archive metadata,
+  not topology map facts;
 - `send_to_chat=True` appends `type: "svg_map"` and
   `render_type: "overview_topology_svg"`;
 - projected prompts do not expose raw SVG, local paths, hidden facts, or hidden
-  coordinates;
+  coordinates, including `layout_updates`;
 - legacy `generate_map_svg` behavior remains covered.
 
 Commands:
 
 ```bash
-python -m pytest tests/test_map_core.py tests/test_prompt_projection.py tests/test_prompts.py tests/test_tool_registry.py
-python -m pytest tests/test_overview_topology_renderer.py
-python -m compileall astrbot_plugin_auto_trpg_dm
+python -m pytest -q tests/test_overview_topology_renderer.py tests/test_overview_topology_render_tools.py tests/test_tool_registry.py tests/test_prompt_projection.py tests/test_prompts.py::test_system_prompt_includes_shared_cycle_contract tests/test_prompts.py::test_system_prompt_prefers_overview_topology_renderer_before_llm_svg_fallback tests/test_prompts.py::test_user_prompt_routes_overview_map_requests_to_deterministic_renderer_hint tests/test_prompts.py::test_prompt_snapshot_projection_uses_safe_dm_map_view tests/test_map_core.py::test_player_and_dm_projection_filter_hidden_facts_and_raw_render_paths -p no:cacheprovider
+python -m compileall -q astrbot_plugin_auto_trpg_dm tests
 git diff --check
 ```
 
