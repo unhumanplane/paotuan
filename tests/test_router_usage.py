@@ -230,6 +230,65 @@ def test_router_semantic_judge_keeps_necessary_clarification():
     )
 
 
+def test_router_projects_tool_results_before_returning_to_dm_context():
+    class FakeToolCallResponse:
+        completion_text = ""
+        tools_call_name = ["generate_map_svg"]
+        tools_call_args = [{"title": "北门", "prompt": "raw prompt"}]
+        tool_calls = []
+
+    class RawResultToolExecutor:
+        async def execute(self, tool_name, args):
+            return {
+                "ok": True,
+                "message": "地图已生成。",
+                "file_path": "D:/runtime/maps/north.svg",
+                "url": "https://example.invalid/north.svg",
+                "raw_svg": "raw secret svg",
+                "debug": "debug trace",
+            }
+
+    class FakeLoopLlm:
+        def __init__(self):
+            self.second_call_contexts = []
+
+        async def __call__(self, **kwargs):
+            if "func_tool" in kwargs:
+                return FakeToolCallResponse()
+            self.second_call_contexts = kwargs["contexts"]
+            return FakeLlmResponse("最终叙事。")
+
+    async def run_case():
+        repository = InMemoryRepository()
+        router = IntentRouter.__new__(IntentRouter)
+        llm = FakeLoopLlm()
+        router.max_steps = 2
+        router._llm_generate = llm
+        router.repository = repository
+
+        result = await router._run_llm_tool_loop(
+            chat_provider_id="fake-provider",
+            system_prompt="system",
+            initial_prompt="玩家行动",
+            toolset=object(),
+            tool_executor=RawResultToolExecutor(),
+            session_id="group-1",
+            raw_player_message="我要看地图",
+        )
+        return result, llm.second_call_contexts
+
+    result, contexts = asyncio.run(run_case())
+    tool_context = contexts[-1]["content"]
+
+    assert result.completion_text == "最终叙事。"
+    assert "本轮工具返回（已投影" in tool_context
+    assert "地图已生成" in tool_context
+    assert "raw secret svg" not in tool_context
+    assert "D:/runtime" not in tool_context
+    assert "example.invalid" not in tool_context
+    assert "debug trace" not in tool_context
+
+
 def test_ambient_image_auto_generation_is_scheduled_without_waiting():
     class FakeRepository:
         def __init__(self, session):

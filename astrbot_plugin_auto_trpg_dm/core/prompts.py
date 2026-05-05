@@ -6,6 +6,7 @@ from typing import Any
 from .combat_lifecycle import combat_lifecycle_active
 from .map_core import MAP_VIEW_DIAGNOSTIC, MAP_VIEW_DM_NARRATION, project_map_store
 from .models import GameMode, GameSession
+from .prompt_projection import project_ra_summary_for_dm_prompt
 
 
 DEFAULT_ADJUDICATION_PROFILE = {
@@ -443,25 +444,12 @@ def _project_battle(battle: Any, profile: str) -> Any:
     if not battle.get("active"):
         return {"active": False}
     projected = json.loads(_compact_json(battle))
+    projected.pop("grid", None)
     turn = projected.get("turn")
     if isinstance(turn, dict) and "recent_turn_log" in turn:
         limit = 6 if profile == "state_query" else 4
         turn["recent_turn_log"] = list(turn.get("recent_turn_log") or [])[-limit:]
-    if profile in {"character_profile", "narrative"}:
-        grid = projected.get("grid")
-        if isinstance(grid, dict) and isinstance(grid.get("entities"), list):
-            grid["entities"] = [_minimal_entity(entity) for entity in grid["entities"]]
     return projected
-
-
-def _minimal_entity(entity: Any) -> Any:
-    if not isinstance(entity, dict):
-        return entity
-    return {
-        key: entity.get(key)
-        for key in ("id", "name", "faction", "x", "y", "size", "blocks_move", "blocks_los")
-        if key in entity and entity.get(key) not in (None, "", [], {})
-    }
 
 
 def _project_rules(rules: Any, profile: str) -> Any:
@@ -988,7 +976,7 @@ def build_ra_cycle_prompt(ra_cycle_input: dict, authority_snapshot: dict) -> str
 
 
 def build_cycle_start_prompt(ra_summary: dict | None) -> str:
-    summary = ra_summary or {}
+    summary = project_ra_summary_for_dm_prompt(ra_summary)
     return """下一周期启动上下文：
 请基于以下已经验证的 RA 摘要推进下一幕。若 discrepancies 非空，先用合理场内解释圆回冲突；无法圆回时，简短更正上一段叙事。不要把未验证的补丁候选当成事实。
 

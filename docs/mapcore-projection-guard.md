@@ -186,6 +186,27 @@ strict map lifecycle 是 MapCore record 上的 code-owned 状态，不由 LLM、
 - `_project_snapshot_for_profile()` 会向 DM prompt 注入 `dm_narration_view`。
 - `build_ra_authority_snapshot()` 会向 RA authority snapshot 注入 `ra_authority_view`，再经过 RA payload sanitizer。
 
+## State Ownership 与 Prompt Projection
+
+03.1.06 后，snapshot projection 不只按“字段大小”裁剪，还按状态所有权裁剪。核心规则是：map 只拥有空间事实，ordinary DM narration 只能读取 code 投影后的视图，不能让 LLM 自行判断 raw 或 hidden backend facts 是否可以进入叙事。
+
+| Owner | 拥有字段 | Prompt 边界 |
+| --- | --- | --- |
+| map-owned | positions、spatial occupancy、blockers、hazards、visibility、coordinates、zones、strict grid raw payload | 只能通过 `project_map_store(..., dm_narration_view)`、`player_view`、`ra_authority_view` 或 `diagnostic_view` 进入对应消费者；ordinary DM snapshot 不读取 raw MapStore 或 legacy `battle.grid`。 |
+| character-owned | HP、abilities、equipment、character cards、character tags | 通过 character projection 进入 DM/RA；空间坐标不归 character snapshot 自行解释。 |
+| battle-owned | initiative、rounds、turn/action state、`battle.active`、combat lifecycle、`battle.map_id` link | DM battle projection 保留 combat/turn/link 状态；不携带 raw `grid`、entities 坐标或 obstacle payload。 |
+| owner/control-owned | who controls what、player/GM/NPC ownership、player-character binding | 保留 `participants`、`player_character_map` 和必要 owner id；LLM 不能用 map entity tags 自行扩权。 |
+| rule-owned | reusable rules、dice/math procedures、registered rule packages | ordinary DM 可读规则摘要或工具结果；raw rule packages 不直接进入 ordinary narration。 |
+| legacy/ambiguous | `session.battle["grid"]` mirror、旧存档迁移字段、tool audit traces | 暂时保留给 spatial tools、migration 和诊断；后续 03.1.08 或 focused tool-schema PR 再清理公共工具 shape。 |
+
+| Projection | 消费者 | 允许内容 | 禁止内容 |
+| --- | --- | --- | --- |
+| `player_view` | renderer / player-facing map data | player-safe map facts 和安全 render refs | `dm` / `hidden` facts、raw path、URL、raw grid。 |
+| `dm_narration_view` | ordinary DM prompt | public/player/dm map facts、安全 render refs、battle-owned turn/link state | raw MapStore、hidden map facts、legacy `battle.grid`、raw strict grid、tool traces、raw RA output、web grounding payload、raw rule packages。 |
+| `ra_authority_view` | RA authority analysis | 清洗后的 authority snapshot、DM-visible map facts、battle/character/rule authority摘要 | hidden map facts、raw prompt、raw player input、raw audit、raw strict grid。 |
+| `diagnostic_view` | debug / tests / explicit diagnostics | counts、record metadata、projection telemetry | fact payload、hidden text、raw grid payload。 |
+| raw store / hidden facts | code-owned local state only | deterministic tools、validators、migration adapters | ordinary DM narration、player-facing renderer、RA prompt。 |
+
 ## Legacy Battle Grid Adapter
 
 03.1.02 引入的 adapter 是 code-owned migration layer，目的只是把现有 `battle.grid` 入口接到 MapCore strict map contract。
