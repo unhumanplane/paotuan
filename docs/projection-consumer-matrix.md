@@ -78,4 +78,3 @@ Current `generate_map_svg()` is a legacy visual-only compatibility path. It shou
 4. Treat `snapshot_projection_enabled=False` as debug/config behavior, not normal ordinary gameplay narration.
 5. Keep `battle.grid`, `last_map_svg`, `_pending_outputs`, and local artifact paths as compatibility-only until focused migration PRs remove or replace them.
 6. Add behavior tests only when changing runtime routing, renderer input, or tool exposure. This docs handoff records the contract and scan evidence without changing behavior.
-
