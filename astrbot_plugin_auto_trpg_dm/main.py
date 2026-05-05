@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 from contextlib import suppress
 from datetime import datetime, timedelta, timezone
 import json
@@ -39,6 +40,130 @@ from .tools.turn_tools import TurnTools
 
 PLUGIN_VERSION = "0.1.89"
 
+DEFAULT_REASSURANCE_PHRASES = (
+    "正在翻找合适的骰子。",
+    "正在把旁白调到合适音量。",
+    "正在等灵感从杯底冒泡。",
+    "骰子热身中。",
+    "规则书翻页中。",
+    "灵感加载中。",
+    "幕布只拉开了一条缝。",
+    "茶还烫，故事也一样。",
+    "便签纸挤成一排。",
+    "下一句还在路上。",
+)
+DEFAULT_REASSURANCE_MAP_PHRASES = (
+    "正在把铅笔削尖。",
+    "正在把小旗子摆正。",
+    "正在擦掉多余的橡皮屑。",
+    "制图中。",
+    "格线对齐中。",
+    "地形描边中。",
+    "地图纸刚刚摊平。",
+    "标尺还差一格。",
+    "SVG小心装订。",
+    "战场草图还没干。",
+)
+DEFAULT_REASSURANCE_STYLE_POOLS = {
+    "fantasy": (
+        "正在吹干魔法墨水。",
+        "正在把卷轴摊平。",
+        "正在给旅店铃铛擦灰。",
+        "少女祈祷中。",
+        "吟游诗人清嗓中。",
+        "卷轴防潮中。",
+        "羊皮卷翻到一半。",
+        "法杖靠墙充电。",
+        "冒险日志夹着书签。",
+        "旧墨水还没干。",
+    ),
+    "grimdark_scifi": (
+        "正在擦战术屏上的指纹。",
+        "正在给数据板找充电口。",
+        "正在过滤信号噪声。",
+        "鸟卜仪读条中。",
+        "舰桥记录加载中。",
+        "机仆重启中。",
+        "等离子灯管闪了两下。",
+        "舰桥广播试了个音。",
+        "螺丝刀暂时失踪。",
+        "警示灯还在眨眼。",
+    ),
+    "urban_occult": (
+        "正在拆封档案袋。",
+        "正在给手电筒换电池。",
+        "正在调午夜电台。",
+        "档案袋拆封中。",
+        "录音带还在倒带。",
+        "午夜电台调频中。",
+        "电梯还没到。",
+        "便签贴歪了。",
+        "档案夹还没合上。",
+        "旧报纸摊开中。",
+    ),
+    "post_apocalyptic": (
+        "正在给旧终端拍灰。",
+        "正在拧紧水壶盖。",
+        "正在哄发电机别熄火。",
+        "旧终端加载中。",
+        "补给清单翻页中。",
+        "收音机调频中。",
+        "罐头开了一半。",
+        "轮胎还差两口气。",
+        "沙尘滤网堵住了。",
+        "收音机只剩沙沙声。",
+    ),
+}
+REASSURANCE_STYLE_ALIASES = {
+    "fantasy": ("fantasy", "dnd", "d&d", "奇幻", "地城", "魔法", "冒险"),
+    "grimdark_scifi": ("grimdark_scifi", "grimdark", "warhammer", "40k", "战锤", "科幻", "星际"),
+    "urban_occult": ("urban_occult", "urban", "occult", "都市", "现代", "神秘", "异常"),
+    "post_apocalyptic": ("post_apocalyptic", "apocalypse", "wasteland", "废土", "末世", "后启示录"),
+}
+REASSURANCE_MAP_TERMS = (
+    "地图",
+    "生成地图",
+    "制图",
+    "svg",
+    "战场示意",
+    "战术地图",
+    "站位图",
+    "地形图",
+    "battle map",
+    "map",
+    "tactical layout",
+    "terrain sketch",
+)
+REASSURANCE_UNSAFE_TERMS = (
+    "避难点",
+    "隐藏密道",
+    "密道",
+    "敌人正在",
+    "伏击",
+    "宝藏",
+    "出口已经",
+    "入口已经",
+    "线索是",
+    "一定成功",
+    "保证成功",
+    "马上会看到",
+    "两个选择",
+    "三个选择",
+)
+REASSURANCE_CHOICE_TERMS = (
+    "请选择",
+    "你可以选择",
+    "你要选择",
+    "你有以下选择",
+    "选项",
+    "下一步可以",
+    "建议你",
+    "你应该",
+    "what do you do",
+    "choose",
+    "option",
+)
+
 
 @register(
     "auto_trpg_dm",
@@ -62,6 +187,18 @@ class AutoTrpgDmPlugin(Star):
         data_dir = Path(get_astrbot_data_path()) / "plugin_data" / "astrbot_plugin_auto_trpg_dm"
         self.repository = JsonGameRepository(data_dir)
         self.plugin_logger = configure_plugin_logging(self.repository.plugin_log_path())
+        self.reassurance_enabled = self._config_bool("reassurance_enabled", True)
+        self.reassurance_delay_seconds = max(0, self._config_int("reassurance_delay_seconds", 30))
+        self.reassurance_cooldown_seconds = max(0, self._config_int("reassurance_cooldown_seconds", 300))
+        self.reassurance_prefix = self._config_str("reassurance_prefix", "请等待回复：") or "请等待回复："
+        self.reassurance_phrases = tuple(self._config_list("reassurance_phrases") or DEFAULT_REASSURANCE_PHRASES)
+        self.reassurance_map_phrases = tuple(
+            self._config_list("reassurance_map_phrases") or DEFAULT_REASSURANCE_MAP_PHRASES
+        )
+        self.reassurance_style_phrases_enabled = self._config_bool("reassurance_style_phrases_enabled", True)
+        self.reassurance_style_phrase_pools = self._config_reassurance_style_phrase_pools()
+        self._recent_reassurance_sent: dict[str, float] = {}
+        self._reassurance_tasks: set[asyncio.Task] = set()
         rule_runtime = PythonRuleRuntime(data_dir / "rules")
         honcho_config = HonchoMemoryConfig(
             enabled=self._config_bool("honcho_enabled", False),
@@ -329,20 +466,27 @@ class AutoTrpgDmPlugin(Star):
                     **security.to_audit_record(),
                 },
             )
+        reassurance_task = None
         try:
             if self._should_send_dm_ack(session_id, sender_id):
                 yield self._quoted_result(event, "收到，正在结算这一幕……")
+            reassurance_task = self._start_long_running_reassurance_task(session_id, actor, routed_message)
             completion = await self.router.handle_message(
                 event,
                 message_override=routed_message,
                 security_notes=security.notes,
             )
+        except asyncio.CancelledError:
+            await self._cancel_long_running_reassurance_task(reassurance_task)
+            raise
         except Exception as exc:
+            await self._cancel_long_running_reassurance_task(reassurance_task)
             self.plugin_logger.exception("dm_failed session=%s sender=%s error=%s", session_id, sender_id, exc)
             logger.exception("Auto TRPG DM failed to handle message.")
             yield self._quoted_result(event, self._friendly_error_message(exc))
             event.stop_event()
             return
+        await self._cancel_long_running_reassurance_task(reassurance_task)
         pending_outputs = self._pop_pending_outputs(session_id)
         dice_outputs = [item for item in pending_outputs if item.get("type") == "dice_check"]
         other_outputs = [item for item in pending_outputs if item.get("type") != "dice_check"]
@@ -362,6 +506,268 @@ class AutoTrpgDmPlugin(Star):
             sent_any = True
         if sent_any:
             event.stop_event()
+
+    def _start_long_running_reassurance_task(
+        self,
+        session_id: str,
+        actor: dict[str, str],
+        routed_message: str,
+    ) -> asyncio.Task | None:
+        if not bool(getattr(self, "reassurance_enabled", True)):
+            return None
+        try:
+            task = asyncio.create_task(
+                self._run_long_running_reassurance_task(session_id, actor, routed_message)
+            )
+        except RuntimeError as exc:
+            self.plugin_logger.warning("long_running_reassurance_schedule_failed session=%s error=%s", session_id, exc)
+            return None
+        tasks = getattr(self, "_reassurance_tasks", None)
+        if tasks is None:
+            tasks = set()
+            self._reassurance_tasks = tasks
+        tasks.add(task)
+        task.add_done_callback(tasks.discard)
+        self.plugin_logger.info(
+            "long_running_reassurance_scheduled session=%s delay_seconds=%s",
+            session_id,
+            self._reassurance_delay_seconds(),
+        )
+        return task
+
+    async def _cancel_long_running_reassurance_task(self, task: asyncio.Task | None) -> None:
+        if task is None or task.done():
+            return
+        task.cancel()
+        with suppress(asyncio.CancelledError):
+            await task
+        self.plugin_logger.info("long_running_reassurance_cancelled")
+
+    async def _run_long_running_reassurance_task(
+        self,
+        session_id: str,
+        actor: dict[str, str],
+        routed_message: str,
+    ) -> None:
+        started_at = monotonic()
+        try:
+            await self._long_running_reassurance_after_delay(session_id, actor, routed_message)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            self.plugin_logger.exception(
+                "long_running_reassurance_failed session=%s error=%s",
+                session_id,
+                exc,
+            )
+            self._audit_long_running_reassurance(
+                session_id,
+                {
+                    "type": "long_running_reassurance_send_failed",
+                    "actor": actor,
+                    "reason": exc.__class__.__name__,
+                    "message_hash": _stable_short_hash(routed_message),
+                    "elapsed_seconds": round(monotonic() - started_at, 3),
+                },
+            )
+
+    async def _long_running_reassurance_after_delay(
+        self,
+        session_id: str,
+        actor: dict[str, str],
+        routed_message: str,
+    ) -> None:
+        started_at = monotonic()
+        await asyncio.sleep(self._reassurance_delay_seconds())
+        choice = self._select_long_running_reassurance(session_id, routed_message)
+        if not choice:
+            self._audit_long_running_reassurance(
+                session_id,
+                {
+                    "type": "long_running_reassurance_suppressed",
+                    "actor": actor,
+                    "reason": "no_safe_phrase",
+                    "message_hash": _stable_short_hash(routed_message),
+                    "elapsed_seconds": round(monotonic() - started_at, 3),
+                },
+            )
+            return
+        now = monotonic()
+        cooldown_allowed, cooldown_remaining = self._reserve_reassurance_cooldown(session_id, now)
+        if not cooldown_allowed:
+            self._audit_long_running_reassurance(
+                session_id,
+                {
+                    "type": "long_running_reassurance_suppressed",
+                    "actor": actor,
+                    "reason": "cooldown",
+                    "cooldown_remaining_seconds": cooldown_remaining,
+                    "cooldown_seconds": self._reassurance_cooldown_seconds(),
+                    "phrase_source": choice["source"],
+                    "message_hash": _stable_short_hash(routed_message),
+                    "elapsed_seconds": round(now - started_at, 3),
+                },
+            )
+            self.plugin_logger.info(
+                "long_running_reassurance_suppressed session=%s reason=cooldown remaining=%s",
+                session_id,
+                cooldown_remaining,
+            )
+            return
+        text = self._format_long_running_reassurance_text(choice["phrase"])
+        sent, failure_reason = await self._send_long_running_reassurance_message(session_id, text)
+        record_type = "long_running_reassurance_sent" if sent else "long_running_reassurance_send_failed"
+        record = {
+            "type": record_type,
+            "actor": actor,
+            "delay_seconds": self._reassurance_delay_seconds(),
+            "cooldown_seconds": self._reassurance_cooldown_seconds(),
+            "phrase_source": choice["source"],
+            "phrase_hash": _stable_short_hash(choice["phrase"]),
+            "text_chars": len(text),
+            "message_hash": _stable_short_hash(routed_message),
+            "elapsed_seconds": round(monotonic() - started_at, 3),
+        }
+        if failure_reason:
+            record["reason"] = failure_reason
+        self._audit_long_running_reassurance(session_id, record)
+
+    async def _send_long_running_reassurance_message(self, session_id: str, text: str) -> tuple[bool, str]:
+        try:
+            sent = await self.astr_context.send_message(session_id, MessageChain(chain=[Plain(text)]))
+        except Exception as exc:
+            self.plugin_logger.exception("long_running_reassurance_send_failed session=%s error=%s", session_id, exc)
+            return False, exc.__class__.__name__
+        if sent:
+            self.plugin_logger.info("long_running_reassurance_sent session=%s chars=%s", session_id, len(text))
+            return True, ""
+        self.plugin_logger.warning("long_running_reassurance_send_no_platform session=%s", session_id)
+        return False, "no_platform"
+
+    def _reserve_reassurance_cooldown(self, session_id: str, now: float) -> tuple[bool, int]:
+        cooldown = self._reassurance_cooldown_seconds()
+        recent = getattr(self, "_recent_reassurance_sent", None)
+        if recent is None:
+            recent = {}
+            self._recent_reassurance_sent = recent
+        last = recent.get(session_id)
+        if cooldown > 0 and last is not None:
+            elapsed = now - last
+            if elapsed < cooldown:
+                return False, max(1, int(cooldown - elapsed))
+        recent[session_id] = now
+        stale_before = now - max(cooldown * 4, 600)
+        for key, value in list(recent.items()):
+            if value < stale_before:
+                recent.pop(key, None)
+        return True, 0
+
+    def _select_long_running_reassurance(self, session_id: str, routed_message: str) -> dict[str, str] | None:
+        if _looks_like_reassurance_map_request(routed_message):
+            phrase = self._pick_safe_reassurance_phrase(
+                self.reassurance_map_phrases,
+                session_id=session_id,
+                routed_message=routed_message,
+                source="map",
+            )
+            if phrase:
+                return {"phrase": phrase, "source": "map"}
+        style_key = self._reassurance_style_key_for_session(session_id)
+        if style_key and bool(getattr(self, "reassurance_style_phrases_enabled", True)):
+            pools = getattr(self, "reassurance_style_phrase_pools", {}) or {}
+            phrase = self._pick_safe_reassurance_phrase(
+                pools.get(style_key, ()),
+                session_id=session_id,
+                routed_message=routed_message,
+                source=f"style:{style_key}",
+            )
+            if phrase:
+                return {"phrase": phrase, "source": f"style:{style_key}"}
+        phrase = self._pick_safe_reassurance_phrase(
+            self.reassurance_phrases,
+            session_id=session_id,
+            routed_message=routed_message,
+            source="neutral",
+        )
+        if phrase:
+            return {"phrase": phrase, "source": "neutral"}
+        fallback = self._pick_safe_reassurance_phrase(
+            DEFAULT_REASSURANCE_PHRASES,
+            session_id=session_id,
+            routed_message=routed_message,
+            source="default_neutral",
+        )
+        if fallback:
+            return {"phrase": fallback, "source": "default_neutral"}
+        return None
+
+    def _pick_safe_reassurance_phrase(
+        self,
+        phrases: tuple[str, ...] | list[str],
+        *,
+        session_id: str,
+        routed_message: str,
+        source: str,
+    ) -> str:
+        safe = [
+            phrase
+            for phrase in (str(item).strip() for item in phrases)
+            if _is_safe_reassurance_phrase(phrase, self.reassurance_prefix)
+        ]
+        if not safe:
+            return ""
+        seed = f"{session_id}:{source}:{routed_message}"
+        index = int(hashlib.sha256(seed.encode("utf-8", errors="replace")).hexdigest()[:8], 16) % len(safe)
+        return safe[index]
+
+    def _format_long_running_reassurance_text(self, phrase: str) -> str:
+        prefix = str(getattr(self, "reassurance_prefix", "") or "请等待回复：").strip() or "请等待回复："
+        body = str(phrase or "").strip()
+        while body.startswith(prefix):
+            body = body[len(prefix) :].strip()
+        return f"{prefix}{body}"
+
+    def _reassurance_style_key_for_session(self, session_id: str) -> str:
+        try:
+            session = self.repository.load_session(session_id)
+        except Exception as exc:
+            self.plugin_logger.warning("long_running_reassurance_style_load_failed session=%s error=%s", session_id, exc)
+            return ""
+        world_tags = getattr(session, "world_tags", {}) or {}
+        scene = getattr(session, "scene", {}) or {}
+        payload = {
+            "title": getattr(session, "title", ""),
+            "world_tags": world_tags,
+            "scene_summary": str(scene.get("summary", ""))[:1200] if isinstance(scene, dict) else "",
+            "current_conflict": str(scene.get("current_conflict", ""))[:600] if isinstance(scene, dict) else "",
+        }
+        try:
+            text = json.dumps(payload, ensure_ascii=False, separators=(",", ":"), default=str).lower()
+        except Exception:
+            text = str(payload).lower()
+        for style_key, aliases in REASSURANCE_STYLE_ALIASES.items():
+            for alias in aliases:
+                if str(alias).lower() in text:
+                    return style_key
+        return ""
+
+    def _audit_long_running_reassurance(self, session_id: str, record: dict[str, object]) -> None:
+        try:
+            self.repository.append_audit(session_id, record)
+        except Exception as exc:
+            self.plugin_logger.warning("long_running_reassurance_audit_failed session=%s error=%s", session_id, exc)
+
+    def _reassurance_delay_seconds(self) -> float:
+        try:
+            return max(0.0, float(getattr(self, "reassurance_delay_seconds", 30)))
+        except (TypeError, ValueError):
+            return 30.0
+
+    def _reassurance_cooldown_seconds(self) -> float:
+        try:
+            return max(0.0, float(getattr(self, "reassurance_cooldown_seconds", 300)))
+        except (TypeError, ValueError):
+            return 300.0
 
     async def _local_fast_path(
         self,
@@ -1247,6 +1653,14 @@ class AutoTrpgDmPlugin(Star):
             with suppress(asyncio.CancelledError):
                 await self._heartbeat_task
             self._heartbeat_task = None
+        reassurance_tasks = list(getattr(self, "_reassurance_tasks", set()) or [])
+        for task in reassurance_tasks:
+            task.cancel()
+        for task in reassurance_tasks:
+            with suppress(asyncio.CancelledError):
+                await task
+        if hasattr(self, "_reassurance_tasks"):
+            self._reassurance_tasks.clear()
         self.plugin_logger.info("plugin_terminated")
         logger.info("Auto TRPG DM plugin terminated.")
 
@@ -2474,6 +2888,111 @@ class AutoTrpgDmPlugin(Star):
             return float(value)
         except (TypeError, ValueError):
             return default
+
+    def _config_reassurance_style_phrase_pools(self) -> dict[str, tuple[str, ...]]:
+        pools: dict[str, tuple[str, ...]] = {
+            key: tuple(values)
+            for key, values in DEFAULT_REASSURANCE_STYLE_POOLS.items()
+        }
+        if not self.config:
+            return pools
+        try:
+            value = self.config.get("reassurance_style_phrase_pools", None)
+        except AttributeError:
+            value = getattr(self.config, "reassurance_style_phrase_pools", None)
+        if not value:
+            return pools
+        if isinstance(value, str):
+            stripped = value.strip()
+            if not stripped:
+                return pools
+            try:
+                value = json.loads(stripped)
+            except json.JSONDecodeError:
+                self.plugin_logger.warning("reassurance_style_phrase_pools_invalid_json")
+                return pools
+        custom = _coerce_reassurance_style_pools(value)
+        if not custom:
+            return pools
+        pools.update(custom)
+        return pools
+
+
+def _stable_short_hash(value: object) -> str:
+    if value is None:
+        text = ""
+    elif isinstance(value, str):
+        text = value
+    else:
+        try:
+            text = json.dumps(value, ensure_ascii=False, separators=(",", ":"), default=str)
+        except Exception:
+            text = str(value)
+    return hashlib.sha256(text.encode("utf-8", errors="replace")).hexdigest()[:12]
+
+
+def _coerce_reassurance_style_pools(value: object) -> dict[str, tuple[str, ...]]:
+    if isinstance(value, dict):
+        result: dict[str, tuple[str, ...]] = {}
+        for key, phrases in value.items():
+            style_key = str(key or "").strip()
+            if not style_key:
+                continue
+            phrase_list = _coerce_phrase_list(phrases)
+            if phrase_list:
+                result[style_key] = tuple(phrase_list)
+        return result
+    if isinstance(value, list):
+        result = {}
+        for item in value:
+            if not isinstance(item, dict):
+                continue
+            style_key = str(item.get("style") or item.get("key") or item.get("name") or "").strip()
+            phrase_list = _coerce_phrase_list(item.get("phrases") or item.get("values") or item.get("items"))
+            if style_key and phrase_list:
+                result[style_key] = tuple(phrase_list)
+        return result
+    return {}
+
+
+def _coerce_phrase_list(value: object) -> list[str]:
+    if isinstance(value, list):
+        return [str(item).strip() for item in value if str(item).strip()]
+    if isinstance(value, tuple):
+        return [str(item).strip() for item in value if str(item).strip()]
+    if isinstance(value, str) and value.strip():
+        return [value.strip()]
+    return []
+
+
+def _looks_like_reassurance_map_request(text: str) -> bool:
+    normalized = str(text or "").strip().lower()
+    if not normalized:
+        return False
+    return any(term in normalized for term in REASSURANCE_MAP_TERMS)
+
+
+def _is_safe_reassurance_phrase(phrase: str, prefix: str = "请等待回复：") -> bool:
+    body = str(phrase or "").strip()
+    if not body:
+        return False
+    prefix = str(prefix or "").strip()
+    while prefix and body.startswith(prefix):
+        body = body[len(prefix) :].strip()
+    if not body or len(body) > 48:
+        return False
+    if "\n" in body or "\r" in body:
+        return False
+    lowered = body.lower()
+    if any(term in body or str(term).lower() in lowered for term in REASSURANCE_UNSAFE_TERMS):
+        return False
+    if any(term in body or str(term).lower() in lowered for term in REASSURANCE_CHOICE_TERMS):
+        return False
+    if "？" in body or "?" in body:
+        return False
+    if re.search(r"(^|\s|[：:])([0-9]+[.、)]|[①②③④⑤⑥⑦⑧⑨])", body):
+        return False
+    return True
 
 
 def _svg_local_name(tag: str) -> str:

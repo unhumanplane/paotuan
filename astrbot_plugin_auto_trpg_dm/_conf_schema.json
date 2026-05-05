@@ -14,6 +14,46 @@
     "type": "bool",
     "hint": "false"
   },
+  "reassurance_enabled": {
+    "description": "DM 请求处理超过阈值仍未完成时，是否发送一条短等待提示。提示只表示系统仍在处理，不改变剧情事实。",
+    "type": "bool",
+    "hint": "true"
+  },
+  "reassurance_delay_seconds": {
+    "description": "等待提示延迟秒数。请求在该时间内完成则不发送提示。",
+    "type": "int",
+    "hint": "30"
+  },
+  "reassurance_cooldown_seconds": {
+    "description": "同一会话等待提示冷却秒数，避免多条慢请求连续刷屏。",
+    "type": "int",
+    "hint": "300"
+  },
+  "reassurance_prefix": {
+    "description": "等待提示前缀。建议保留明确的状态前缀，避免玩家把提示误读成剧情事实。",
+    "type": "string",
+    "hint": "请等待回复："
+  },
+  "reassurance_phrases": {
+    "description": "普通等待提示池。每条应短、明确是处理状态，不提供线索或行动建议。",
+    "type": "list",
+    "hint": "正在翻找合适的骰子。"
+  },
+  "reassurance_map_phrases": {
+    "description": "地图类请求的等待提示池。仅在玩家消息明显要求地图、SVG、站位图或战场示意时使用。",
+    "type": "list",
+    "hint": "正在把铅笔削尖。"
+  },
+  "reassurance_style_phrases_enabled": {
+    "description": "是否允许根据战役背景选择风格化等待提示。背景不明确时仍会退回普通提示。",
+    "type": "bool",
+    "hint": "true"
+  },
+  "reassurance_style_phrase_pools": {
+    "description": "风格化等待提示池，填写 JSON 对象，例如 {\"fantasy\":[\"少女祈祷中。\"],\"post_apocalyptic\":[\"正在给旧终端拍灰。\"]}。候选仍会经过安全过滤。",
+    "type": "string",
+    "hint": ""
+  },
   "honcho_enabled": {
     "description": "是否启用 Honcho 外置记忆增强。总开关；关闭时即使配置了云端或自托管地址也不会调用 Honcho。",
     "type": "bool",
