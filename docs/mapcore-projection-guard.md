@@ -16,12 +16,12 @@
 - 不在 03.1.01 阶段迁移现有 `session.battle["grid"]`；03.1.02 只提供 adapter / migration wrapper，不做最终清理。
 - 不在 03.1.02 中彻底移除 legacy `session.battle["grid"]` mirror。
 - 不重写 `spatial/` 下的坐标、移动、距离、视线、掩体和路径逻辑。
+- 不把 strict map lifecycle 与 combat lifecycle 完全解耦；这属于后续生命周期任务。
 - 不引入 MapCalculator 或完整 map-aware spatial routing；这属于后续工具路由任务。
 - 不改变 `tools/map_tools.py` 的 SVG / PNG 地图生成语义。
 - 不让 RA 获得工具访问权或直接写入地图 store。
 - 不把 `hidden` 地图事实暴露给 DM prompt、RA prompt 或玩家视图。
 - 不引入新的持久化后端、数据库迁移或外部地图服务。
-- 不引入 downstream-readable meta-rule fields、rule scale strictness profile 或 4.4 所需的规则尺度元数据；涉及 strictness / rule scale 的下游读取仍是后续前置工作。
 
 ## 当前边界
 
@@ -34,29 +34,6 @@
 MapCore store 负责更高层的地图元数据和语义事实，例如“当前概览地图是哪张”“某张地图有哪些已公开线索”“某张视觉图对应哪个地图记录”。它不替代战棋网格，也不作为绕过 spatial 校验的入口。
 
 SVG / PNG 地图和氛围图片都属于视觉辅助。视觉引用可以被记录为 `render_refs`，但它们不能自行改写地图事实。对 LLM 可见的 render ref 只保留安全描述字段，不包含本地 path、URL 或 raw SVG。
-
-## Strict Map Lifecycle 与 Combat Lifecycle
-
-strict map lifecycle 是 MapCore record 上的 code-owned 状态，不由 LLM、prompt 文字或 `GameMode.TACTICAL` 推断。当前 lifecycle 取值：
-
-| Lifecycle | 含义 |
-| --- | --- |
-| `inactive` | strict map 存在但不是当前活动严格地图。 |
-| `active_exploration` | strict map 可用于探索、潜入、解谜、位置追踪或战前布置；不代表战斗进行中。 |
-| `active_combat_linked` | strict map 已通过 `battle.map_id` 链接为当前战斗地图。 |
-| `paused` | strict map 暂停保留，后续可恢复。 |
-| `archived` | strict map 已归档；保留 archive identity，不销毁旧事实。 |
-
-核心边界：
-
-- `battle.active` 只表达 combat active，不能继续表达 strict map active。
-- `battle.map_id` 只负责把当前 combat 链接到某个 `strict_local_map` record；结束战斗要解除这个链接，但不能删除 strict map。
-- `active_strict_map_id` 负责当前 strict map 选择，不等于战斗正在进行。
-- `create_strict_map` 只创建或重置 active strict map，并把 lifecycle 设为 `active_exploration`；它不会设置 `battle.active`。
-- `start_combat_on_map` 把已有 strict map 转为 `active_combat_linked`，并由 code 设置 `battle.active = True`、`battle.map_id = <map_id>`。
-- `end_combat` 把 combat 停止，清空 `battle.map_id`，把 strict map lifecycle 恢复为 `active_exploration`，并保留 grid / facts / render refs。
-- `create_grid` 保留 legacy 兼容语义：它仍创建默认 strict map、进入 tactical mode，并启动 combat。新流程应优先使用 `create_strict_map` + `start_combat_on_map`。
-- prompt projection、mode detection 和 ambient-image gate 通过 code helper 判断 combat active；`GameMode.TACTICAL` 或 active strict map 本身都不再等同于 combat active。
 
 ## Store Schema
 
@@ -228,13 +205,10 @@ strict map lifecycle 是 MapCore record 上的 code-owned 状态，不由 LLM、
 `tools/spatial_tools.py` 现在通过 adapter 写 strict grid：
 
 - `create_grid()` 作为 legacy 兼容入口，固定创建或重置 `DEFAULT_STRICT_LOCAL_MAP_ID` 对应的 `strict_local_map` record，并把 `session.battle["map_id"]` 指向该 record。
-- `create_strict_map()` 是新的 strict lifecycle 入口，只创建 active exploration strict map，不设置 `battle.active`，也不建立 combat link。
-- `start_combat_on_map()` 是新的 combat link 入口，只能链接已有 strict map；它设置 `battle.active`、`battle.map_id` 和 `active_combat_linked` lifecycle。
-- `end_combat()` 是新的 combat unlink 入口；它停止 combat、清空 `battle.map_id`，但保留 strict map 并恢复 `active_exploration`。
 - `create_grid()` 会在 record `archive_identity` 中记录 `source: "spatial_tool_create_grid"` 和 authority assumption，便于后续区分 MapStore 创建与 legacy migration。
 - `place_entity()` 和 `move_entity()` 读取 MapCore strict grid，结算成功后写回 MapCore。
 - `move_entity()` 和 `check_attack_vector()` 现在通过内部 `MapCalculator` 路由执行 deterministic spatial calculation。公开工具名、参数 schema、turn guard、audit、MapStore load/save 和 legacy mirror 仍由 `SpatialTools` 维护。
-- `session.battle["grid"]` 暂时保留为兼容 mirror，供旧调用方和过渡期存档继续工作；普通 exploration strict map 写入只同步 mirror，不会把 `battle.active` 重新置为 true。
+- `session.battle["grid"]` 暂时保留为兼容 mirror，供旧调用方和过渡期存档继续工作。
 - 旧存档第一次通过 spatial tool 读取 legacy grid 时，会迁移到 MapCore，并保存 `map_id` 和 mirror。
 
 authority guard：
@@ -354,11 +328,6 @@ git diff --check
 
 - 旧存档加载时自动补默认 `maps` store。
 - map helper 会 copy-out 返回结果，不让调用方靠返回对象偷改 store。
-- strict map lifecycle 可以在 `active_exploration`、`active_combat_linked`、`paused`、`archived` 间转换，且不丢失 grid。
-- `create_strict_map()` 创建 active exploration strict map 时不启动 combat。
-- `start_combat_on_map()` 通过 `battle.map_id` 把 combat 链接到已有 strict map。
-- `end_combat()` 结束 combat 后保留 strict map，并解除 `battle.map_id` 链接。
-- prompt projection、mode detection 和 ambient-image gate 不再把 `GameMode.TACTICAL` 或 active strict map 本身当成 combat active。
 - `player_view`、`dm_narration_view`、`ra_authority_view` 都过滤 `hidden` facts。
 - render ref 投影不暴露 `path` 或 `url`。
 - `diagnostic_view` 只暴露计数，不暴露 fact payload。
@@ -367,8 +336,8 @@ git diff --check
 - `load_active_strict_grid()` 优先返回 MapStore strict grid，legacy `battle.grid` 只作为 migration fallback。
 - `save_active_strict_grid()` 写入 `strict_local_map` record 并更新 `active_strict_map_id`。
 - `migrate_legacy_battle_grid()` 不覆盖已经存在的 MapStore strict authority。
-- `create_grid()` 固定重置默认 strict local map、写入 auditable source，并保持旧兼容语义：同步 `battle.map_id`、legacy mirror，并启动 combat。
-- `place_entity()` 和 `move_entity()` 通过 adapter 写回 MapCore strict grid，并暂时维护 legacy mirror；非 combat linked 的 strict map 写入不能重新激活 combat。
+- `create_grid()` 固定重置默认 strict local map、写入 auditable source，并同步 `battle.map_id` 和 legacy mirror。
+- `place_entity()` 和 `move_entity()` 通过 adapter 写回 MapCore strict grid，并暂时维护 legacy mirror。
 - `move_entity()` 和 `check_attack_vector()` 通过 `MapCalculator` 路由到 `SpatialEngine`，且成功 result shape 与旧工具结果保持兼容。
 - `check_attack_vector()` 和 `move_entity()` 都优先使用 MapStore strict grid；stale legacy mirror 不能影响攻击距离、视线或移动结果。
 - candidate event 只做 validation，不 mutate store。
@@ -379,8 +348,8 @@ git diff --check
 - 为 validated candidate 增加 code-owned apply 工具，并继续保持“validate 与 apply 分离”。
 - 扩展 MapCalculator 支持 ruler distance、zone bands、topology maps 或 puzzle-specific calculators。
 - 后续再决定是否把 `place_entity()`、`create_grid()` 和 map setup lifecycle 迁入 calculator / lifecycle route。
-- 为 strict lifecycle 增加 pause / resume / archive 的 LLM-callable 工具边界；当前 MapCore helper 已支持 lifecycle 字段，但公开工具只覆盖 create / start combat / end combat。
-- 补齐 4.4 downstream-readable meta-rule fields，让 strictness / rule scale 能被 MapCalculator、prompt projection 和规则工具以结构化字段读取，而不是从自然语言推断。
+- 将 strict map lifecycle 与 combat lifecycle 解耦，让 strict exploration、puzzle、stealth 等场景可以在无 combat 时使用 strict map。
+- 在 strict lifecycle 阶段再引入 `create_strict_map`、`start_combat_on_map`、`end_combat` 或 active map 复用语义；当前 `create_grid()` 仍是兼容入口。
 - 扩展 ownership snapshot 和 projection，把 map / character / battle / rule ownership 边界固定下来。
 - 在最终 cleanup 阶段移除或降级 `battle.grid` mirror，只保留旧存档 migration loader。
 - 为玩家 UI 或消息输出接入 `player_view`。

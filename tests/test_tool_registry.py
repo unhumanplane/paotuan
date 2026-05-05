@@ -1,7 +1,7 @@
 import sys
+import tempfile
 import types
 from pathlib import Path
-from uuid import uuid4
 
 
 def _install_fake_astrbot_modules():
@@ -55,22 +55,26 @@ from astrbot_plugin_auto_trpg_dm.tools.registry import ToolRegistry
 
 
 def _registry_with_ready_session():
-    root = Path(".pytest-runtime") / f"tool-registry-{uuid4().hex}"
+    tmp = tempfile.TemporaryDirectory()
+    root = Path(tmp.name)
     repo = JsonGameRepository(root / "data")
     session = GameSession.new("group")
     session.world_tags["_background_ready"] = True
     repo.save_session(session)
     registry = ToolRegistry(repo, PythonRuleRuntime(root / "rules"))
-    return registry
+    return tmp, registry
 
 
 def test_tool_registry_prunes_estimate_token_usage_for_ordinary_requests():
-    registry = _registry_with_ready_session()
-    _toolset, names, _executor, _specs = registry.for_mode(
-        GameMode.TACTICAL,
-        "group",
-        message="我攻击最近的敌人",
-    )
+    tmp, registry = _registry_with_ready_session()
+    try:
+        _toolset, names, _executor, _specs = registry.for_mode(
+            GameMode.TACTICAL,
+            "group",
+            message="我攻击最近的敌人",
+        )
+    finally:
+        tmp.cleanup()
 
     assert "estimate_token_usage" not in names
     assert "session_control" in names
@@ -78,41 +82,17 @@ def test_tool_registry_prunes_estimate_token_usage_for_ordinary_requests():
 
 
 def test_tool_registry_keeps_estimate_token_usage_for_diagnostic_requests():
-    registry = _registry_with_ready_session()
-    _toolset, names, _executor, _specs = registry.for_mode(
-        GameMode.TACTICAL,
-        "group",
-        message="分析当前 token 消耗",
-    )
+    tmp, registry = _registry_with_ready_session()
+    try:
+        _toolset, names, _executor, _specs = registry.for_mode(
+            GameMode.TACTICAL,
+            "group",
+            message="分析当前 token 消耗",
+        )
+    finally:
+        tmp.cleanup()
 
     assert "estimate_token_usage" in names
     assert "session_control" in names
     assert "cycle_control" in names
-
-
-def test_tool_registry_exposes_strict_lifecycle_tools_for_map_setup():
-    registry = _registry_with_ready_session()
-    _toolset, names, _executor, specs = registry.for_mode(
-        GameMode.TACTICAL,
-        "group",
-        message="布置地图，但先不要开战",
-    )
-
-    assert "create_strict_map" in names
-    assert "start_combat_on_map" in names
-    assert "create_grid" in names
-    assert any(spec["name"] == "create_strict_map" for spec in specs)
-
-
-def test_tool_registry_exposes_end_combat_for_battle_resolution():
-    registry = _registry_with_ready_session()
-    _toolset, names, _executor, specs = registry.for_mode(
-        GameMode.TACTICAL,
-        "group",
-        message="结束战斗，但保留地图",
-    )
-
-    assert "end_combat" in names
-    assert "turn_control" in names
-    assert any(spec["name"] == "end_combat" for spec in specs)
 

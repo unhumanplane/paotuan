@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from .combat_lifecycle import combat_lifecycle_active
 from .map_core import MAP_VIEW_DIAGNOSTIC, MAP_VIEW_DM_NARRATION, project_map_store
 from .models import GameMode, GameSession
 from .prompt_projection import project_ra_summary_for_dm_prompt
@@ -188,7 +187,7 @@ def _snapshot_projection_profile(session: GameSession, mode: GameMode, message: 
     text = str(message or "").strip().lower()
     if _contains_any(text, SNAPSHOT_DIAGNOSTIC_TERMS):
         return "diagnostic"
-    if combat_lifecycle_active(session):
+    if mode == GameMode.TACTICAL or bool((session.battle or {}).get("active")):
         if _looks_like_snapshot_state_query(text):
             return "state_query"
         if _contains_any(text, SNAPSHOT_CHARACTER_PROFILE_TERMS):

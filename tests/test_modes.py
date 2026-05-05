@@ -1,5 +1,4 @@
 from astrbot_plugin_auto_trpg_dm.core.modes import GameModeStateMachine
-from astrbot_plugin_auto_trpg_dm.core.map_core import save_active_strict_grid
 from astrbot_plugin_auto_trpg_dm.core.models import GameMode, GameSession
 
 
@@ -8,35 +7,6 @@ def test_battle_state_forces_tactical_mode():
     session.battle["active"] = True
 
     mode = GameModeStateMachine().detect(session, "我想回忆一下背景")
-
-    assert mode == GameMode.TACTICAL
-
-
-def test_active_strict_exploration_map_does_not_force_tactical_mode():
-    session = GameSession.new("s")
-    session.mode = GameMode.TACTICAL
-    save_active_strict_grid(
-        session.maps,
-        {"width": 4, "height": 4, "cells": [], "entities": {}},
-        map_id="strict-room",
-        title="Strict room",
-    )
-
-    mode = GameModeStateMachine().detect(session, "我想回忆一下旧事")
-
-    assert mode == GameMode.NARRATIVE
-
-
-def test_grid_keyword_still_enters_tactical_for_strict_exploration():
-    session = GameSession.new("s")
-    save_active_strict_grid(
-        session.maps,
-        {"width": 4, "height": 4, "cells": [], "entities": {}},
-        map_id="strict-room",
-        title="Strict room",
-    )
-
-    mode = GameModeStateMachine().detect(session, "地图情况怎么样？")
 
     assert mode == GameMode.TACTICAL
 

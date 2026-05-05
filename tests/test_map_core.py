@@ -1,11 +1,6 @@
 import pytest
 
 from astrbot_plugin_auto_trpg_dm.core.map_core import (
-    MAP_LIFECYCLE_ACTIVE_COMBAT_LINKED,
-    MAP_LIFECYCLE_ACTIVE_EXPLORATION,
-    MAP_LIFECYCLE_ARCHIVED,
-    MAP_LIFECYCLE_INACTIVE,
-    MAP_LIFECYCLE_PAUSED,
     MAP_AUTHORITY_RA_CANDIDATE,
     MAP_AUTHORITY_SPATIAL,
     MAP_SCHEMA_VERSION,
@@ -24,7 +19,6 @@ from astrbot_plugin_auto_trpg_dm.core.map_core import (
     add_render_ref,
     create_map_record,
     default_map_store,
-    get_strict_map_lifecycle,
     get_map_record,
     load_active_strict_grid,
     migrate_legacy_battle_grid,
@@ -32,7 +26,6 @@ from astrbot_plugin_auto_trpg_dm.core.map_core import (
     project_active_map_record,
     project_map_store,
     save_active_strict_grid,
-    set_strict_map_lifecycle,
     update_map_record,
     validate_candidate_map_event,
 )
@@ -346,76 +339,6 @@ def test_create_map_record_sets_strict_local_map_active_slot():
     assert record["type"] == MAP_TYPE_STRICT_LOCAL
     assert store["active_strict_map_id"] == "combat-room"
     assert store["active_overview_map_id"] == ""
-    assert get_strict_map_lifecycle(store, "combat-room") == {
-        "ok": True,
-        "map_id": "combat-room",
-        "lifecycle": MAP_LIFECYCLE_ACTIVE_EXPLORATION,
-        "active": True,
-        "combat_linked": False,
-    }
-
-
-def test_strict_map_lifecycle_transitions_without_grid_loss():
-    store = default_map_store()
-    grid = {"width": 3, "height": 3, "cells": [], "entities": {"pc": {"x": 1, "y": 1}}}
-    save_active_strict_grid(store, grid, map_id="strict-room")
-
-    combat = set_strict_map_lifecycle(
-        store,
-        "strict-room",
-        MAP_LIFECYCLE_ACTIVE_COMBAT_LINKED,
-        source="start_combat_on_map",
-    )
-    paused = set_strict_map_lifecycle(store, "strict-room", MAP_LIFECYCLE_PAUSED, source="pause_strict_map")
-    archived = set_strict_map_lifecycle(store, "strict-room", MAP_LIFECYCLE_ARCHIVED, source="archive_strict_map")
-
-    assert combat["lifecycle"] == MAP_LIFECYCLE_ACTIVE_COMBAT_LINKED
-    assert paused["lifecycle"] == MAP_LIFECYCLE_PAUSED
-    assert archived["lifecycle"] == MAP_LIFECYCLE_ARCHIVED
-    assert store["active_strict_map_id"] == ""
-    record = get_map_record(store, "strict-room")
-    assert record["grid"] == grid
-    assert record["archive_identity"]["archived_at"]
-    assert get_strict_map_lifecycle(store, "strict-room") == {
-        "ok": True,
-        "map_id": "strict-room",
-        "lifecycle": MAP_LIFECYCLE_ARCHIVED,
-        "active": False,
-        "combat_linked": False,
-    }
-
-
-def test_normalize_old_active_strict_map_without_lifecycle_as_exploration():
-    store = normalize_map_store(
-        {
-            "active_strict_map_id": "old-strict",
-            "records": {
-                "old-strict": {
-                    "id": "old-strict",
-                    "type": MAP_TYPE_STRICT_LOCAL,
-                    "grid": {"width": 2, "height": 2, "cells": [], "entities": {}},
-                }
-            },
-        }
-    )
-
-    assert store["records"]["old-strict"]["lifecycle"] == MAP_LIFECYCLE_ACTIVE_EXPLORATION
-
-
-def test_inactive_strict_map_lifecycle_is_not_combat_active():
-    store = default_map_store()
-    create_map_record(store, "strict-room", map_type=MAP_TYPE_STRICT_LOCAL)
-    set_strict_map_lifecycle(store, "strict-room", MAP_LIFECYCLE_INACTIVE, source="test")
-
-    lifecycle = get_strict_map_lifecycle(store, "strict-room")
-
-    assert lifecycle == {
-        "ok": True,
-        "map_id": "strict-room",
-        "lifecycle": MAP_LIFECYCLE_INACTIVE,
-        "active": False,
-        "combat_linked": False,
-    }
 
 
 def test_load_active_strict_grid_prefers_map_store_over_legacy_battle_grid():

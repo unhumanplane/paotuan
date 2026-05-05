@@ -13,7 +13,6 @@ from ..core.ambient_image import (
     AmbientImageProvider,
     redact_ambient_image_text,
 )
-from ..core.combat_lifecycle import combat_lifecycle_active
 from ..core.models import GameMode, utc_now_iso
 from ..core.plugin_log import get_plugin_logger
 from ..storage.json_repository import JsonGameRepository
@@ -1031,7 +1030,9 @@ def _normalize_frequency(value: str) -> str:
 
 
 def _combat_active(session: Any) -> bool:
-    return combat_lifecycle_active(session)
+    battle = getattr(session, "battle", {}) or {}
+    turn = battle.get("turn") if isinstance(battle.get("turn"), dict) else {}
+    return bool(battle.get("active") or turn.get("active") or getattr(session, "mode", None) == GameMode.TACTICAL)
 
 
 def _campaign_has_started(session: Any) -> bool:

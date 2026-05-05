@@ -36,12 +36,6 @@ from .spatial_tools import (
     PlaceEntityArgs,
     SpatialTools,
 )
-from .strict_lifecycle_tools import (
-    CreateStrictMapArgs,
-    EndCombatArgs,
-    StartCombatOnMapArgs,
-    StrictLifecycleTools,
-)
 from .turn_tools import TurnControlArgs, TurnTools
 
 
@@ -176,7 +170,6 @@ class ToolRegistry:
             external_memory=self.external_memory,
         )
         spatial_tools = SpatialTools(self.repository, session_id, actor=actor)
-        strict_lifecycle_tools = StrictLifecycleTools(self.repository, session_id, actor=actor)
         turn_tools = TurnTools(self.repository, session_id, actor=actor)
         cycle_tools = CycleTools(self.repository, session_id, actor=actor)
         external_memory_config = self.external_memory_config
@@ -275,24 +268,6 @@ class ToolRegistry:
                 description="创建或重置当前战棋地图，并进入战棋模式。",
                 model=CreateGridArgs,
                 handler=spatial_tools.create_grid,
-            ),
-            "create_strict_map": make_tool(
-                name="create_strict_map",
-                description="创建或重置独立 strict_local_map；只建立严格局部地图，不代表战斗已经开始。",
-                model=CreateStrictMapArgs,
-                handler=strict_lifecycle_tools.create_strict_map,
-            ),
-            "start_combat_on_map": make_tool(
-                name="start_combat_on_map",
-                description="把已有 strict_local_map 链接为当前战斗地图；由代码设置 battle.active 和 battle.map_id。",
-                model=StartCombatOnMapArgs,
-                handler=strict_lifecycle_tools.start_combat_on_map,
-            ),
-            "end_combat": make_tool(
-                name="end_combat",
-                description="结束当前战斗并保留 strict_local_map；只解除 combat 链接，不销毁地图。",
-                model=EndCombatArgs,
-                handler=strict_lifecycle_tools.end_combat,
             ),
             "place_entity": make_tool(
                 name="place_entity",
@@ -445,8 +420,6 @@ class ToolRegistry:
                     "get_battle_snapshot",
                     "generate_map_svg",
                     "turn_control",
-                    "create_strict_map",
-                    "start_combat_on_map",
                     "create_grid",
                     "place_entity",
                     "move_entity",
@@ -463,7 +436,6 @@ class ToolRegistry:
             if _contains_any(text, BATTLE_JOIN_TERMS):
                 return [
                     "get_battle_snapshot",
-                    "start_combat_on_map",
                     "turn_control",
                     "create_character",
                     "bind_player_character",
@@ -474,7 +446,6 @@ class ToolRegistry:
             if _contains_any(text, BATTLE_RESOLUTION_TERMS):
                 return [
                     "get_battle_snapshot",
-                    "end_combat",
                     "turn_control",
                     "query_core_rules",
                     "execute_rule",
@@ -495,7 +466,6 @@ class ToolRegistry:
             if _contains_any(text, COMBAT_ACTION_TERMS):
                 tools = [
                     "get_battle_snapshot",
-                    "start_combat_on_map",
                     "turn_control",
                     "query_core_rules",
                     "move_entity",
@@ -512,7 +482,6 @@ class ToolRegistry:
             if _contains_any(text, TURN_FLOW_TERMS):
                 return [
                     "get_battle_snapshot",
-                    "end_combat",
                     "turn_control",
                     "bind_player_character",
                     "update_character_tags",
