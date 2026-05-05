@@ -94,4 +94,3 @@ class MapCalculator:
                 "map_id": route.map_id,
             },
         }
-
