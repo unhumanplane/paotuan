@@ -323,6 +323,7 @@ def save_active_strict_grid(
     map_id: str = "",
     title: str = "",
     authority: str = MAP_AUTHORITY_SPATIAL,
+    source: str = "",
     migration_source: str = "",
     authority_assumption: str = "map_store_strict_grid",
 ) -> dict[str, Any]:
@@ -349,6 +350,7 @@ def save_active_strict_grid(
     record["grid"] = _json_safe(grid)
     record["archive_identity"] = _strict_grid_archive_identity(
         record.get("archive_identity"),
+        source=source,
         migration_source=migration_source,
         authority_assumption=authority_assumption,
     )
@@ -697,10 +699,13 @@ def _legacy_battle_grid(value: Any) -> dict[str, Any] | None:
 def _strict_grid_archive_identity(
     value: Any,
     *,
+    source: str,
     migration_source: str,
     authority_assumption: str,
 ) -> dict[str, Any]:
     identity = _json_safe(_dict_or_empty(value))
+    if source:
+        identity["source"] = _short_text(source, 120)
     if migration_source:
         identity["migration_source"] = _short_text(migration_source, 120)
     if authority_assumption:

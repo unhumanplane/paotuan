@@ -2,7 +2,7 @@ import asyncio
 from pathlib import Path
 from uuid import uuid4
 
-from astrbot_plugin_auto_trpg_dm.core.map_core import MAP_TYPE_STRICT_LOCAL, get_map_record
+from astrbot_plugin_auto_trpg_dm.core.map_core import DEFAULT_STRICT_LOCAL_MAP_ID, MAP_TYPE_STRICT_LOCAL, get_map_record
 from astrbot_plugin_auto_trpg_dm.core.models import GameMode, GameSession
 from astrbot_plugin_auto_trpg_dm.storage.json_repository import JsonGameRepository
 from astrbot_plugin_auto_trpg_dm.tools.spatial_tools import SpatialTools
@@ -34,6 +34,41 @@ def test_create_grid_writes_strict_local_map_and_legacy_mirror():
     record = get_map_record(session.maps, result["map_id"])
     assert record["type"] == MAP_TYPE_STRICT_LOCAL
     assert record["grid"] == session.battle["grid"]
+
+
+def test_create_grid_uses_default_strict_map_authority_with_auditable_source():
+    repo = _repo("create_grid_default_map")
+    repo.save_session(_ready_session())
+    tools = SpatialTools(repo, "group")
+
+    result = asyncio.run(tools.create_grid(width=5, height=4))
+
+    assert result["map_id"] == DEFAULT_STRICT_LOCAL_MAP_ID
+    session = repo.load_session("group")
+    assert session.maps["active_strict_map_id"] == DEFAULT_STRICT_LOCAL_MAP_ID
+    assert session.battle["map_id"] == DEFAULT_STRICT_LOCAL_MAP_ID
+    record = get_map_record(session.maps, DEFAULT_STRICT_LOCAL_MAP_ID)
+    assert record["archive_identity"]["source"] == "spatial_tool_create_grid"
+    assert record["archive_identity"]["authority_assumption"] == "spatial_tool_create_grid"
+
+
+def test_create_grid_resets_map_store_authority_before_legacy_mirror():
+    repo = _repo("create_grid_reset_authority")
+    repo.save_session(_ready_session())
+    tools = SpatialTools(repo, "group")
+    asyncio.run(tools.create_grid(width=5, height=5))
+    session = repo.load_session("group")
+    session.battle["grid"] = {"width": 9, "height": 9, "cells": [], "entities": {"stale": {"x": 8, "y": 8}}}
+    repo.save_session(session)
+
+    result = asyncio.run(tools.create_grid(width=3, height=3))
+
+    assert result["map_id"] == DEFAULT_STRICT_LOCAL_MAP_ID
+    session = repo.load_session("group")
+    record = get_map_record(session.maps, DEFAULT_STRICT_LOCAL_MAP_ID)
+    assert record["grid"]["width"] == 3
+    assert record["grid"] == session.battle["grid"]
+    assert "stale" not in record["grid"]["entities"]
 
 
 def test_place_entity_updates_strict_local_map_and_legacy_mirror():

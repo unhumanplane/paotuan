@@ -183,7 +183,8 @@ SVG / PNG 地图和氛围图片都属于视觉辅助。视觉引用可以被记�
 
 `tools/spatial_tools.py` 现在通过 adapter 写 strict grid：
 
-- `create_grid()` 创建或重置 active `strict_local_map` record，并把 `session.battle["map_id"]` 指向该 record。
+- `create_grid()` 作为 legacy 兼容入口，固定创建或重置 `DEFAULT_STRICT_LOCAL_MAP_ID` 对应的 `strict_local_map` record，并把 `session.battle["map_id"]` 指向该 record。
+- `create_grid()` 会在 record `archive_identity` 中记录 `source: "spatial_tool_create_grid"` 和 authority assumption，便于后续区分 MapStore 创建与 legacy migration。
 - `place_entity()` 和 `move_entity()` 读取 MapCore strict grid，结算成功后写回 MapCore。
 - `session.battle["grid"]` 暂时保留为兼容 mirror，供旧调用方和过渡期存档继续工作。
 - 旧存档第一次通过 spatial tool 读取 legacy grid 时，会迁移到 MapCore，并保存 `map_id` 和 mirror。
@@ -297,16 +298,17 @@ git diff --check
 - `load_active_strict_grid()` 优先返回 MapStore strict grid，legacy `battle.grid` 只作为 migration fallback。
 - `save_active_strict_grid()` 写入 `strict_local_map` record 并更新 `active_strict_map_id`。
 - `migrate_legacy_battle_grid()` 不覆盖已经存在的 MapStore strict authority。
-- `create_grid()`、`place_entity()` 和 `move_entity()` 通过 adapter 写回 MapCore strict grid，并暂时维护 legacy mirror。
+- `create_grid()` 固定重置默认 strict local map、写入 auditable source，并同步 `battle.map_id` 和 legacy mirror。
+- `place_entity()` 和 `move_entity()` 通过 adapter 写回 MapCore strict grid，并暂时维护 legacy mirror。
 - candidate event 只做 validation，不 mutate store。
 - raw patch、hidden visibility、未知 map、缺字段事件都会被拒绝。
 
 ## 后续扩展点
 
 - 为 validated candidate 增加 code-owned apply 工具，并继续保持“validate 与 apply 分离”。
-- 让 `create_grid()` 承担更完整的 strict map 创建、重置和 map identity 语义。
 - 引入 MapCalculator 或等价服务层，让 spatial tool routing 不再直接依赖 legacy battle shape。
 - 将 strict map lifecycle 与 combat lifecycle 解耦，让 strict exploration、puzzle、stealth 等场景可以在无 combat 时使用 strict map。
+- 在 strict lifecycle 阶段再引入 `create_strict_map`、`start_combat_on_map`、`end_combat` 或 active map 复用语义；当前 `create_grid()` 仍是兼容入口。
 - 扩展 ownership snapshot 和 projection，把 map / character / battle / rule ownership 边界固定下来。
 - 在最终 cleanup 阶段移除或降级 `battle.grid` mirror，只保留旧存档 migration loader。
 - 为玩家 UI 或消息输出接入 `player_view`。
