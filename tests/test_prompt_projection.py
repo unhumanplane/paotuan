@@ -93,6 +93,67 @@ def test_strict_grid_renderer_tool_projection_keeps_metadata_without_paths_or_gr
     assert '"grid"' not in rendered
 
 
+def test_overview_topology_render_projection_blocks_paths_svg_and_hidden_layout():
+    projected = project_tool_results_for_dm_prompt(
+        [
+            {
+                "tool": "render_overview_topology_svg",
+                "args": {
+                    "title": "北门概览",
+                    "map_id": "overview-1",
+                    "width": 900,
+                    "height": 700,
+                },
+                "result": {
+                    "ok": True,
+                    "render_type": "overview_topology_svg",
+                    "map_id": "overview-1",
+                    "title": "北门概览",
+                    "file_path": "D:/runtime/maps/overview.svg",
+                    "file_name": "overview.svg",
+                    "svg": "<svg>secret coordinates</svg>",
+                    "raw_svg": "<svg>raw hidden</svg>",
+                    "pending_output": {
+                        "type": "svg_map",
+                        "render_type": "overview_topology_svg",
+                        "title": "北门概览",
+                        "name": "overview.svg",
+                        "path": "D:/runtime/maps/overview.svg",
+                        "visual_only": True,
+                    },
+                    "layout": {
+                        "positions": {
+                            "gate": {"x": 60, "y": 80},
+                            "hidden-room": {"x": 900, "y": 900, "visibility": "hidden"},
+                        }
+                    },
+                    "layout_updates": {
+                        "cached": True,
+                        "generated_node_ids": ["gate", "hidden-room"],
+                        "positions": {"gate": {"x": 60, "y": 80}},
+                    },
+                    "facts": [
+                        {"id": "visible-route", "visibility": "player", "text": "北门通往旧集市。"},
+                        {"id": "hidden-route", "visibility": "hidden", "text": "密道通往地下室。"},
+                    ],
+                },
+            }
+        ]
+    )
+
+    rendered = json.dumps(projected, ensure_ascii=False)
+
+    assert projected[0]["tool"] == "render_overview_topology_svg"
+    assert projected[0]["args"] == {"title": "北门概览", "map_id": "overview-1", "width": 900, "height": 700}
+    assert "overview_topology_svg" in rendered
+    assert "北门通往旧集市" in rendered
+    assert "D:/runtime" not in rendered
+    assert "<svg" not in rendered
+    assert "secret coordinates" not in rendered
+    assert "hidden-room" not in rendered
+    assert "hidden-route" not in rendered
+
+
 def test_ra_summary_projection_keeps_counts_not_rejected_values():
     projected = project_ra_summary_for_dm_prompt(
         {

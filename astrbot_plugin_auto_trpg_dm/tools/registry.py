@@ -27,6 +27,10 @@ from .memory_tools import (
     UpdateWorldTagsArgs,
     has_campaign_background,
 )
+from .overview_topology_render_tools import (
+    OverviewTopologyRenderTools,
+    RenderOverviewTopologySvgArgs,
+)
 from .rule_tools import ExecuteRuleArgs, ListRulesArgs, RegisterRuleArgs, RuleTools
 from .rulebook_tools import QueryCoreRulesArgs, RulebookTools
 from .spatial_tools import (
@@ -198,6 +202,11 @@ class ToolRegistry:
             astr_context=self.astr_context,
             provider_id=provider_id,
         )
+        overview_topology_tools = OverviewTopologyRenderTools(
+            repository=self.repository,
+            session_id=session_id,
+            actor=actor,
+        )
 
         catalog: dict[str, LocalFunctionTool] = {
             "register_rule": make_tool(
@@ -343,6 +352,12 @@ class ToolRegistry:
                 description="当玩家明确或上下文明显需要视觉地图、战场示意、地形草图或 SVG 输出时使用；用独立 LLM 子上下文生成 SVG 并保存为文件。只生成视觉层，不改变物理网格、坐标、移动或视线事实。",
                 model=GenerateMapSvgArgs,
                 handler=map_tools.generate_map_svg,
+            ),
+            "render_overview_topology_svg": make_tool(
+                name="render_overview_topology_svg",
+                description="当当前 active overview map 已有 player_view 可见的结构化 topology/layout facts，且需要区域路线/地点关系概览图时使用；由代码确定性渲染 SVG，不调用 LLM 写 SVG，不写回 map facts。",
+                model=RenderOverviewTopologySvgArgs,
+                handler=overview_topology_tools.render_overview_topology_svg,
             ),
         }
 
@@ -603,6 +618,8 @@ class ToolRegistry:
         text = (message or "").strip().lower()
         if text and _contains_any(text, EXTERNAL_MEMORY_TERMS):
             selected.append("search_external_memory")
+        if message and _looks_overview_map_request(message):
+            selected.append("render_overview_topology_svg")
         if "generate_map_svg" in selected:
             return list(dict.fromkeys(selected))
         if message and _looks_text_only_request(message):
@@ -1187,6 +1204,23 @@ VISUAL_REQUEST_TERMS = (
     "draw",
 )
 
+OVERVIEW_TOPOLOGY_REQUEST_TERMS = (
+    "overview",
+    "topology",
+    "拓扑",
+    "概览",
+    "总览",
+    "大地图",
+    "路线",
+    "路径",
+    "关系",
+    "区域",
+    "地标",
+    "地点",
+    "当前在哪",
+    "我在哪里",
+)
+
 
 def _contains_any(text: str, terms: tuple[str, ...]) -> bool:
     return any(term in text for term in terms)
@@ -1199,6 +1233,13 @@ def _looks_text_only_request(message: str) -> bool:
     if _contains_any(text, VISUAL_REQUEST_TERMS):
         return False
     return _contains_any(text, TEXT_ONLY_TERMS)
+
+
+def _looks_overview_map_request(message: str) -> bool:
+    text = str(message or "").strip().lower()
+    if not text or not _contains_any(text, VISUAL_REQUEST_TERMS):
+        return False
+    return _contains_any(text, OVERVIEW_TOPOLOGY_REQUEST_TERMS)
 
 
 def _looks_like_delegated_opening_seed(message: str) -> bool:

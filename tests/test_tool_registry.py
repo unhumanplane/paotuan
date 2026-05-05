@@ -106,6 +106,19 @@ def test_tool_registry_exposes_strict_lifecycle_tools_for_map_setup():
     assert any(spec["name"] == "render_strict_grid_svg" for spec in specs)
 
 
+def test_tool_registry_exposes_overview_topology_renderer_for_overview_map_requests():
+    registry = _registry_with_ready_session()
+    _toolset, names, _executor, specs = registry.for_mode(
+        GameMode.NARRATIVE,
+        "group",
+        message="画一张当前区域路线概览地图",
+    )
+
+    assert "render_overview_topology_svg" in names
+    assert "generate_map_svg" in names
+    assert any(spec["name"] == "render_overview_topology_svg" for spec in specs)
+
+
 def test_tool_registry_exposes_end_combat_for_battle_resolution():
     registry = _registry_with_ready_session()
     _toolset, names, _executor, specs = registry.for_mode(

@@ -14,6 +14,7 @@ from astrbot_plugin_auto_trpg_dm.core.prompts import (
     build_diagnostic_system_prompt,
     build_ra_system_prompt,
     build_system_prompt,
+    build_user_prompt,
     prompt_component_chars,
     prompt_snapshot_data,
     prompt_snapshot_projection_stats,
@@ -37,6 +38,33 @@ def test_system_prompt_includes_shared_cycle_contract():
     assert "RA 只读取 `ra_cycle_input`" in prompt
     assert "完整 `GameSession`" in prompt
     assert "结束当前叙事周期" not in prompt
+
+
+def test_system_prompt_prefers_overview_topology_renderer_before_llm_svg_fallback():
+    session = GameSession.new("group")
+
+    prompt = build_system_prompt(
+        session,
+        GameMode.NARRATIVE,
+        ["render_overview_topology_svg", "generate_map_svg"],
+        actor={"player_id": "player-1"},
+    )
+
+    assert "优先调用 render_overview_topology_svg" in prompt
+    assert "不调用 LLM 写 SVG/XML" in prompt
+    assert "再调用 generate_map_svg" in prompt
+
+
+def test_user_prompt_routes_overview_map_requests_to_deterministic_renderer_hint():
+    overview_prompt = build_user_prompt("画一张当前区域路线概览地图")
+    tactical_prompt = build_user_prompt("画一张当前战场站位图")
+
+    assert "优先调用 render_overview_topology_svg" in overview_prompt
+    assert "overview_topology_missing" in overview_prompt
+    assert "不要让 LLM 直接根据隐藏事实写 topology SVG" in overview_prompt
+    assert "优先调用 generate_map_svg" not in overview_prompt
+    assert "优先调用 generate_map_svg" in tactical_prompt
+    assert "render_overview_topology_svg" not in tactical_prompt
 
 
 def test_ra_system_prompt_restricts_input_and_output_contract():
