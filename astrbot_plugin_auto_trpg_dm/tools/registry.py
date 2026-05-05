@@ -36,6 +36,7 @@ from .spatial_tools import (
     PlaceEntityArgs,
     SpatialTools,
 )
+from .strict_grid_render_tools import RenderStrictGridSvgArgs, StrictGridRenderTools
 from .strict_lifecycle_tools import (
     CreateStrictMapArgs,
     EndCombatArgs,
@@ -176,6 +177,7 @@ class ToolRegistry:
             external_memory=self.external_memory,
         )
         spatial_tools = SpatialTools(self.repository, session_id, actor=actor)
+        strict_grid_render_tools = StrictGridRenderTools(self.repository, session_id, actor=actor)
         strict_lifecycle_tools = StrictLifecycleTools(self.repository, session_id, actor=actor)
         turn_tools = TurnTools(self.repository, session_id, actor=actor)
         cycle_tools = CycleTools(self.repository, session_id, actor=actor)
@@ -318,6 +320,12 @@ class ToolRegistry:
                 model=EmptyArgs,
                 handler=spatial_tools.get_battle_snapshot,
             ),
+            "render_strict_grid_svg": make_tool(
+                name="render_strict_grid_svg",
+                description="从当前 player_view strict_local_map 结构化坐标确定性渲染 SVG；不调用 LLM 写 SVG/XML，也不改变地图事实。",
+                model=RenderStrictGridSvgArgs,
+                handler=strict_grid_render_tools.render_strict_grid_svg,
+            ),
             "turn_control": make_tool(
                 name="turn_control",
                 description="控制战斗轮动状态：场面结算、角色回合、行动顺序、本轮乱序行动记录、推进下一建议行动者、120 秒超时、无人响应自动保守行动。",
@@ -443,6 +451,7 @@ class ToolRegistry:
             if _contains_any(text, MAP_SETUP_TERMS):
                 return [
                     "get_battle_snapshot",
+                    "render_strict_grid_svg",
                     "generate_map_svg",
                     "turn_control",
                     "create_strict_map",
