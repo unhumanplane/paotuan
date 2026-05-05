@@ -14,6 +14,11 @@ from astrbot_plugin_auto_trpg_dm.core.ambient_image import (
     AmbientImageProvider,
     parse_ambient_image_response,
 )
+from astrbot_plugin_auto_trpg_dm.core.map_core import (
+    MAP_LIFECYCLE_ACTIVE_COMBAT_LINKED,
+    save_active_strict_grid,
+    set_strict_map_lifecycle,
+)
 from astrbot_plugin_auto_trpg_dm.core.models import GameMode, GameSession
 from astrbot_plugin_auto_trpg_dm.storage.json_repository import JsonGameRepository
 from astrbot_plugin_auto_trpg_dm.tools.ambient_image_tools import (
@@ -425,6 +430,44 @@ def test_ambient_image_gate_blocks_combat_before_prompt_or_api():
     session = GameSession.new("group")
     session.mode = GameMode.TACTICAL
     session.battle = {"active": True}
+
+    result = ambient_image_gate(session, AmbientImageConfig(enabled=True))
+
+    assert result["reason"] == "ambient_image_combat_active"
+
+
+def test_ambient_image_gate_allows_strict_exploration_even_in_tactical_mode():
+    session = GameSession.new("group")
+    session.mode = GameMode.TACTICAL
+    session.scene["summary"] = "黑塔城的雾夜调查仍在继续。"
+    session.scene["ambient_image_state"] = {
+        "warmup_started_at": (datetime.now(timezone.utc) - timedelta(minutes=20)).isoformat(),
+        "interaction_count": 12,
+    }
+    save_active_strict_grid(
+        session.maps,
+        {"width": 5, "height": 5, "cells": [], "entities": {}},
+        map_id="strict-room",
+        title="Strict room",
+    )
+    _add_recent_player_messages(session)
+
+    result = ambient_image_gate(session, AmbientImageConfig(enabled=True))
+
+    assert result["ok"] is True
+    assert result["trigger"] == "interval"
+
+
+def test_ambient_image_gate_blocks_combat_linked_strict_map():
+    session = GameSession.new("group")
+    save_active_strict_grid(
+        session.maps,
+        {"width": 5, "height": 5, "cells": [], "entities": {}},
+        map_id="strict-room",
+        title="Strict room",
+    )
+    set_strict_map_lifecycle(session.maps, "strict-room", MAP_LIFECYCLE_ACTIVE_COMBAT_LINKED)
+    session.battle["map_id"] = "strict-room"
 
     result = ambient_image_gate(session, AmbientImageConfig(enabled=True))
 

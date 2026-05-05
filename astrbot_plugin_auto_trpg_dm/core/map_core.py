@@ -46,6 +46,24 @@ MAP_TYPE_STRICT_LOCAL = "strict_local_map"
 
 DEFAULT_STRICT_LOCAL_MAP_ID = "strict-local-map"
 
+MAP_LIFECYCLE_INACTIVE = "inactive"
+MAP_LIFECYCLE_ACTIVE_EXPLORATION = "active_exploration"
+MAP_LIFECYCLE_ACTIVE_COMBAT_LINKED = "active_combat_linked"
+MAP_LIFECYCLE_PAUSED = "paused"
+MAP_LIFECYCLE_ARCHIVED = "archived"
+
+MAP_STRICT_LIFECYCLES = {
+    MAP_LIFECYCLE_INACTIVE,
+    MAP_LIFECYCLE_ACTIVE_EXPLORATION,
+    MAP_LIFECYCLE_ACTIVE_COMBAT_LINKED,
+    MAP_LIFECYCLE_PAUSED,
+    MAP_LIFECYCLE_ARCHIVED,
+}
+MAP_ACTIVE_STRICT_LIFECYCLES = {
+    MAP_LIFECYCLE_ACTIVE_EXPLORATION,
+    MAP_LIFECYCLE_ACTIVE_COMBAT_LINKED,
+}
+
 STRICT_GRID_SOURCE_MAP_STORE = "map_store"
 STRICT_GRID_SOURCE_LEGACY_BATTLE = "legacy_battle_grid"
 STRICT_GRID_SOURCE_NONE = "none"
@@ -105,6 +123,11 @@ def normalize_map_store(value: Any) -> dict[str, Any]:
         store["active_overview_map_id"] = ""
     if store["active_strict_map_id"] not in store["records"]:
         store["active_strict_map_id"] = ""
+    elif _is_strict_map_record(store["records"][store["active_strict_map_id"]]):
+        record = store["records"][store["active_strict_map_id"]]
+        original_record = dict(records.get(store["active_strict_map_id"], {})) if isinstance(records, dict) else {}
+        if "lifecycle" not in original_record:
+            record["lifecycle"] = MAP_LIFECYCLE_ACTIVE_EXPLORATION
     return store
 
 
@@ -129,6 +152,8 @@ def create_map_record(
         authority=authority,
         visibility=visibility,
     )
+    if _is_strict_map_record(record) and (set_active or not normalized["active_strict_map_id"]):
+        record["lifecycle"] = MAP_LIFECYCLE_ACTIVE_EXPLORATION
     normalized["records"][safe_id] = record
     if _is_strict_map_record(record):
         if set_active or not normalized["active_strict_map_id"]:
@@ -276,6 +301,55 @@ def project_active_map_record(
     return deepcopy(record) if isinstance(record, dict) else None
 
 
+def get_strict_map_lifecycle(store: dict[str, Any], map_id: str = "") -> dict[str, Any]:
+    normalized = normalize_map_store(store)
+    selected_id = _selected_strict_map_id(normalized, map_id)
+    if not selected_id:
+        return {"ok": True, "map_id": "", "lifecycle": MAP_LIFECYCLE_INACTIVE, "active": False}
+    record = normalized["records"].get(selected_id)
+    if not isinstance(record, dict) or not _is_strict_map_record(record):
+        return {"ok": False, "error_code": "strict_map_record_not_found", "map_id": selected_id}
+    lifecycle = _safe_strict_lifecycle(record.get("lifecycle"))
+    return {
+        "ok": True,
+        "map_id": selected_id,
+        "lifecycle": lifecycle,
+        "active": lifecycle in MAP_ACTIVE_STRICT_LIFECYCLES,
+        "combat_linked": lifecycle == MAP_LIFECYCLE_ACTIVE_COMBAT_LINKED,
+    }
+
+
+def set_strict_map_lifecycle(
+    store: dict[str, Any],
+    map_id: str,
+    lifecycle: str,
+    *,
+    source: str = "",
+) -> dict[str, Any]:
+    normalized = normalize_map_store(store)
+    safe_id = _require_id(map_id)
+    record = normalized["records"].get(safe_id)
+    if not isinstance(record, dict) or not _is_strict_map_record(record):
+        raise ValueError(f"strict_map_record_not_found:{safe_id}")
+    safe_lifecycle = _safe_strict_lifecycle(lifecycle)
+    now = _utc_now_iso()
+    record["lifecycle"] = safe_lifecycle
+    record["lifecycle_updated_at"] = now
+    if source:
+        record["lifecycle_source"] = _short_text(source, 120)
+    if safe_lifecycle in MAP_ACTIVE_STRICT_LIFECYCLES:
+        normalized["active_strict_map_id"] = safe_id
+    elif normalized.get("active_strict_map_id") == safe_id:
+        normalized["active_strict_map_id"] = ""
+    if safe_lifecycle == MAP_LIFECYCLE_ARCHIVED:
+        archive_identity = _json_safe(_dict_or_empty(record.get("archive_identity")))
+        archive_identity["archived_at"] = now
+        record["archive_identity"] = archive_identity
+    record["updated_at"] = now
+    _replace_store(store, normalized)
+    return deepcopy(record)
+
+
 def load_active_strict_grid(store: dict[str, Any], legacy_battle: Any | None = None) -> dict[str, Any]:
     normalized = normalize_map_store(store)
     map_id = str(normalized.get("active_strict_map_id") or "")
@@ -326,6 +400,7 @@ def save_active_strict_grid(
     source: str = "",
     migration_source: str = "",
     authority_assumption: str = "map_store_strict_grid",
+    lifecycle: str = MAP_LIFECYCLE_ACTIVE_EXPLORATION,
 ) -> dict[str, Any]:
     if not isinstance(grid, dict):
         raise ValueError("strict_grid_invalid")
@@ -348,6 +423,8 @@ def save_active_strict_grid(
     if title:
         record["title"] = _short_text(title, 160)
     record["grid"] = _json_safe(grid)
+    record["lifecycle"] = _safe_strict_lifecycle(lifecycle)
+    record["lifecycle_updated_at"] = _utc_now_iso()
     record["archive_identity"] = _strict_grid_archive_identity(
         record.get("archive_identity"),
         source=source,
@@ -466,6 +543,7 @@ def _new_map_record(
         "title": _short_text(title or map_id, 160),
         "authority": _safe_authority(authority),
         "visibility": _safe_visibility(visibility),
+        "lifecycle": MAP_LIFECYCLE_INACTIVE,
         "facts": [],
         "render_refs": [],
         "archive_identity": {},
@@ -491,6 +569,7 @@ def _project_map_record(
         "title": record.get("title", ""),
         "authority": record.get("authority", ""),
         "visibility": record.get("visibility", ""),
+        "lifecycle": record.get("lifecycle", MAP_LIFECYCLE_INACTIVE),
         "facts": facts,
         "render_refs": [
             _project_render_ref(ref)
@@ -533,6 +612,7 @@ def _diagnostic_map_view(store: dict[str, Any]) -> dict[str, Any]:
             "title": record.get("title", ""),
             "authority": record.get("authority", ""),
             "visibility": record.get("visibility", ""),
+            "lifecycle": record.get("lifecycle", MAP_LIFECYCLE_INACTIVE),
             "fact_count": len(facts),
             "hidden_fact_count": sum(
                 1 for item in facts if item.get("visibility") == MAP_VISIBILITY_HIDDEN
@@ -641,6 +721,11 @@ def _normalize_map_record(map_id: Any, value: dict[str, Any]) -> dict[str, Any]:
         visibility=str(value.get("visibility") or MAP_VISIBILITY_DM),
     )
     record["record_version"] = _safe_int(value.get("record_version"), 1)
+    record["lifecycle"] = _safe_strict_lifecycle(value.get("lifecycle")) if _is_strict_map_record(record) else ""
+    if value.get("lifecycle_updated_at"):
+        record["lifecycle_updated_at"] = str(value.get("lifecycle_updated_at"))
+    if value.get("lifecycle_source"):
+        record["lifecycle_source"] = _short_text(value.get("lifecycle_source"), 120)
     record["facts"] = [
         _normalize_fact(item)
         for item in list(value.get("facts") or [])[:200]
@@ -680,6 +765,18 @@ def _replace_store(target: dict[str, Any], normalized: dict[str, Any]) -> None:
 
 def _is_strict_map_record(record: dict[str, Any]) -> bool:
     return _safe_map_type(record.get("type")) == MAP_TYPE_STRICT_LOCAL
+
+
+def _selected_strict_map_id(store: dict[str, Any], map_id: str) -> str:
+    selected = str(map_id or "").strip()
+    if selected:
+        return _short_text(selected, 120)
+    return str(store.get("active_strict_map_id") or "").strip()
+
+
+def _safe_strict_lifecycle(value: Any) -> str:
+    text = str(value or "").strip()
+    return text if text in MAP_STRICT_LIFECYCLES else MAP_LIFECYCLE_INACTIVE
 
 
 def _safe_map_type(value: Any) -> str:

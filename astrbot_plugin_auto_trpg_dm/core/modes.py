@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from .combat_lifecycle import combat_lifecycle_active
 from .models import GameMode, GameSession
 
 
@@ -51,7 +52,7 @@ class GameModeStateMachine:
         text = message.strip().lower()
         battle = session.battle or {}
         turn = battle.get("turn") if isinstance(battle.get("turn"), dict) else {}
-        if battle.get("active") or turn.get("active"):
+        if combat_lifecycle_active(session):
             return GameMode.TACTICAL
         if any(hint in text for hint in self.BATTLE_HINTS):
             return GameMode.TACTICAL

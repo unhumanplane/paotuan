@@ -387,6 +387,25 @@ def test_snapshot_projection_shadow_classifies_state_query_without_actions():
     assert stats["profile"] == "state_query"
 
 
+def test_snapshot_projection_keeps_strict_exploration_as_narrative_profile():
+    session = GameSession.new("group")
+    session.mode = GameMode.TACTICAL
+    save_active_strict_grid(
+        session.maps,
+        {"width": 5, "height": 5, "cells": [], "entities": {}},
+        map_id="strict-room",
+        title="Strict room",
+    )
+
+    stats = snapshot_projection_shadow_stats(
+        session,
+        GameMode.TACTICAL,
+        "我想回忆一下背景",
+    )
+
+    assert stats["profile"] == "narrative"
+
+
 def test_snapshot_projection_shadow_keeps_mixed_query_action_as_tactical():
     session = GameSession.new("group")
     session.mode = GameMode.TACTICAL
