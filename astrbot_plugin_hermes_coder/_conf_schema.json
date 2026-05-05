@@ -1,0 +1,49 @@
+{
+  "enabled": {
+    "description": "是否启用 /coder Hermes 接入。",
+    "type": "bool",
+    "hint": "true",
+    "default": true
+  },
+  "group_whitelist": {
+    "description": "允许使用 /coder 的 QQ 群号白名单。留空则拒绝所有群聊。",
+    "type": "list",
+    "hint": "例如：676453921",
+    "default": []
+  },
+  "allow_private_chat": {
+    "description": "是否允许私聊使用 /coder。默认关闭。",
+    "type": "bool",
+    "hint": "false",
+    "default": false
+  },
+  "bridge_url": {
+    "description": "Hermes Coder Bridge 地址。AstrBot 容器内访问宿主机通常使用 host.docker.internal 或 NAS IP。",
+    "type": "string",
+    "hint": "http://192.168.123.148:8767/coder",
+    "default": "http://192.168.123.148:8767/coder"
+  },
+  "bridge_secret": {
+    "description": "Hermes Coder Bridge 共享密钥。用于 HMAC 请求签名；不要公开。",
+    "type": "string",
+    "hint": ""
+  },
+  "timeout_seconds": {
+    "description": "等待 Hermes 回复的最长时间。超过后返回超时提示。",
+    "type": "int",
+    "hint": "240",
+    "default": 240
+  },
+  "max_prompt_chars": {
+    "description": "单次 /coder 请求最大字符数，过长会拒绝，避免误触发大任务。",
+    "type": "int",
+    "hint": "4000",
+    "default": 4000
+  },
+  "max_reply_chars": {
+    "description": "返回到群里的最大字符数，超出会截断并提示。",
+    "type": "int",
+    "hint": "3500",
+    "default": 3500
+  }
+}

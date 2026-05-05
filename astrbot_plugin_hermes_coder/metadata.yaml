@@ -1,0 +1,5 @@
+name: astrbot_plugin_hermes_coder
+desc: Hermes coder bridge for trusted QQ groups.
+version: v0.1.0
+author: codex
+repo: https://github.com/unhumanplane/paotuan

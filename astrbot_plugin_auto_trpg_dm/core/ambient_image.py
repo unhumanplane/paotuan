@@ -18,6 +18,11 @@ from typing import Any, Callable, Dict, List, Tuple
 
 AMBIENT_IMAGE_API_MODES = {"images", "chat_completions"}
 DEFAULT_AMBIENT_IMAGE_BASE_URL = "https://www.packyapi.com"
+DEFAULT_AMBIENT_IMAGE_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/124.0.0.0 Safari/537.36"
+)
 MAX_AMBIENT_IMAGE_BYTES = 20 * 1024 * 1024
 MAX_AMBIENT_IMAGE_RESPONSE_BYTES = 30 * 1024 * 1024
 
@@ -27,7 +32,9 @@ class AmbientImageConfig:
     enabled: bool = False
     api_mode: str = "images"
     base_url: str = DEFAULT_AMBIENT_IMAGE_BASE_URL
+    api_key: str = ""
     api_key_env: str = "PACKYAPI_SORA_API_KEY"
+    user_agent: str = DEFAULT_AMBIENT_IMAGE_USER_AGENT
     model: str = "gpt-image-2"
     prompt_model: str = ""
     size: str = "1536x1024"
@@ -132,22 +139,21 @@ class AmbientImageProvider:
         base_url = normalize_ambient_image_base_url(self.config.base_url)
         if not base_url:
             return {"ok": False, "available": False, "error": "ambient_image_base_url_missing"}
-        api_key_env = str(self.config.api_key_env or "").strip()
-        api_key = str(self.environ.get(api_key_env, "")).strip() if api_key_env else ""
+        api_key, api_key_source, api_key_env = self._api_key()
         if not api_key:
             return {
                 "ok": False,
                 "available": False,
                 "error": "ambient_image_api_key_missing",
                 "api_key_env": api_key_env,
+                "api_key_source": api_key_source,
             }
         return None
 
     def _generate_sync(self, prompt: str) -> dict[str, Any]:
         api_mode = normalize_ambient_image_api_mode(self.config.api_mode) or "images"
         base_url = normalize_ambient_image_base_url(self.config.base_url)
-        api_key_env = str(self.config.api_key_env or "").strip()
-        api_key = str(self.environ.get(api_key_env, "")).strip()
+        api_key, _, _ = self._api_key()
         endpoint = (
             "/v1/images/generations"
             if api_mode == "images"
@@ -158,6 +164,7 @@ class AmbientImageProvider:
         headers = {
             "Content-Type": "application/json",
             "Accept": "application/json",
+            "User-Agent": self._user_agent(),
             "Authorization": f"Bearer {api_key}",
         }
         timeout = max(1, int(self.config.timeout_seconds or 120))
@@ -239,6 +246,25 @@ class AmbientImageProvider:
             "n": 1,
         }
 
+    def _api_key(self) -> tuple[str, str, str]:
+        direct_key = str(getattr(self.config, "api_key", "") or "").strip()
+        if direct_key:
+            return direct_key, "config", ""
+        api_key_env = str(self.config.api_key_env or "").strip()
+        if not api_key_env:
+            return "", "missing", ""
+        if _looks_like_env_var_name(api_key_env):
+            return str(self.environ.get(api_key_env, "")).strip(), "env", api_key_env
+        # Backward-compatible escape hatch for users who pasted the key into
+        # the old env-name field from the AstrBot UI.
+        return api_key_env, "config_legacy_api_key_env", ""
+
+    def _user_agent(self) -> str:
+        return (
+            str(getattr(self.config, "user_agent", "") or DEFAULT_AMBIENT_IMAGE_USER_AGENT).strip()
+            or DEFAULT_AMBIENT_IMAGE_USER_AGENT
+        )
+
     def _materialize_image(self, parse_result: dict[str, Any], timeout: int) -> dict[str, Any]:
         if parse_result.get("b64_json"):
             b64_text = str(parse_result["b64_json"])
@@ -288,7 +314,11 @@ class AmbientImageProvider:
                 "url": image_url,
             }
         try:
-            status, headers, image_bytes = self.http_get(image_url, {"Accept": "image/*"}, timeout)
+            status, headers, image_bytes = self.http_get(
+                image_url,
+                {"Accept": "image/*", "User-Agent": self._user_agent()},
+                timeout,
+            )
         except AmbientImageSizeLimitError as exc:
             return {**_too_large_result(exc), "url": image_url}
         except AmbientImageUrlBlockedError as exc:
@@ -493,6 +523,10 @@ def redact_ambient_image_text(text: object, *, limit: int = 200) -> str:
     if len(value) > limit:
         return value[:limit] + "...[truncated]"
     return value
+
+
+def _looks_like_env_var_name(value: str) -> bool:
+    return bool(re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,80}", str(value or "").strip()))
 
 
 def _http_post_json(url: str, headers: dict[str, str], payload: dict[str, Any], timeout: int) -> tuple[int, dict[str, str], bytes]:

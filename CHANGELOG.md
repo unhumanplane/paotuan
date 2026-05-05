@@ -2,6 +2,26 @@
 
 所有已经合入 `main` 的用户可见变更都记录在这里。日期使用香港时区对应的开发日期。
 
+## [0.1.89] - 2026-05-04
+
+### Added
+
+- 氛围图片支持在插件配置里直接填写 `ambient_image_api_key`；留空时仍回退到 `ambient_image_api_key_env` 指向的环境变量。
+- 新增普通玩家可用的手动氛围图触发路径，仍会走频率、相似度、下载安全和独立发送流程。
+- 氛围图片 provider 请求支持配置浏览器风格 `User-Agent`，用于兼容会拒绝默认 Python UA 的图片 API 网关。
+- 为 AstrBot 插件市场发布补齐 `requirements.txt`、`metadata.yaml` 仓库信息、展示名、短描述、平台声明和最低 AstrBot 版本。
+- 为随包 DND / SRD 摘要规则卡补充 README 版权边界说明和 SRD 5.2 attribution。
+- 新增标准 MIT `LICENSE` 和 `NOTICE`，明确代码许可、SRD 5.2 归因、规则卡边界和商标关系。
+
+### Changed
+
+- 重写 README，使安装、配置、隐私边界、依赖和稳定版仓库拆分路径更适合插件市场用户阅读。
+
+### Verified
+
+- `python -m compileall -q astrbot_plugin_auto_trpg_dm tests scripts`
+- `python -m pytest -q`
+
 ## [0.1.87] - 2026-05-03
 
 ### Fixed

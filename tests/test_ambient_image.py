@@ -82,6 +82,44 @@ def test_ambient_image_missing_api_key_degrades_without_call():
     assert calls == []
 
 
+def test_ambient_image_direct_config_api_key_avoids_env_requirement():
+    captured = {}
+
+    def fake_post(url, headers, payload, timeout):
+        captured.update({"headers": headers})
+        return 200, {"content-type": "application/json"}, json.dumps({"data": [{"b64_json": base64.b64encode(b"png").decode()}]}).encode()
+
+    provider = AmbientImageProvider(
+        AmbientImageConfig(enabled=True, api_key="direct-secret", response_format="b64_json"),
+        environ={},
+        http_post=fake_post,
+    )
+
+    result = asyncio.run(provider.generate("城堡夜色"))
+
+    assert result["ok"] is True
+    assert captured["headers"]["Authorization"] == "Bearer direct-secret"
+
+
+def test_ambient_image_legacy_env_field_accepts_pasted_key():
+    captured = {}
+
+    def fake_post(url, headers, payload, timeout):
+        captured.update({"headers": headers})
+        return 200, {"content-type": "application/json"}, json.dumps({"data": [{"b64_json": base64.b64encode(b"png").decode()}]}).encode()
+
+    provider = AmbientImageProvider(
+        AmbientImageConfig(enabled=True, api_key_env="sk-pasted-secret", response_format="b64_json"),
+        environ={},
+        http_post=fake_post,
+    )
+
+    result = asyncio.run(provider.generate("城堡夜色"))
+
+    assert result["ok"] is True
+    assert captured["headers"]["Authorization"] == "Bearer sk-pasted-secret"
+
+
 def test_images_api_payload_defaults_to_single_medium_quality_1_5k_and_parses_url():
     captured = {}
 
@@ -91,6 +129,7 @@ def test_images_api_payload_defaults_to_single_medium_quality_1_5k_and_parses_ur
 
     def fake_get(url, headers, timeout):
         assert url == "https://cdn.example/img.png"
+        captured["download_headers"] = headers
         return 200, {"content-type": "image/png"}, b"png-bytes"
 
     provider = AmbientImageProvider(
@@ -109,9 +148,35 @@ def test_images_api_payload_defaults_to_single_medium_quality_1_5k_and_parses_ur
     assert captured["payload"]["n"] == 1
     assert captured["payload"]["size"] == "1536x1024"
     assert captured["payload"]["quality"] == "medium"
+    assert "Mozilla/5.0" in captured["headers"]["User-Agent"]
+    assert "Mozilla/5.0" in captured["download_headers"]["User-Agent"]
     assert captured["timeout"] == 120
     assert result["image_bytes"] == b"png-bytes"
     assert result["extension"] == "png"
+
+
+def test_ambient_image_custom_user_agent_is_used_for_provider_request():
+    captured = {}
+
+    def fake_post(url, headers, payload, timeout):
+        captured.update({"headers": headers})
+        return 200, {"content-type": "application/json"}, json.dumps({"data": [{"b64_json": base64.b64encode(b"png").decode()}]}).encode()
+
+    provider = AmbientImageProvider(
+        AmbientImageConfig(
+            enabled=True,
+            api_key_env="PACKY_KEY",
+            response_format="b64_json",
+            user_agent="CustomAmbientClient/1.0",
+        ),
+        environ={"PACKY_KEY": "secret"},
+        http_post=fake_post,
+    )
+
+    result = asyncio.run(provider.generate("城堡夜色"))
+
+    assert result["ok"] is True
+    assert captured["headers"]["User-Agent"] == "CustomAmbientClient/1.0"
 
 
 def test_images_api_parses_b64_json():
@@ -395,6 +460,23 @@ def test_opening_trigger_is_explicit_capability_not_auto_enabled():
     assert automatic["reason"] == "ambient_image_warmup_wait"
     assert explicit["ok"] is True
     assert explicit["trigger"] == "opening"
+
+
+def test_manual_trigger_bypasses_automatic_warmup_but_not_combat():
+    session = GameSession.new("group")
+    session.scene["summary"] = "黑塔城的雾夜调查仍在继续。"
+    config = AmbientImageConfig(enabled=True)
+
+    automatic = ambient_image_gate(session, config)
+    manual = ambient_image_gate(session, config, trigger_override="manual")
+    session.mode = GameMode.TACTICAL
+    session.battle = {"active": True}
+    combat = ambient_image_gate(session, config, trigger_override="manual")
+
+    assert automatic["reason"] == "ambient_image_warmup_wait"
+    assert manual["ok"] is True
+    assert manual["trigger"] == "manual"
+    assert combat["reason"] == "ambient_image_combat_active"
 
 
 def test_pause_and_resume_cooldowns_are_independent():
