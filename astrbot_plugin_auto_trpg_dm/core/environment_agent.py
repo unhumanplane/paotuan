@@ -5,6 +5,7 @@ from typing import Any, Awaitable, Callable
 
 from .cycle_buffer import sanitize_ra_payload
 from .cycle_state_machine import CycleStateMachine
+from .map_core import MAP_VIEW_RA_AUTHORITY, project_map_store
 from .models import AuditBuffer, CycleState, GameSession, RACycleInput, utc_now_iso
 from .prompts import build_cycle_start_prompt, build_ra_cycle_prompt, build_ra_system_prompt
 
@@ -104,6 +105,9 @@ def build_ra_authority_snapshot(session: GameSession) -> dict[str, Any]:
         "battle": _compact_json_value(session._compact_battle(), depth=4),
         "environment_summaries": _compact_json_value(session.environment_summaries[-3:], depth=3),
     }
+    map_view = project_map_store(session.maps, MAP_VIEW_RA_AUTHORITY)
+    if map_view.get("records"):
+        snapshot["maps"] = map_view
     sanitized = sanitize_ra_payload(snapshot)
     return sanitized if isinstance(sanitized, dict) else {}
 

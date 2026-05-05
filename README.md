@@ -38,6 +38,7 @@
 - 支持地图实体、回合顺序、行动推进和结算阶段。
 - 回合超时后可以执行保守自动行动，避免多人团长期卡住。
 - SVG / PNG 地图只作为视觉展示，不直接改写战棋事实。
+- MapCore 负责地图记录、可见性投影和候选地图事件校验，防止 DM / RA / LLM 读取隐藏地图事实或 raw 地图存储；设计边界见 [docs/mapcore-projection-guard.md](docs/mapcore-projection-guard.md)。
 
 ### 规则与裁定
 
@@ -97,9 +98,41 @@ Recorder Agent，简称 RA，是可选的周期结算/记录 agent，默认关�
 
 ```text
 astrbot_plugin_auto_trpg_dm/
-  main.py
+  main.py                 # AstrBot 插件入口与 /dm 事件处理
   metadata.yaml
   _conf_schema.json
+  core/
+    router.py             # Intent Router，多步工具调用与模式切换
+    models.py             # GameSession、角色、战斗和周期状态模型
+    map_core.py           # MapCore store、角色投影和候选地图事件校验
+    prompts.py            # 系统提示与模式提示
+    security.py           # 输入安全预检查
+    external_memory.py    # Honcho 外置记忆适配
+    ambient_image.py      # 氛围图片 provider、安全校验和物化逻辑
+  tools/
+    registry.py           # 按模式挂载工具
+    memory_tools.py       # 角色、场景、世界设定和存档工具
+    spatial_tools.py      # 战棋空间工具
+    turn_tools.py         # 轮次、超时和行动推进
+    rule_tools.py         # 本地规则执行
+    rulebook_tools.py     # DND 2024 / DM guidance 检索
+    map_tools.py          # 视觉地图生成
+    ambient_image_tools.py # 氛围图片触发、prompt 和元数据保存
+  rules/
+    python_runtime.py     # 受限 Python 规则运行时
+    dice.py               # 骰子工具
+  rulebook/
+    store.py              # 本地规则卡存储
+    retriever.py          # 规则检索
+  spatial/
+    grid.py
+    engine.py
+    los.py
+  storage/
+    json_repository.py    # 本地 JSON 存档
+tests/
+scripts/
+docs/
 ```
 
 插件依赖会由 `astrbot_plugin_auto_trpg_dm/requirements.txt` 声明。当前必需依赖是：
@@ -114,6 +147,13 @@ Honcho 是可选增强能力，默认关闭。只有在你主动开启 `honcho_e
 ```bash
 pip install honcho
 ```
+
+核心思路是把“事实”和“叙事”分开：
+
+- 坐标、视线、距离、掩体、数值结算由本地工具负责。
+- LLM 负责理解玩家自然语言、组织裁定、调用工具和输出叙事。
+- DM / RA / 玩家侧只能消费 code 投影后的地图视图，不能读取 raw map store 或隐藏地图事实。
+- 存档、规则执行和审计结果写回本地 JSON，避免只存在上下文里。
 
 ## 快速开始
 

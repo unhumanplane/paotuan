@@ -4,10 +4,18 @@ import json
 from astrbot_plugin_auto_trpg_dm.core.cycle_buffer import append_cycle_action
 from astrbot_plugin_auto_trpg_dm.core.environment_agent import (
     RecorderAgent,
+    build_ra_authority_snapshot,
     build_ra_input_view,
     complete_cycle_with_ra,
     recover_cycle_after_ra_failure,
     validate_ra_patch_candidates,
+)
+from astrbot_plugin_auto_trpg_dm.core.map_core import (
+    MAP_VISIBILITY_DM,
+    MAP_VISIBILITY_HIDDEN,
+    add_map_fact,
+    add_render_ref,
+    create_map_record,
 )
 from astrbot_plugin_auto_trpg_dm.core.models import Character, CycleState, GameSession
 
@@ -54,6 +62,42 @@ def test_ra_input_view_does_not_include_raw_player_data_or_blocked_keys():
     assert "debug" not in payload
     assert "token_usage" not in payload
     assert "damage" in payload
+
+
+def test_ra_authority_snapshot_uses_projected_map_view_without_hidden_facts():
+    session = GameSession.new("group")
+    create_map_record(session.maps, "overview-1", title="Gatehouse", visibility=MAP_VISIBILITY_DM, set_active=True)
+    add_map_fact(
+        session.maps,
+        "overview-1",
+        fact_id="dm-visible-pressure",
+        kind="pressure",
+        text="The corridor is unstable.",
+        visibility=MAP_VISIBILITY_DM,
+    )
+    add_map_fact(
+        session.maps,
+        "overview-1",
+        fact_id="hidden-trigger",
+        kind="trap",
+        text="The hidden trigger is beneath the third tile.",
+        visibility=MAP_VISIBILITY_HIDDEN,
+    )
+    add_render_ref(
+        session.maps,
+        "overview-1",
+        ref_type="svg_map",
+        title="Gatehouse",
+        name="gatehouse.svg",
+        path="/local/runtime/maps/gatehouse.svg",
+    )
+
+    snapshot = build_ra_authority_snapshot(session)
+    rendered = json.dumps(snapshot, ensure_ascii=False)
+
+    assert snapshot["maps"]["records"]["overview-1"]["facts"][0]["id"] == "dm-visible-pressure"
+    assert "hidden-trigger" not in rendered
+    assert "/local/runtime" not in rendered
 
 
 def test_recorder_agent_runs_once_and_accepts_code_fenced_json():
