@@ -9,9 +9,10 @@ from pydantic import BaseModel, Field
 
 from ..core.map_core import (
     MAP_VIEW_PLAYER,
-    add_map_fact,
     add_render_ref,
+    get_map_record,
     project_active_map_record,
+    update_map_record,
 )
 from ..rendering.overview_topology import (
     OVERVIEW_TOPOLOGY_RENDER_TYPE,
@@ -80,6 +81,11 @@ class OverviewTopologyRenderTools:
             return result
 
         payload = dict(topology_fact.get("payload") or {})
+        cached_layout_revision = _merge_cached_layout_positions(
+            session.maps,
+            _short_text(projected_record.get("id"), 120),
+            payload,
+        )
         render_title = _render_title(
             explicit=title,
             fact_payload=payload,
@@ -93,6 +99,7 @@ class OverviewTopologyRenderTools:
             "map_id": _short_text(projected_record.get("id"), 120),
             "title": render_title,
             "map_revision": _short_text(projected_record.get("record_version") or "", 80),
+            "layout_revision": _short_text(payload.get("layout_revision") or cached_layout_revision, 80),
             "display_profile": {
                 **dict(payload.get("display_profile") or {}),
                 "width": _bounded_int(width, default=900, minimum=320, maximum=1600),
@@ -116,10 +123,9 @@ class OverviewTopologyRenderTools:
 
         path = self._write_svg(render_title, svg)
         latest_session = self.repository.load_session(self.session_id)
-        _persist_generated_layout_positions(
+        layout_updates = _persist_generated_layout_positions(
             latest_session.maps,
             render_input.map_id,
-            topology_fact,
             payload,
             layout,
         )
@@ -160,6 +166,8 @@ class OverviewTopologyRenderTools:
             "visual_only": True,
             "render_ref": _json_safe(render_ref),
             "pending_output": _json_safe(pending_output) if send_to_chat else {},
+            "layout_revision": layout_updates.get("layout_revision", "") or render_input.layout_revision,
+            "layout_updates": _json_safe(layout_updates),
         }
         self._audit("render_overview_topology_svg", locals_without_self(locals()), result)
         return result
@@ -201,38 +209,92 @@ def _select_topology_fact(facts: Any) -> dict[str, Any]:
 def _persist_generated_layout_positions(
     store: dict[str, Any],
     map_id: str,
-    fact: dict[str, Any],
     payload: dict[str, Any],
     layout: Any,
-) -> None:
+) -> dict[str, Any]:
     generated_node_ids = tuple(getattr(layout, "generated_node_ids", ()) or ())
     if not generated_node_ids:
-        return
-    updated_payload = _json_safe(payload)
-    layout_payload = updated_payload.get("layout")
-    if not isinstance(layout_payload, dict):
-        layout_payload = {}
-    positions = layout_payload.get("positions")
-    if not isinstance(positions, dict):
-        positions = {}
+        return {}
+    record = get_map_record(store, map_id)
+    if not isinstance(record, dict):
+        return {}
+    archive_identity = dict(record.get("archive_identity") or {})
+    layout_cache = dict(archive_identity.get("overview_topology_layout") or {})
+    positions = _cached_positions_from_payload(payload)
+    cached_positions = layout_cache.get("positions")
+    if isinstance(cached_positions, dict):
+        positions.update(_json_safe(cached_positions))
+    updated_node_ids: list[str] = []
     for node_id in generated_node_ids:
         point = layout.positions.get(node_id)
         if point is None or node_id in positions:
             continue
         positions[node_id] = {"x": _round_coord(point.x), "y": _round_coord(point.y)}
-    layout_payload["positions"] = positions
-    updated_payload["layout"] = layout_payload
-    add_map_fact(
-        store,
-        map_id,
-        fact_id=_short_text(fact.get("id") or "overview-topology", 120),
-        kind=_short_text(fact.get("kind") or "overview_topology", 80),
-        text=_short_text(fact.get("text") or "", 1000),
-        payload=updated_payload,
-        authority=_short_text(fact.get("authority") or "code", 40),
-        visibility=_short_text(fact.get("visibility") or "player", 40),
-        source=_short_text(fact.get("source") or "overview_topology_svg", 120),
+        updated_node_ids.append(node_id)
+    if not updated_node_ids:
+        return {}
+    layout_revision = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
+    layout_cache.update(
+        {
+            "render_type": OVERVIEW_TOPOLOGY_RENDER_TYPE,
+            "layout_revision": layout_revision,
+            "positions": positions,
+        }
     )
+    archive_identity["overview_topology_layout"] = layout_cache
+    update_map_record(store, map_id, archive_identity=archive_identity)
+    return {
+        "cached": True,
+        "layout_revision": layout_revision,
+        "generated_node_ids": updated_node_ids,
+    }
+
+
+def _merge_cached_layout_positions(store: dict[str, Any], map_id: str, payload: dict[str, Any]) -> str:
+    record = get_map_record(store, map_id)
+    if not isinstance(record, dict):
+        return ""
+    archive_identity = record.get("archive_identity")
+    if not isinstance(archive_identity, dict):
+        return ""
+    layout_cache = archive_identity.get("overview_topology_layout")
+    if not isinstance(layout_cache, dict):
+        return ""
+    layout_revision = _short_text(layout_cache.get("layout_revision") or "", 80)
+    cached_positions = layout_cache.get("positions")
+    if not isinstance(cached_positions, dict):
+        return layout_revision
+    node_ids = {
+        _short_text(node.get("id") or "", 120)
+        for node in payload.get("nodes") or []
+        if isinstance(node, dict)
+    }
+    if not node_ids:
+        return layout_revision
+    layout_payload = payload.get("layout")
+    if not isinstance(layout_payload, dict):
+        layout_payload = {}
+    positions = layout_payload.get("positions")
+    if not isinstance(positions, dict):
+        positions = {}
+    for node_id, point in cached_positions.items():
+        safe_node_id = _short_text(node_id, 120)
+        if safe_node_id in node_ids and safe_node_id not in positions and isinstance(point, dict):
+            positions[safe_node_id] = _json_safe(point)
+    if positions:
+        layout_payload["positions"] = positions
+        payload["layout"] = layout_payload
+    return layout_revision
+
+
+def _cached_positions_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    layout_payload = payload.get("layout")
+    if not isinstance(layout_payload, dict):
+        return {}
+    positions = layout_payload.get("positions")
+    if not isinstance(positions, dict):
+        return {}
+    return _json_safe(positions)
 
 
 def _render_title(

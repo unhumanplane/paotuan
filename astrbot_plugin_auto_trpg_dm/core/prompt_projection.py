@@ -16,6 +16,7 @@ DM_PROMPT_BLOCKED_KEYS = {
     "html",
     "image_bytes",
     "layout",
+    "layout_updates",
     "local_path",
     "metadata_path",
     "password",

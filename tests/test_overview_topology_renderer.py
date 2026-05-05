@@ -86,6 +86,22 @@ def test_build_overview_topology_input_rejects_blocked_raw_fields():
         build_overview_topology_render_input(envelope)
 
 
+def test_build_overview_topology_input_rejects_raw_map_store():
+    envelope = _base_envelope()
+    envelope["raw_map_store"] = {"records": {}}
+
+    with pytest.raises(ValueError, match="overview_blocked_field:raw_map_store"):
+        build_overview_topology_render_input(envelope)
+
+
+def test_build_overview_topology_input_rejects_raw_grid_payloads():
+    envelope = _base_envelope()
+    envelope["nodes"][0]["grid"] = {"width": 5, "height": 5}
+
+    with pytest.raises(ValueError, match="overview_blocked_field:grid"):
+        build_overview_topology_render_input(envelope)
+
+
 def test_build_overview_topology_input_rejects_unknown_layout_position():
     envelope = _base_envelope()
     envelope["layout"]["positions"]["hidden-room"] = {"x": 200, "y": 200}
@@ -122,6 +138,29 @@ def test_layout_overview_topology_reuses_stored_positions_and_generates_missing_
     assert layout.positions["market"].x > layout.positions["gate"].x
 
 
+def test_layout_overview_topology_adds_new_node_without_reshuffling_stored_nodes():
+    envelope = _base_envelope()
+    envelope["layout"]["positions"]["market"] = {"x": 500, "y": 120}
+    envelope["nodes"].append({"id": "tower", "label": "旧塔", "visibility": "player", "order": 3})
+    envelope["edges"].append(
+        {
+            "id": "market-tower",
+            "source_id": "market",
+            "target_id": "tower",
+            "relationship": "path",
+            "visibility": "player",
+        }
+    )
+
+    layout = layout_overview_topology(build_overview_topology_render_input(envelope))
+
+    assert layout.positions["gate"].x == 10
+    assert layout.positions["gate"].y == 20
+    assert layout.positions["market"].x == 500
+    assert layout.positions["market"].y == 120
+    assert layout.generated_node_ids == ("tower",)
+
+
 def test_layout_overview_topology_does_not_reserve_space_for_rejected_hidden_nodes():
     visible = _base_envelope()
     with_hidden_layout = _base_envelope()
@@ -145,6 +184,12 @@ def test_render_overview_topology_svg_outputs_layered_visual_only_svg_without_co
     assert '<g data-layer="landmarks">' in svg
     assert '<g data-layer="nodes">' in svg
     assert '<g data-layer="labels">' in svg
+    assert '<g data-layer="current-marker">' in svg
+    assert svg.index('data-layer="edges"') < svg.index('data-layer="areas"')
+    assert svg.index('data-layer="areas"') < svg.index('data-layer="landmarks"')
+    assert svg.index('data-layer="landmarks"') < svg.index('data-layer="nodes"')
+    assert svg.index('data-layer="nodes"') < svg.index('data-layer="labels"')
+    assert svg.index('data-layer="labels"') < svg.index('data-layer="current-marker"')
     assert 'stroke-dasharray="8 7"' in svg
     assert 'overview topology - visual only' in svg
     assert "10,20" not in svg
@@ -157,4 +202,5 @@ def test_render_overview_topology_svg_marks_current_location():
     svg = render_overview_topology_svg(render_input)
 
     assert 'data-node-id="gate"' in svg
+    assert 'data-current-node-id="gate"' in svg
     assert 'fill="#2f6f73"' in svg

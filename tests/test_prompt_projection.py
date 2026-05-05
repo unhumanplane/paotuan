@@ -82,6 +82,11 @@ def test_overview_topology_render_projection_blocks_paths_svg_and_hidden_layout(
                             "hidden-room": {"x": 900, "y": 900, "visibility": "hidden"},
                         }
                     },
+                    "layout_updates": {
+                        "cached": True,
+                        "generated_node_ids": ["gate", "hidden-room"],
+                        "positions": {"gate": {"x": 60, "y": 80}},
+                    },
                     "facts": [
                         {"id": "visible-route", "visibility": "player", "text": "北门通往旧集市。"},
                         {"id": "hidden-route", "visibility": "hidden", "text": "密道通往地下室。"},

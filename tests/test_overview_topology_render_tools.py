@@ -85,13 +85,36 @@ def test_render_overview_topology_svg_writes_visual_ref_and_pending_output():
     record = get_map_record(saved.maps, "overview-1")
     assert len(record["facts"]) == 1
     assert record["facts"][0]["kind"] == "overview_topology"
-    assert "market" in record["facts"][0]["payload"]["layout"]["positions"]
+    assert "market" not in record["facts"][0]["payload"]["layout"]["positions"]
+    assert "market" in record["archive_identity"]["overview_topology_layout"]["positions"]
+    assert result["layout_updates"]["cached"] is True
+    assert result["layout_updates"]["generated_node_ids"] == ["market"]
+    assert result["layout_revision"] == result["layout_updates"]["layout_revision"]
     assert "<svg" not in str(record["facts"])
     assert record["render_refs"][-1]["type"] == OVERVIEW_TOPOLOGY_RENDER_TYPE
     assert record["render_refs"][-1]["path"].endswith(".svg")
     assert record["render_refs"][-1]["visual_only"] is True
     assert saved.scene["_pending_outputs"][-1]["type"] == "svg_map"
     assert saved.scene["_pending_outputs"][-1]["render_type"] == OVERVIEW_TOPOLOGY_RENDER_TYPE
+
+
+def test_render_overview_topology_svg_reuses_layout_cache_without_rewriting_facts():
+    root = _runtime_root("overview-render-tools-layout-cache")
+    repository = _repository_with_overview_topology(root)
+    tools = OverviewTopologyRenderTools(repository, "group")
+
+    first = asyncio.run(tools.render_overview_topology_svg(send_to_chat=False))
+    second = asyncio.run(tools.render_overview_topology_svg(send_to_chat=False))
+
+    assert first["ok"] is True
+    assert first["layout_updates"]["generated_node_ids"] == ["market"]
+    assert second["ok"] is True
+    assert second["layout_updates"] == {}
+    saved = repository.load_session("group")
+    record = get_map_record(saved.maps, "overview-1")
+    assert len(record["facts"]) == 1
+    assert "market" not in record["facts"][0]["payload"]["layout"]["positions"]
+    assert "market" in record["archive_identity"]["overview_topology_layout"]["positions"]
 
 
 def test_render_overview_topology_svg_missing_topology_fact_returns_stable_error():

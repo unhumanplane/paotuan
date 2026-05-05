@@ -286,6 +286,15 @@ def render_overview_topology_svg(render_input: OverviewTopologyRenderInput) -> s
         f'font-size="12" fill="#65717d">overview topology - visual only</text>'
     )
     parts.append("</g>")
+    parts.append('<g data-layer="current-marker">')
+    if render_input.current_node_id and render_input.current_node_id in layout.positions:
+        point = layout.positions[render_input.current_node_id]
+        parts.append(
+            f'<circle class="current-marker" data-current-node-id="{escape(render_input.current_node_id)}" '
+            f'cx="{_svg_num(point.x + 18)}" cy="{_svg_num(point.y - 18)}" r="6" '
+            f'fill="#f6c453" stroke="#7a4b00" stroke-width="2"/>'
+        )
+    parts.append("</g>")
     parts.append("</svg>")
     return "\n".join(parts)
 
