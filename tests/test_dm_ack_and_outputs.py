@@ -212,6 +212,30 @@ def test_quoted_result_can_prefix_dice_summary_before_completion():
     assert "\n\n主叙事结果。" in text
 
 
+def test_quoted_result_does_not_expose_local_svg_path_when_preview_fails():
+    plugin = AutoTrpgDmPlugin.__new__(AutoTrpgDmPlugin)
+    plugin.plugin_logger = FakeLogger()
+    plugin._ensure_png_preview = lambda file_path, item: ""
+    event = FakeEvent()
+
+    result = plugin._quoted_result(
+        event,
+        "地图已附上。",
+        pending_outputs=[
+            {
+                "type": "svg_map",
+                "name": "gate.svg",
+                "path": "C:/runtime/private/maps/gate.svg",
+            }
+        ],
+    )
+
+    text = _component_text(result)
+    assert "地图已生成：gate.svg" in text
+    assert "C:/runtime/private" not in text
+    assert "gate.svg" in text
+
+
 def test_manual_ambient_image_fast_path_schedules_independent_generation():
     session = GameSession.new("group")
     session.scene["summary"] = "黑塔城的雾夜调查仍在继续。"

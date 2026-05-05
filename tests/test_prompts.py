@@ -316,6 +316,12 @@ def test_prompt_snapshot_projection_applies_without_mutating_session():
     session.scene["location"] = {"name": "Gatehouse courtyard", "zones": ["gate", "stairs"]}
     session.scene["npcs"] = [{"name": "Watch captain", "stance": "hostile but wounded"}]
     session.scene["clues"] = ["A fresh boot print points toward the cistern."]
+    session.scene["last_map_svg"] = {
+        "type": "svg_map",
+        "title": "Gate fight",
+        "name": "gate.svg",
+        "path": "/internal/path/should/not/matter/in/projection",
+    }
     session.scene["ambient_image_state"] = {"large_internal_counter": "x" * 200}
     session.scene["_map_delivery_cadence"] = {
         "schema_version": 1,
@@ -394,6 +400,12 @@ def test_prompt_snapshot_projection_applies_without_mutating_session():
     assert projected_snapshot["scene"]["npcs"][0]["name"] == "Watch captain"
     assert "ambient_image_state" not in projected_snapshot["scene"]
     assert "_map_delivery_cadence" not in projected_snapshot["scene"]
+    assert projected_snapshot["scene"]["last_map_svg"] == {
+        "type": "svg_map",
+        "title": "Gate fight",
+        "name": "gate.svg",
+    }
+    assert "/internal/path" not in str(projected_snapshot["scene"])
     assert session.compact_snapshot() == original_snapshot
 
 

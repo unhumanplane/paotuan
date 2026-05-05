@@ -2397,7 +2397,7 @@ class AutoTrpgDmPlugin(Star):
                     components.append(ImageComponent.fromFileSystem(png_path))
                     self.plugin_logger.info("map_preview_attached path=%s", png_path)
                 else:
-                    components.append(Plain(text=f"\n地图已生成：{name}\n{file_path}"))
+                    components.append(Plain(text=f"\n地图已生成：{name}"))
         return event.chain_result(components)
 
     def _format_dice_check(self, item: dict) -> str:
