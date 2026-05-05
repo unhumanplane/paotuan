@@ -71,6 +71,9 @@ def test_render_overview_topology_svg_writes_visual_ref_and_pending_output():
 
     assert result["ok"] is True
     assert result["render_type"] == OVERVIEW_TOPOLOGY_RENDER_TYPE
+    assert result["map_revision"] == "1"
+    assert result["width"] == 900
+    assert result["height"] == 700
     assert result["visual_only"] is True
     assert result["pending_output"]["type"] == "svg_map"
     assert result["pending_output"]["render_type"] == OVERVIEW_TOPOLOGY_RENDER_TYPE

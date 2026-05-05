@@ -80,10 +80,11 @@ class OverviewTopologyRenderTools:
             self._audit("render_overview_topology_svg", locals_without_self(locals()), result)
             return result
 
+        source_map_id = _short_text(projected_record.get("id"), 120)
         payload = dict(topology_fact.get("payload") or {})
         cached_layout_revision = _merge_cached_layout_positions(
             session.maps,
-            _short_text(projected_record.get("id"), 120),
+            source_map_id,
             payload,
         )
         render_title = _render_title(
@@ -96,9 +97,9 @@ class OverviewTopologyRenderTools:
             **payload,
             "render_type": OVERVIEW_TOPOLOGY_RENDER_TYPE,
             "projection": MAP_VIEW_PLAYER,
-            "map_id": _short_text(projected_record.get("id"), 120),
+            "map_id": source_map_id,
             "title": render_title,
-            "map_revision": _short_text(projected_record.get("record_version") or "", 80),
+            "map_revision": _record_revision(session.maps, source_map_id),
             "layout_revision": _short_text(payload.get("layout_revision") or cached_layout_revision, 80),
             "display_profile": {
                 **dict(payload.get("display_profile") or {}),
@@ -159,9 +160,12 @@ class OverviewTopologyRenderTools:
             "render_type": OVERVIEW_TOPOLOGY_RENDER_TYPE,
             "map_id": render_input.map_id,
             "title": render_input.title,
+            "map_revision": render_input.map_revision,
             "file_path": str(path),
             "file_name": path.name,
             "svg_chars": len(svg),
+            "width": render_input.display.width,
+            "height": render_input.display.height,
             "send_to_chat": bool(send_to_chat),
             "visual_only": True,
             "render_ref": _json_safe(render_ref),
@@ -295,6 +299,13 @@ def _cached_positions_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(positions, dict):
         return {}
     return _json_safe(positions)
+
+
+def _record_revision(store: dict[str, Any], map_id: str) -> str:
+    record = get_map_record(store, map_id)
+    if not isinstance(record, dict):
+        return ""
+    return _short_text(record.get("record_version") or "", 80)
 
 
 def _render_title(
