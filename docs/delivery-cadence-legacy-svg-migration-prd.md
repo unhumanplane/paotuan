@@ -27,6 +27,40 @@ This PRD is for delivery cadence, deterministic-first map routing, legacy
 LLM-written SVG migration, and compatibility policy. It is not a renderer
 geometry or topology-layout PRD.
 
+## Implementation Status
+
+This branch implements the v1 delivery migration while keeping legacy cleanup
+deferred:
+
+- `core/map_delivery_cadence.py` owns the scene-level `_map_delivery_cadence`
+  state, trigger eligibility, duplicate suppression, legacy fallback decisions,
+  pending-output normalization, and old pending-output compatibility.
+- `core/map_tool_routing.py` and the tool registry expose deterministic map
+  renderers first for normal overview, strict, tactical, and route map requests.
+  `generate_map_svg` remains registered but is hidden from normal tool
+  selection unless the player explicitly asks for legacy/fallback/style
+  experiment or migration-only SVG output.
+- `render_strict_grid_svg` and `render_overview_topology_svg` enqueue map
+  delivery through the cadence helper while keeping their public Function
+  Calling schemas unchanged.
+- The normal DM pending-output pop path filters map delivery through the same
+  cadence policy before chat delivery, logs suppressed map sends, and clears the
+  queue afterward.
+- SVG-to-PNG preview conversion is still reused. If preview conversion fails,
+  player chat says the map was generated but does not print the local artifact
+  path.
+- Prompt projection drops `_pending_outputs`, `_map_delivery_cadence`,
+  `cadence_key`, local paths, raw SVG, layout details, and related internal
+  delivery metadata.
+- Old `svg_map` pending records without `render_type` are treated as legacy
+  visual-only delivery records. Old `last_map_svg` records remain safe
+  `type`/`title`/`name` references only.
+
+The task does not add a broad automatic background delivery service for every
+scene-transition path. V1 cadence is enforced at renderer enqueue and normal DM
+pending-output delivery boundaries; future auto-send orchestration should be a
+separate responsibility-based service if needed.
+
 ## Prerequisite Status
 
 | Prerequisite | Status | Evidence | Effect on this task |
@@ -86,20 +120,20 @@ policy, not renderer-specific layout logic.
 
 | Area | Current evidence | Migration impact |
 | --- | --- | --- |
-| Tool registry exposure | `tools/registry.py:332` registers `render_strict_grid_svg`; `tools/registry.py:350` registers `generate_map_svg`; `tools/registry.py:356` registers `render_overview_topology_svg`; `_with_llm_decided_tools()` still appends `generate_map_svg` at `tools/registry.py:627`. | Normal map requests need deterministic-first exposure. Legacy `generate_map_svg` should be hidden from normal tools except explicit fallback / migration modes. |
+| Tool registry exposure | `tools/registry.py` registers `render_strict_grid_svg`, `render_overview_topology_svg`, and `generate_map_svg`; `core/map_tool_routing.py` selects deterministic renderers for normal map requests and exposes `generate_map_svg` only for explicit legacy/fallback/style/migration requests. | Implemented deterministic-first exposure. Legacy `generate_map_svg` stays available but hidden from normal tools. |
 | Legacy `generate_map_svg` | `tools/map_tools.py:47` defines the tool, `tools/map_tools.py:101` calls `MAP_SYSTEM_PROMPT`, `tools/map_tools.py:121` sanitizes SVG, `tools/map_tools.py:156` writes `scene["last_map_svg"]`, and `tools/map_tools.py:158` appends `_pending_outputs`. | Keep as temporary visual-only fallback. Do not use as normal map routing when deterministic renderer output is available. |
-| Renderer tools | `tools/strict_grid_render_tools.py:54` projects `MAP_VIEW_PLAYER`, `tools/strict_grid_render_tools.py:72` adds `strict_grid_svg` render refs, and `tools/strict_grid_render_tools.py:82` emits pending `svg_map`; `tools/overview_topology_render_tools.py:58` projects `MAP_VIEW_PLAYER`, `tools/overview_topology_render_tools.py:133` adds render refs, and `tools/overview_topology_render_tools.py:142` emits pending `svg_map`. | Both renderer tools are valid delivery producers. Cadence should orchestrate when to call them, not change renderer cores. |
+| Renderer tools | `tools/strict_grid_render_tools.py` and `tools/overview_topology_render_tools.py` project `MAP_VIEW_PLAYER`, write visual-only render refs, and enqueue `svg_map` records through `enqueue_map_pending_output()`. | Both renderer tools are delivery producers under the shared cadence policy. Renderer cores still own drawing only. |
 | `scene["last_map_svg"]` | `core/prompts.py:251` projects it through `_project_map_ref`; `core/prompts.py:271` excludes raw `last_map_svg` from ordinary scene projection; `tools/map_tools.py:156` still writes it. | Keep old records as legacy visual references. Do not read it as topology, grid, coordinate, or delivery-cadence authority. Future cleanup can retire it after deterministic paths stabilize. |
-| `_pending_outputs` | `main.py:369` and `main.py:490` pop pending outputs for replies; `main.py:2668` defines `_pop_pending_outputs`; renderer tools and `map_tools.py` append to the scene list. | Reuse the queue shape for v1, but require explicit cadence state so rendering does not spam. Queue records remain delivery-only metadata. |
-| SVG/PNG preview conversion | `main.py:2389` only attaches pending records whose type is `svg_map`; `main.py:2394` calls `_ensure_png_preview`; `main.py:2448` renders PNG preview. | Reuse preview conversion. Harden fallback so player chat does not print local artifact paths if preview rendering fails. |
+| `_pending_outputs` | `main.py` pops pending outputs for replies, filters `svg_map` records through `filter_map_pending_outputs_for_delivery()`, then clears the queue. Renderer tools and `map_tools.py` append to the same scene list. | Queue shape is reused for v1. Map records remain delivery-only metadata and cadence state suppresses repeated automatic sends. |
+| SVG/PNG preview conversion | `main.py` attaches only `type: "svg_map"` records, calls `_ensure_png_preview()`, and renders best-effort PNG previews. | Preview conversion is reused. If conversion fails, player chat receives the map name but not the local artifact path. |
 | Chat send hooks | `main.py:370` sends fast replies with pending outputs; `main.py:505` sends completion replies with non-dice outputs; `main.py:637`, `main.py:1870`, and `main.py:2144` use direct `send_message` paths. | Cadence integration should target the normal DM result path first. Direct send paths need review before automatic map sends are added there. |
-| Prompt instructions | `core/prompts.py:776` already prefers overview deterministic rendering when structured overview topology exists; `core/prompts.py:1001` still prefers `generate_map_svg` for ordinary visual maps; `core/prompts.py:1006` repeats overview-first guidance. | Update prompts to deterministic-first across supported map families. Legacy fallback must be described as fallback, not normal SVG generation. |
+| Prompt instructions | `core/prompts.py` now instructs normal overview requests to prefer `render_overview_topology_svg`, normal strict/tactical requests to prefer `render_strict_grid_svg`, and `generate_map_svg` only as explicit fallback/style/migration output. | Prompt text matches deterministic-first routing; code still owns exposure and cadence. |
 | Audit output | `tools/map_tools.py:173`, `tools/strict_grid_render_tools.py:117`, and `tools/overview_topology_render_tools.py:176` audit tool results. | Keep audit records. Audit may include internal artifact metadata, but audit output must not become ordinary prompt/player fact input. |
-| Tests | Existing coverage includes `tests/test_tool_registry.py`, `tests/test_prompt_projection.py`, `tests/test_prompts.py`, `tests/test_strict_grid_render_tools.py`, `tests/test_overview_topology_render_tools.py`, and renderer unit tests. | Add tests for cadence state, deterministic-first routing, legacy fallback exposure, no local path chat leakage, old-record compatibility, and no SVG-to-fact writeback. |
-| Old-save/session records | Old sessions may contain `scene["last_map_svg"]`, stale `_pending_outputs`, legacy `battle.grid`, or render refs without `render_type`. | Do not migrate old sessions in place. Treat missing cadence state as empty v1 state, keep safe legacy refs visible only as render refs, and ignore or safely clear stale pending outputs when needed. |
+| Tests | Coverage now includes cadence unit tests, deterministic-first registry and prompt tests, renderer enqueue tests, prompt projection guards, chat preview fallback tests, and old `last_map_svg` / pending-output compatibility tests. | Keep these focused tests as the executable migration contract. Broader full-suite failures should be triaged separately from this delivery contract. |
+| Old-save/session records | Old sessions may contain `scene["last_map_svg"]`, stale `_pending_outputs`, legacy `battle.grid`, or render refs without `render_type`. | No in-place migration. Missing cadence state normalizes to empty v1 state, old `last_map_svg` projects only safe fields, and old pending `svg_map` records without `render_type` are treated as legacy visual-only delivery records. |
 | Player-view render outputs | `core/map_core.py:9` defines `MAP_VIEW_PLAYER`; `core/map_core.py:597` projects render refs to safe fields only; `core/prompt_projection.py:6` blocks prompt-unsafe keys such as `file_path`, `layout`, `layout_updates`, `raw_svg`, `svg`, and `url`. | Delivery must consume player-view renderer outputs. Internal paths are allowed only inside delivery metadata, not prompt facts. |
 | Legacy LLM-written SVG entrypoints | `MAP_SYSTEM_PROMPT` at `tools/map_tools.py:251` tells the SVG sub-agent to output complete SVG; `_build_map_prompt()` at `tools/map_tools.py:270` builds legacy prompt context. | Keep only inside explicit legacy fallback. Do not let normal deterministic routing call this path first. |
-| File size risk | `main.py` is 4435 lines, `map_tools.py` is 1322 lines, `registry.py` is 1298 lines, and `core/prompts.py` is 1267 lines. | Future implementation should add cohesive delivery/cadence logic in a responsibility-based module and keep edits to these files as narrow integration hooks. |
+| File size risk | `main.py`, `map_tools.py`, `registry.py`, and `core/prompts.py` are large integration files. | Cadence logic was added in `core/map_delivery_cadence.py`; edits to large files stay as narrow hooks. Future broad delivery orchestration should not expand `main.py` further. |
 
 ## Legacy SVG Entrypoint Matrix
 
@@ -112,11 +146,11 @@ policy, not renderer-specific layout logic.
 | `sanitize_svg()` | Sanitizes generated SVG before file write. | Reused where safe, especially for fallback and any future externally authored SVG. | Deterministic renderers emit safe SVG subsets, but sanitizer remains useful compatibility infrastructure. |
 | Legacy file writing in `map_tools.py` | Writes SVG artifacts for `generate_map_svg`. | Kept as fallback implementation; not used by deterministic renderers unless a shared helper is factored later. | Avoid making `map_tools.py` larger during cadence work. |
 | `scene["last_map_svg"]` | Legacy visual reference projected safely by prompts. | Intentionally unchanged for read compatibility; no new deterministic dependency. Later cleanup target. | Old sessions may contain it, but it is not map truth. |
-| Legacy `_pending_outputs` record with no `render_type` | Delivery queue item for old SVG maps. | Kept as delivery-only compatibility; not a fact source. | Old pending records and fallback output should still attach where safe. |
+| Legacy `_pending_outputs` record with no `render_type` | Delivery queue item for old SVG maps. | Treated as `legacy_generate_map_svg`, marked `visual_only`, and delivered through cadence as compatibility. | Old pending records and fallback output should still attach where safe without becoming map facts. |
 | `type: "svg_map"` delivery discriminator | Shared attachment compatibility key. | Intentionally reused. | Existing chat delivery and tests depend on it. Renderer identity should live in `render_type`. |
-| Plain local path fallback in chat | Current fallback when PNG preview fails. | Change during implementation to avoid exposing local paths to player chat. | Internal artifact paths are delivery metadata and should not be player-facing. |
-| Prompt rule that prefers `generate_map_svg` for ordinary maps | Normal map guidance for legacy behavior. | Update to deterministic-first; keep fallback wording only when deterministic rendering is unavailable or explicitly allowed. | Current text conflicts with the post-renderer migration goal. |
-| Registry default that appends `generate_map_svg` | Normal tool exposure fallback. | Replace with explicit routing/fallback policy. | The default keeps legacy SVG normal even after deterministic renderers exist. |
+| Plain local path fallback in chat | Former fallback when PNG preview failed. | Changed: fallback text includes the map name only, not the local artifact path. | Internal artifact paths are delivery metadata and should not be player-facing. |
+| Prompt rule that prefers `generate_map_svg` for ordinary maps | Legacy behavior before deterministic renderers were normal. | Updated to deterministic-first; fallback wording remains only for explicitly allowed legacy/fallback/style/migration use. | Prompt and registry now agree on the post-renderer migration goal. |
+| Registry default that appends `generate_map_svg` | Legacy normal exposure. | Replaced with explicit routing/fallback policy in `core/map_tool_routing.py`. | Normal map requests should not see LLM-written SVG as the first path. |
 | Audit records for legacy SVG | Tool audit of inputs/results. | Intentionally unchanged with projection guard; review for raw path export if audit is surfaced later. | Audit is useful for debugging but is not player/backend map authority. |
 | Old session `last_map_svg` / old render refs | Compatibility data from previous saves. | Intentionally unchanged; project only safe fields and ignore as renderer input. | Avoid in-place save migration for a delivery PR. |
 
@@ -177,20 +211,22 @@ hidden topology from narration or old SVG.
 
 ## Pending Output / Chat Delivery Plan
 
-V1 should reuse the existing `_pending_outputs` chat attachment channel:
+V1 reuses the existing `_pending_outputs` chat attachment channel:
 
 - Keep `type: "svg_map"` so current attachment code recognizes map artifacts.
 - Require `visual_only: true` for map delivery records.
 - Prefer `render_type: "strict_grid_svg"` or
   `render_type: "overview_topology_svg"` for deterministic outputs.
-- Allow legacy/no-`render_type` records only as compatibility fallback.
+- Allow legacy/no-`render_type` records only as compatibility fallback, normalized
+  to `legacy_generate_map_svg` and `visual_only`.
 - Keep `path` as internal delivery metadata and strip it from prompt/player
   projections.
 - Keep pending output length bounded.
-- Pop pending outputs after the DM result path consumes them.
+- Filter map pending outputs through cadence before the normal DM result path
+  delivers them, then clear the queue.
 
-Delivery cadence should decide whether to call a renderer; renderer tools should
-continue to decide how to enqueue their own pending output once called. If later
+Renderer tools decide how to enqueue their own pending output once called, but
+the shared cadence helper decides whether that enqueue is eligible. If later
 implementation needs auto-triggered sends without LLM tool calls, add a narrow
 delivery service that calls renderer functions/tools through code-owned
 contracts instead of reimplementing renderer logic in `main.py`.
@@ -204,6 +240,7 @@ simple SVG subsets.
 Required hardening:
 
 - If PNG conversion fails, do not print local file paths to player chat.
+  Implemented fallback text includes the map name only.
 - Log internal file paths for debugging instead of sending them as player text.
 - Keep attachment limits conservative, matching current `pending_outputs[:2]`.
 - Keep preview conversion best-effort; perfect rendering across every chat
@@ -238,7 +275,7 @@ Old sessions:
 
 ## This Task Adds
 
-Implementation after this PRD should add:
+This branch adds:
 
 - a code-owned delivery cadence policy and state contract;
 - deterministic-first map route selection for normal map requests;
@@ -246,6 +283,8 @@ Implementation after this PRD should add:
   deterministic-capable routes;
 - prompt guidance changes that describe deterministic renderers as the normal
   path and legacy SVG as fallback only;
+- renderer enqueue hooks that keep public tool schemas unchanged;
+- normal DM pending-output filtering through cadence;
 - chat delivery hardening so local artifact paths are not sent to players;
 - focused compatibility behavior for old `last_map_svg`, old pending outputs,
   and no-cadence-state sessions;
@@ -254,11 +293,12 @@ Implementation after this PRD should add:
 
 ## Conflicts / Tensions
 
-- The current registry still appends `generate_map_svg`, so legacy SVG remains
-  normal unless routing changes.
-- Current prompt hints still prefer `generate_map_svg` for ordinary visual map
-  requests.
-- Current chat fallback may print local file paths when PNG preview fails.
+- Registry and prompt routing have been migrated, but `generate_map_svg` still
+  exists as an explicit fallback/style/migration path and can still write
+  `last_map_svg`.
+- V1 enforces cadence at renderer enqueue and normal pending-output delivery
+  boundaries. It does not yet add automatic renderer calls for every possible
+  non-LLM scene transition or direct-send path.
 - `main.py`, `map_tools.py`, `registry.py`, and `core/prompts.py` are already
   large. Cadence logic should be introduced through a cohesive module and narrow
   integration hooks, not by adding large new blocks to those files.
@@ -422,8 +462,8 @@ git diff -- docs/delivery-cadence-legacy-svg-migration-prd.md
 Implementation verification should include targeted tests such as:
 
 ```bash
-python -m pytest -q tests/test_tool_registry.py tests/test_prompts.py tests/test_prompt_projection.py tests/test_strict_grid_render_tools.py tests/test_overview_topology_render_tools.py -p no:cacheprovider
-python -m pytest -q tests/test_dm_ack_and_outputs.py tests/test_long_running_reassurance.py -p no:cacheprovider
+python -m pytest -q tests/test_map_delivery_cadence.py tests/test_tool_registry.py tests/test_prompts.py tests/test_prompt_projection.py tests/test_strict_grid_render_tools.py tests/test_overview_topology_render_tools.py tests/test_dm_ack_and_outputs.py -p no:cacheprovider
+python -m pytest -q tests/test_long_running_reassurance.py -p no:cacheprovider
 python -m compileall -q astrbot_plugin_auto_trpg_dm tests
 git diff --check
 ```
