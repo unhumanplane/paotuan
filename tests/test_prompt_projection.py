@@ -48,6 +48,51 @@ def test_tool_results_projection_blocks_raw_hidden_and_backend_materials():
     assert "full rule package" not in rendered
 
 
+def test_strict_grid_renderer_tool_projection_keeps_metadata_without_paths_or_grid():
+    projected = project_tool_results_for_dm_prompt(
+        [
+            {
+                "tool": "render_strict_grid_svg",
+                "args": {
+                    "title": "北门战场",
+                    "metadata_path": "D:/runtime/maps/strict.svg.json",
+                },
+                "result": {
+                    "ok": True,
+                    "map_id": "strict-local-map",
+                    "title": "北门战场",
+                    "file_path": "D:/runtime/maps/strict.svg",
+                    "file_name": "strict.svg",
+                    "svg_chars": 4096,
+                    "send_to_chat": True,
+                    "visual_only": True,
+                    "render_ref": {
+                        "type": "strict_grid_svg",
+                        "title": "北门战场",
+                        "name": "strict.svg",
+                        "path": "D:/runtime/maps/strict.svg",
+                        "visual_only": True,
+                    },
+                    "grid": {"width": 12, "height": 12, "entities": {"hidden": {"x": 9, "y": 9}}},
+                    "raw_svg": "<svg>hidden</svg>",
+                },
+            }
+        ]
+    )
+
+    rendered = json.dumps(projected, ensure_ascii=False)
+
+    assert projected[0]["tool"] == "render_strict_grid_svg"
+    assert projected[0]["args"] == {"title": "北门战场"}
+    assert "strict_grid_svg" in rendered
+    assert "strict.svg" in rendered
+    assert "visual_only" in rendered
+    assert "D:/runtime" not in rendered
+    assert "hidden" not in rendered
+    assert "raw_svg" not in rendered
+    assert '"grid"' not in rendered
+
+
 def test_ra_summary_projection_keeps_counts_not_rejected_values():
     projected = project_ra_summary_for_dm_prompt(
         {

@@ -1,14 +1,18 @@
 import asyncio
+import json
 from pathlib import Path
 from uuid import uuid4
 
 from astrbot_plugin_auto_trpg_dm.core.map_core import (
     DEFAULT_STRICT_LOCAL_MAP_ID,
+    MAP_VIEW_PLAYER,
     MAP_TYPE_STRICT_LOCAL,
     get_map_record,
+    project_active_map_record,
     save_active_strict_grid,
 )
 from astrbot_plugin_auto_trpg_dm.core.models import GameSession
+from astrbot_plugin_auto_trpg_dm.core.prompt_projection import project_tool_results_for_dm_prompt
 from astrbot_plugin_auto_trpg_dm.storage.json_repository import JsonGameRepository
 from astrbot_plugin_auto_trpg_dm.tools.strict_grid_render_tools import StrictGridRenderTools
 
@@ -90,3 +94,68 @@ def test_render_strict_grid_svg_reports_missing_grid_without_legacy_fallback():
     result = asyncio.run(StrictGridRenderTools(repo, "group").render_strict_grid_svg())
 
     assert result == {"ok": False, "error": "strict_grid_not_found", "source": "none"}
+
+
+def test_render_strict_grid_svg_projection_blocks_delivery_paths_and_raw_grid():
+    repo = _repo("strict_render_projection")
+    session = GameSession.new("group")
+    save_active_strict_grid(
+        session.maps,
+        {
+            "width": 2,
+            "height": 2,
+            "cells": [{"x": 0, "y": 0, "terrain": "stone"}],
+            "entities": {"hero": {"name": "Hero", "x": 0, "y": 0}},
+        },
+        map_id=DEFAULT_STRICT_LOCAL_MAP_ID,
+        title="Projected battle grid",
+    )
+    repo.save_session(session)
+
+    result = asyncio.run(StrictGridRenderTools(repo, "group").render_strict_grid_svg())
+    projected = project_tool_results_for_dm_prompt(
+        [{"tool": "render_strict_grid_svg", "args": {"title": "Projected battle grid"}, "result": result}]
+    )
+    rendered = json.dumps(projected, ensure_ascii=False)
+
+    assert result["ok"] is True
+    assert "file_path" in result
+    assert "file_path" not in rendered
+    assert "maps" not in rendered
+    assert '"grid"' not in rendered
+    assert "raw_svg" not in rendered
+    assert result["file_name"] in rendered
+    saved = repo.load_session("group")
+    player_record = project_active_map_record(saved.maps, MAP_VIEW_PLAYER, strict=True)
+    if player_record is not None:
+        assert "path" not in str(player_record)
+        assert "grid" not in str(player_record)
+
+
+def test_render_strict_grid_svg_does_not_write_svg_back_to_map_facts_or_grid():
+    repo = _repo("strict_render_no_fact_writeback")
+    session = GameSession.new("group")
+    grid = {
+        "width": 2,
+        "height": 2,
+        "cells": [{"x": 0, "y": 0, "terrain": "stone"}],
+        "entities": {"hero": {"name": "Hero", "x": 0, "y": 0}},
+    }
+    save_active_strict_grid(
+        session.maps,
+        grid,
+        map_id=DEFAULT_STRICT_LOCAL_MAP_ID,
+        title="No writeback grid",
+    )
+    repo.save_session(session)
+
+    before = get_map_record(repo.load_session("group").maps, DEFAULT_STRICT_LOCAL_MAP_ID)
+    result = asyncio.run(StrictGridRenderTools(repo, "group").render_strict_grid_svg())
+    after = get_map_record(repo.load_session("group").maps, DEFAULT_STRICT_LOCAL_MAP_ID)
+
+    assert result["ok"] is True
+    assert after["grid"] == before["grid"]
+    assert after["facts"] == before["facts"]
+    assert len(after["render_refs"]) == len(before["render_refs"]) + 1
+    assert "svg" not in after["grid"]
+    assert "raw_svg" not in str(after)
