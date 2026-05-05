@@ -575,7 +575,7 @@ def _fit_label(value: str, limit: int) -> str:
 
 
 def _svg_num(value: float) -> str:
-    rounded = round(value, 2)
+    rounded = round(float(value), 2)
     return str(int(rounded)) if rounded.is_integer() else f"{rounded:.2f}"
 
 
