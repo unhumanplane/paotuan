@@ -39,7 +39,7 @@ from .tools.registry import ToolRegistry
 from .tools.turn_tools import TurnTools
 
 
-PLUGIN_VERSION = "0.1.89"
+PLUGIN_VERSION = "0.1.90"
 
 DEFAULT_REASSURANCE_PHRASES = (
     "正在翻找合适的骰子。",
@@ -326,11 +326,11 @@ class AutoTrpgDmPlugin(Star):
             yield result
 
     async def _handle_dm_command_content(self, event: AstrMessageEvent, content: GreedyStr):
-        routed_message = self._routed_message_from_command_content(content)
+        routed_message = self._routed_message_from_command_content(content, event=event)
         async for result in self._handle_dm_event(event, routed_message):
             yield result
 
-    def _routed_message_from_command_content(self, content: Any) -> str:
+    def _routed_message_from_command_content(self, content: Any, event: AstrMessageEvent | None = None) -> str:
         if isinstance(content, str):
             routed_message = content.strip()
         elif content is None:
@@ -339,6 +339,8 @@ class AutoTrpgDmPlugin(Star):
             routed_message = str(content or "").strip()
             if routed_message == "GreedyStr":
                 routed_message = ""
+        if routed_message == "GreedyStr" and _event_has_empty_dm_command(event):
+            routed_message = ""
         if not routed_message:
             return "查看当前跑团状态；如果还没有开局，请询问玩家想跑什么类型的团。"
         return routed_message
@@ -3932,6 +3934,14 @@ def _looks_like_player_roster_request(text: str) -> bool:
     roster_terms = ("玩家", "成员", "登记", "加入", "绑定", "角色")
     query_terms = ("哪些", "列表", "一览", "当前", "现在", "所有", "全部", "谁", "有没有")
     return any(term in normalized for term in roster_terms) and any(term in normalized for term in query_terms)
+
+
+def _event_has_empty_dm_command(event: AstrMessageEvent | None) -> bool:
+    message = str(getattr(event, "message_str", "") or "").strip()
+    if not message:
+        return False
+    normalized = message.replace("\u3000", " ")
+    return bool(re.fullmatch(r"/[dD][mM]\s*", normalized))
 
 
 def _is_legacy_generic_character_id(character_id: str) -> bool:
