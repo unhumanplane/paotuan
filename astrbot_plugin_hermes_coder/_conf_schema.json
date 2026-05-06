@@ -46,6 +46,18 @@
     "hint": "3500",
     "default": 3500
   },
+  "ack_enabled": {
+    "description": "是否在 /coder 长任务开始时立即发送一条接收回执。",
+    "type": "bool",
+    "hint": "true",
+    "default": true
+  },
+  "ack_text": {
+    "description": "/coder 请求接收回执文本。",
+    "type": "string",
+    "hint": "Hermes 已收到 /coder 请求，开始处理。长任务可能需要几分钟。",
+    "default": "Hermes 已收到 /coder 请求，开始处理。长任务可能需要几分钟。"
+  },
   "log_enabled": {
     "description": "是否启用 /coder 独立文件日志。日志只记录请求元信息、耗时和错误，不记录密钥或完整 prompt。",
     "type": "bool",

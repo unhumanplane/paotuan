@@ -14,7 +14,10 @@ from typing import Any
 
 from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent, filter
+from astrbot.api.event.filter import regex
 from astrbot.api.star import Context, Star, register
+from astrbot.core.message.components import Plain
+from astrbot.core.message.message_event_result import MessageChain
 from astrbot.core.star.filter.command import GreedyStr
 from astrbot.core.utils.astrbot_path import get_astrbot_data_path
 
@@ -26,6 +29,7 @@ DEFAULT_MAX_PROMPT_CHARS = 4000
 DEFAULT_MAX_REPLY_CHARS = 3500
 DEFAULT_LOG_MAX_BYTES = 1_000_000
 DEFAULT_LOG_BACKUP_COUNT = 3
+DEFAULT_ACK_TEXT = "Hermes 已收到 /coder 请求，开始处理。长任务可能需要几分钟。"
 CODER_LOGGER_NAME = "astrbot_plugin_hermes_coder.private"
 
 
@@ -86,6 +90,8 @@ class HermesCoderPlugin(Star):
         self.timeout_seconds = max(5, self._config_int("timeout_seconds", DEFAULT_TIMEOUT_SECONDS))
         self.max_prompt_chars = max(100, self._config_int("max_prompt_chars", DEFAULT_MAX_PROMPT_CHARS))
         self.max_reply_chars = max(500, self._config_int("max_reply_chars", DEFAULT_MAX_REPLY_CHARS))
+        self.ack_enabled = self._config_bool("ack_enabled", True)
+        self.ack_text = self._config_str("ack_text", DEFAULT_ACK_TEXT)
         self.log_enabled = self._config_bool("log_enabled", True)
         self.log_max_bytes = max(10_000, self._config_int("log_max_bytes", DEFAULT_LOG_MAX_BYTES))
         self.log_backup_count = max(1, self._config_int("log_backup_count", DEFAULT_LOG_BACKUP_COUNT))
@@ -115,6 +121,20 @@ class HermesCoderPlugin(Star):
 
     @filter.command("Coder")
     async def on_coder_command_title(self, event: AstrMessageEvent, content: GreedyStr):
+        async for result in self._handle_coder(event, content):
+            yield result
+
+    @regex(r"^[\\/／]coder(?=\S)")
+    async def on_coder_regex_fallback(self, event: AstrMessageEvent):
+        content = self._prompt_from_raw_message(event.get_message_str())
+        self.coder_logger.info(
+            "regex_fallback_matched group=%s sender=%s message=%s raw_chars=%s prompt_chars=%s",
+            self._event_group_id(event),
+            self._safe_call(event, "get_sender_id"),
+            str(getattr(getattr(event, "message_obj", None), "message_id", "") or ""),
+            len(event.get_message_str() or ""),
+            len(content),
+        )
         async for result in self._handle_coder(event, content):
             yield result
 
@@ -180,6 +200,7 @@ class HermesCoderPlugin(Star):
             payload.get("message_id") or "",
             len(prompt),
         )
+        await self._send_immediate_ack(event, payload)
         try:
             response = await asyncio.wait_for(
                 asyncio.to_thread(self._post_bridge, payload),
@@ -228,6 +249,54 @@ class HermesCoderPlugin(Star):
         )
         yield event.plain_result(text)
         event.stop_event()
+
+    async def _send_immediate_ack(self, event: AstrMessageEvent, payload: dict[str, Any]) -> None:
+        if not self.ack_enabled:
+            self.coder_logger.info(
+                "request_ack_skipped reason=disabled group=%s sender=%s message=%s",
+                payload.get("group_id") or "(private)",
+                payload.get("sender_id") or "",
+                payload.get("message_id") or "",
+            )
+            return
+        session_id = str(payload.get("session_id") or getattr(event, "unified_msg_origin", "") or "")
+        if not session_id:
+            self.coder_logger.info(
+                "request_ack_skipped reason=missing_session group=%s sender=%s message=%s",
+                payload.get("group_id") or "(private)",
+                payload.get("sender_id") or "",
+                payload.get("message_id") or "",
+            )
+            return
+        send_message = getattr(self.context, "send_message", None)
+        if not callable(send_message):
+            self.coder_logger.info(
+                "request_ack_skipped reason=missing_send_message group=%s sender=%s message=%s",
+                payload.get("group_id") or "(private)",
+                payload.get("sender_id") or "",
+                payload.get("message_id") or "",
+            )
+            return
+        text = self.ack_text.strip() or DEFAULT_ACK_TEXT
+        try:
+            await send_message(session_id, MessageChain([Plain(text)]))
+        except Exception as exc:
+            self.coder_logger.warning(
+                "request_ack_failed group=%s sender=%s message=%s error=%s",
+                payload.get("group_id") or "(private)",
+                payload.get("sender_id") or "",
+                payload.get("message_id") or "",
+                self._safe_error(exc),
+            )
+            return
+        self.coder_logger.info(
+            "request_ack_sent group=%s sender=%s session=%s message=%s text_chars=%s",
+            payload.get("group_id") or "(private)",
+            payload.get("sender_id") or "",
+            session_id,
+            payload.get("message_id") or "",
+            len(text),
+        )
 
     def _init_coder_logger(self) -> logging.Logger:
         if not self.log_enabled:
@@ -292,6 +361,14 @@ class HermesCoderPlugin(Star):
         if text == "GreedyStr":
             return ""
         return text
+
+    @staticmethod
+    def _prompt_from_raw_message(message: Any) -> str:
+        text = str(message or "").strip()
+        for prefix in ("/coder", "／coder", "\\coder"):
+            if text.lower().startswith(prefix):
+                return text[len(prefix) :].strip()
+        return ""
 
     def _event_group_id(self, event: AstrMessageEvent) -> str:
         group_id = self._safe_call(event, "get_group_id")

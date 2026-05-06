@@ -1,3 +1,4 @@
+import asyncio
 import hashlib
 import hmac
 import json
@@ -12,9 +13,13 @@ def _install_fake_astrbot_modules():
     astrbot = types.ModuleType("astrbot")
     api = types.ModuleType("astrbot.api")
     event = types.ModuleType("astrbot.api.event")
+    event_filter = types.ModuleType("astrbot.api.event.filter")
     star = types.ModuleType("astrbot.api.star")
     core = types.ModuleType("astrbot.core")
     core_utils = types.ModuleType("astrbot.core.utils")
+    message = types.ModuleType("astrbot.core.message")
+    components = types.ModuleType("astrbot.core.message.components")
+    message_event_result = types.ModuleType("astrbot.core.message.message_event_result")
     astrbot_path = types.ModuleType("astrbot.core.utils.astrbot_path")
     core_star = types.ModuleType("astrbot.core.star")
     filter_pkg = types.ModuleType("astrbot.core.star.filter")
@@ -41,25 +46,40 @@ def _install_fake_astrbot_modules():
     class GreedyStr(str):
         pass
 
+    class Plain:
+        def __init__(self, text=""):
+            self.text = text
+
+    class MessageChain:
+        def __init__(self, chain=None):
+            self.chain = chain or []
+
     def get_astrbot_data_path():
         return "."
 
     api.logger = FakeLogger()
     event.AstrMessageEvent = object
     event.filter = FakeFilter
+    event_filter.regex = lambda *args, **kwargs: (lambda fn: fn)
     star.Context = object
     star.Star = FakeStar
     star.register = register
     astrbot_path.get_astrbot_data_path = get_astrbot_data_path
     command.GreedyStr = GreedyStr
+    components.Plain = Plain
+    message_event_result.MessageChain = MessageChain
 
     for name, module in {
         "astrbot": astrbot,
         "astrbot.api": api,
         "astrbot.api.event": event,
+        "astrbot.api.event.filter": event_filter,
         "astrbot.api.star": star,
         "astrbot.core": core,
         "astrbot.core.utils": core_utils,
+        "astrbot.core.message": message,
+        "astrbot.core.message.components": components,
+        "astrbot.core.message.message_event_result": message_event_result,
         "astrbot.core.utils.astrbot_path": astrbot_path,
         "astrbot.core.star": core_star,
         "astrbot.core.star.filter": filter_pkg,
@@ -73,6 +93,14 @@ _install_fake_astrbot_modules()
 from astrbot_plugin_hermes_coder.main import HermesCoderPlugin
 from astrbot_plugin_hermes_coder.main import configure_coder_logging
 
+
+class FakeContext:
+    def __init__(self):
+        self.sent = []
+
+    async def send_message(self, session_id, chain):
+        self.sent.append((session_id, chain))
+        return True
 
 class FakeEvent:
     unified_msg_origin = "aiocqhttp:GroupMessage:676453921"
@@ -109,6 +137,12 @@ def test_empty_greedystr_sentinel_is_usage_prompt():
 
     assert HermesCoderPlugin._prompt_from_command_content(GreedyStrSentinel()) == ""
     assert HermesCoderPlugin._prompt_from_command_content("GreedyStr") == "GreedyStr"
+
+
+def test_raw_coder_prefix_extracts_prompt_without_space():
+    assert HermesCoderPlugin._prompt_from_raw_message("/coder 审查 PR") == "审查 PR"
+    assert HermesCoderPlugin._prompt_from_raw_message("/coder审查 PR") == "审查 PR"
+    assert HermesCoderPlugin._prompt_from_raw_message("／coder 审查 PR") == "审查 PR"
 
 
 def test_bridge_signature_uses_compact_json(monkeypatch):
@@ -158,3 +192,29 @@ def test_configure_coder_logging_writes_independent_file(tmp_path):
     assert "request_started group=1101538762 prompt_chars=2" in text
     assert plugin_logger.propagate is False
     assert any(isinstance(handler, logging.Handler) for handler in plugin_logger.handlers)
+
+
+def test_immediate_ack_uses_context_send_message():
+    async def run_case():
+        context = FakeContext()
+        plugin = HermesCoderPlugin.__new__(HermesCoderPlugin)
+        plugin.context = context
+        plugin.ack_enabled = True
+        plugin.ack_text = "处理中"
+        plugin.coder_logger = logging.getLogger("test-hermes-coder-ack")
+
+        payload = {
+            "group_id": "676453921",
+            "sender_id": "1903948152",
+            "session_id": "aiocqhttp:GroupMessage:676453921",
+            "message_id": "msg1",
+        }
+
+        await plugin._send_immediate_ack(FakeEvent(), payload)
+
+        assert len(context.sent) == 1
+        session_id, chain = context.sent[0]
+        assert session_id == "aiocqhttp:GroupMessage:676453921"
+        assert "".join(getattr(item, "text", "") for item in chain.chain) == "处理中"
+
+    asyncio.run(run_case())
