@@ -11,6 +11,10 @@ from astrbot_plugin_auto_trpg_dm.core.map_core import (
     project_active_map_record,
     save_active_strict_grid,
 )
+from astrbot_plugin_auto_trpg_dm.core.map_delivery_cadence import (
+    MAP_DELIVERY_TRIGGER_COMBAT_ROUND,
+    MAP_DELIVERY_TRIGGER_PLAYER_REQUEST,
+)
 from astrbot_plugin_auto_trpg_dm.core.models import GameSession
 from astrbot_plugin_auto_trpg_dm.core.prompt_projection import project_tool_results_for_dm_prompt
 from astrbot_plugin_auto_trpg_dm.storage.json_repository import JsonGameRepository
@@ -60,6 +64,50 @@ def test_render_strict_grid_svg_writes_visual_artifact_and_render_ref():
     assert record["render_refs"][0]["path"] == result["file_path"]
     assert saved.scene["_pending_outputs"][0]["type"] == "svg_map"
     assert saved.scene["_pending_outputs"][0]["render_type"] == "strict_grid_svg"
+    assert saved.scene["_pending_outputs"][0]["delivery_trigger"] == MAP_DELIVERY_TRIGGER_PLAYER_REQUEST
+    assert result["delivery"]["reason"] == "eligible"
+
+
+def test_render_strict_grid_svg_applies_cadence_before_enqueueing_auto_round():
+    repo = _repo("strict_render_cadence")
+    session = GameSession.new("group")
+    session.world_tags["_background_ready"] = True
+    save_active_strict_grid(
+        session.maps,
+        {
+            "width": 3,
+            "height": 3,
+            "cells": [],
+            "entities": {"hero": {"name": "Hero", "x": 1, "y": 1, "visibility": "player"}},
+        },
+        map_id=DEFAULT_STRICT_LOCAL_MAP_ID,
+        title="Round map",
+    )
+    repo.save_session(session)
+    tools = StrictGridRenderTools(repo, "group")
+
+    first = asyncio.run(
+        tools.render_strict_grid_svg(
+            title="Round map",
+            delivery_trigger=MAP_DELIVERY_TRIGGER_COMBAT_ROUND,
+            combat_id="combat-1",
+            round_number=5,
+        )
+    )
+    second = asyncio.run(
+        tools.render_strict_grid_svg(
+            title="Round map",
+            delivery_trigger=MAP_DELIVERY_TRIGGER_COMBAT_ROUND,
+            combat_id="combat-1",
+            round_number=5,
+        )
+    )
+
+    saved = repo.load_session("group")
+    assert first["delivery"]["should_send"] is True
+    assert second["delivery"]["should_send"] is False
+    assert second["delivery"]["reason"] == "duplicate_suppressed"
+    assert len(saved.scene["_pending_outputs"]) == 1
 
 
 def test_render_strict_grid_svg_migrates_legacy_grid_without_llm_or_generate_map_svg():

@@ -9,6 +9,10 @@ from astrbot_plugin_auto_trpg_dm.core.map_core import (
     create_map_record,
     get_map_record,
 )
+from astrbot_plugin_auto_trpg_dm.core.map_delivery_cadence import (
+    MAP_DELIVERY_TRIGGER_OVERVIEW_TRANSITION,
+    MAP_DELIVERY_TRIGGER_PLAYER_REQUEST,
+)
 from astrbot_plugin_auto_trpg_dm.core.models import GameSession
 from astrbot_plugin_auto_trpg_dm.rendering.overview_topology import OVERVIEW_TOPOLOGY_RENDER_TYPE
 from astrbot_plugin_auto_trpg_dm.storage.json_repository import JsonGameRepository
@@ -99,6 +103,35 @@ def test_render_overview_topology_svg_writes_visual_ref_and_pending_output():
     assert record["render_refs"][-1]["visual_only"] is True
     assert saved.scene["_pending_outputs"][-1]["type"] == "svg_map"
     assert saved.scene["_pending_outputs"][-1]["render_type"] == OVERVIEW_TOPOLOGY_RENDER_TYPE
+    assert saved.scene["_pending_outputs"][-1]["delivery_trigger"] == MAP_DELIVERY_TRIGGER_PLAYER_REQUEST
+    assert result["delivery"]["reason"] == "eligible"
+
+
+def test_render_overview_topology_svg_applies_cadence_before_enqueueing_transition():
+    root = _runtime_root("overview-render-tools-cadence")
+    repository = _repository_with_overview_topology(root)
+    tools = OverviewTopologyRenderTools(repository, "group")
+
+    first = asyncio.run(
+        tools.render_overview_topology_svg(
+            send_to_chat=True,
+            delivery_trigger=MAP_DELIVERY_TRIGGER_OVERVIEW_TRANSITION,
+            trigger_id="scene:gate-to-market",
+        )
+    )
+    second = asyncio.run(
+        tools.render_overview_topology_svg(
+            send_to_chat=True,
+            delivery_trigger=MAP_DELIVERY_TRIGGER_OVERVIEW_TRANSITION,
+            trigger_id="scene:gate-to-market",
+        )
+    )
+
+    saved = repository.load_session("group")
+    assert first["delivery"]["should_send"] is True
+    assert second["delivery"]["should_send"] is False
+    assert second["delivery"]["reason"] == "duplicate_suppressed"
+    assert len(saved.scene["_pending_outputs"]) == 1
 
 
 def test_render_overview_topology_svg_reuses_layout_cache_without_rewriting_facts():

@@ -116,6 +116,10 @@ def test_overview_topology_render_projection_blocks_paths_svg_and_hidden_layout(
                     "pending_output": {
                         "type": "svg_map",
                         "render_type": "overview_topology_svg",
+                        "preferred_render_type": "overview_topology_svg",
+                        "delivery_trigger": "overview_transition",
+                        "delivery_reason": "eligible",
+                        "cadence_key": "internal-cadence-key",
                         "title": "北门概览",
                         "name": "overview.svg",
                         "path": "D:/runtime/maps/overview.svg",
@@ -148,6 +152,8 @@ def test_overview_topology_render_projection_blocks_paths_svg_and_hidden_layout(
     assert "overview_topology_svg" in rendered
     assert "北门通往旧集市" in rendered
     assert "D:/runtime" not in rendered
+    assert "internal-cadence-key" not in rendered
+    assert "cadence_key" not in rendered
     assert "<svg" not in rendered
     assert "secret coordinates" not in rendered
     assert "hidden-room" not in rendered

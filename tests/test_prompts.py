@@ -51,8 +51,10 @@ def test_system_prompt_prefers_overview_topology_renderer_before_llm_svg_fallbac
     )
 
     assert "优先调用 render_overview_topology_svg" in prompt
+    assert "优先调用 render_strict_grid_svg" in prompt
     assert "不调用 LLM 写 SVG/XML" in prompt
-    assert "再调用 generate_map_svg" in prompt
+    assert "才退回 generate_map_svg" in prompt
+    assert "不要把普通地图请求直接交给 LLM 写 SVG" in prompt
 
 
 def test_user_prompt_routes_overview_map_requests_to_deterministic_renderer_hint():
@@ -63,7 +65,9 @@ def test_user_prompt_routes_overview_map_requests_to_deterministic_renderer_hint
     assert "overview_topology_missing" in overview_prompt
     assert "不要让 LLM 直接根据隐藏事实写 topology SVG" in overview_prompt
     assert "优先调用 generate_map_svg" not in overview_prompt
-    assert "优先调用 generate_map_svg" in tactical_prompt
+    assert "优先调用 render_strict_grid_svg" in tactical_prompt
+    assert "strict_grid_not_found" in tactical_prompt
+    assert "优先调用 generate_map_svg" not in tactical_prompt
     assert "render_overview_topology_svg" not in tactical_prompt
 
 
@@ -312,7 +316,23 @@ def test_prompt_snapshot_projection_applies_without_mutating_session():
     session.scene["location"] = {"name": "Gatehouse courtyard", "zones": ["gate", "stairs"]}
     session.scene["npcs"] = [{"name": "Watch captain", "stance": "hostile but wounded"}]
     session.scene["clues"] = ["A fresh boot print points toward the cistern."]
+    session.scene["last_map_svg"] = {
+        "type": "svg_map",
+        "title": "Gate fight",
+        "name": "gate.svg",
+        "path": "/internal/path/should/not/matter/in/projection",
+    }
     session.scene["ambient_image_state"] = {"large_internal_counter": "x" * 200}
+    session.scene["_map_delivery_cadence"] = {
+        "schema_version": 1,
+        "sent": {
+            "internal": {
+                "render_type": "strict_grid_svg",
+                "map_id": "strict-local-map",
+                "trigger": "combat_round",
+            }
+        },
+    }
     session.scene["_recent_narrative_events"] = [
         {
             "at": f"t-{index}",
@@ -379,6 +399,13 @@ def test_prompt_snapshot_projection_applies_without_mutating_session():
     assert projected_snapshot["scene"]["location"]["name"] == "Gatehouse courtyard"
     assert projected_snapshot["scene"]["npcs"][0]["name"] == "Watch captain"
     assert "ambient_image_state" not in projected_snapshot["scene"]
+    assert "_map_delivery_cadence" not in projected_snapshot["scene"]
+    assert projected_snapshot["scene"]["last_map_svg"] == {
+        "type": "svg_map",
+        "title": "Gate fight",
+        "name": "gate.svg",
+    }
+    assert "/internal/path" not in str(projected_snapshot["scene"])
     assert session.compact_snapshot() == original_snapshot
 
 

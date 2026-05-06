@@ -7,6 +7,12 @@ from typing import Any, Dict
 
 from pydantic import BaseModel, Field
 
+from ..core.map_delivery_cadence import (
+    MAP_DELIVERY_TRIGGER_PLAYER_REQUEST,
+    MAP_RENDER_STRICT_GRID,
+    MapDeliveryRequest,
+    enqueue_map_pending_output,
+)
 from ..core.map_core import (
     MAP_TYPE_STRICT_LOCAL,
     MAP_VIEW_PLAYER,
@@ -30,7 +36,15 @@ class StrictGridRenderTools:
         self.session_id = session_id
         self.actor = actor or {}
 
-    async def render_strict_grid_svg(self, title: str = "", send_to_chat: bool = True) -> Dict[str, Any]:
+    async def render_strict_grid_svg(
+        self,
+        title: str = "",
+        send_to_chat: bool = True,
+        delivery_trigger: str = MAP_DELIVERY_TRIGGER_PLAYER_REQUEST,
+        trigger_id: str = "",
+        combat_id: str = "",
+        round_number: int = 0,
+    ) -> Dict[str, Any]:
         session = self.repository.load_session(self.session_id)
         loaded = load_active_strict_grid(session.maps, session.battle or {})
         if loaded.get("source") == "legacy_battle_grid":
@@ -91,16 +105,29 @@ class StrictGridRenderTools:
             "height": render_input.height,
             "visual_only": True,
         }
+        delivery_decision = None
         if send_to_chat:
-            pending = list(session.scene.get("_pending_outputs") or [])
-            pending.append(map_record)
-            session.scene["_pending_outputs"] = pending[-3:]
+            delivery_decision, _state = enqueue_map_pending_output(
+                session.scene,
+                map_record,
+                MapDeliveryRequest(
+                    trigger=delivery_trigger,
+                    render_type=MAP_RENDER_STRICT_GRID,
+                    map_id=map_id,
+                    map_revision=str(record.get("record_version") or ""),
+                    trigger_id=trigger_id,
+                    combat_id=combat_id,
+                    round_number=round_number,
+                ),
+            )
         self.repository.save_session(session)
 
         result = {
             "ok": True,
             "map_id": map_id,
+            "render_type": MAP_RENDER_STRICT_GRID,
             "title": envelope["title"],
+            "map_revision": str(record.get("record_version") or ""),
             "file_path": str(path),
             "file_name": path.name,
             "svg_chars": len(svg),
@@ -114,6 +141,8 @@ class StrictGridRenderTools:
             },
             "message": "Strict grid SVG rendered from player-view structured coordinates.",
         }
+        if delivery_decision is not None:
+            result["delivery"] = _json_safe(delivery_decision.__dict__)
         self._audit("render_strict_grid_svg", {"title": title, "send_to_chat": send_to_chat}, result)
         return result
 

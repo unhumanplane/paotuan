@@ -7,6 +7,11 @@ from typing import Any, Dict
 
 from pydantic import BaseModel, Field
 
+from ..core.map_delivery_cadence import (
+    MAP_DELIVERY_TRIGGER_PLAYER_REQUEST,
+    MapDeliveryRequest,
+    enqueue_map_pending_output,
+)
 from ..core.map_core import (
     MAP_VIEW_PLAYER,
     add_render_ref,
@@ -51,6 +56,8 @@ class OverviewTopologyRenderTools:
         map_id: str = "",
         title: str = "",
         send_to_chat: bool = True,
+        delivery_trigger: str = MAP_DELIVERY_TRIGGER_PLAYER_REQUEST,
+        trigger_id: str = "",
         width: int = 900,
         height: int = 700,
     ) -> Dict[str, Any]:
@@ -145,14 +152,27 @@ class OverviewTopologyRenderTools:
             "title": render_input.title,
             "name": path.name,
             "path": str(path),
+            "map_id": render_input.map_id,
+            "map_revision": render_input.map_revision,
+            "layout_revision": layout_updates.get("layout_revision", "") or render_input.layout_revision,
             "width": render_input.display.width,
             "height": render_input.display.height,
             "visual_only": True,
         }
+        delivery_decision = None
         if send_to_chat:
-            pending = list(latest_session.scene.get("_pending_outputs") or [])
-            pending.append(pending_output)
-            latest_session.scene["_pending_outputs"] = pending[-3:]
+            delivery_decision, _state = enqueue_map_pending_output(
+                latest_session.scene,
+                pending_output,
+                MapDeliveryRequest(
+                    trigger=delivery_trigger,
+                    render_type=OVERVIEW_TOPOLOGY_RENDER_TYPE,
+                    map_id=render_input.map_id,
+                    map_revision=render_input.map_revision,
+                    layout_revision=layout_updates.get("layout_revision", "") or render_input.layout_revision,
+                    trigger_id=trigger_id,
+                ),
+            )
         self.repository.save_session(latest_session)
 
         result = {
@@ -173,6 +193,8 @@ class OverviewTopologyRenderTools:
             "layout_revision": layout_updates.get("layout_revision", "") or render_input.layout_revision,
             "layout_updates": _json_safe(layout_updates),
         }
+        if delivery_decision is not None:
+            result["delivery"] = _json_safe(delivery_decision.__dict__)
         self._audit("render_overview_topology_svg", locals_without_self(locals()), result)
         return result
 
