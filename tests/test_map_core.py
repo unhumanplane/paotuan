@@ -27,6 +27,7 @@ from astrbot_plugin_auto_trpg_dm.core.map_core import (
     get_strict_map_lifecycle,
     get_map_record,
     load_active_strict_grid,
+    load_active_strict_grid_entities,
     migrate_legacy_battle_grid,
     normalize_map_store,
     project_active_map_record,
@@ -445,6 +446,21 @@ def test_load_active_strict_grid_falls_back_to_legacy_battle_grid():
     assert loaded["source"] == "legacy_battle_grid"
     assert loaded["grid"] == legacy_grid
     assert loaded["migration_required"] is True
+
+
+def test_load_active_strict_grid_entities_uses_same_map_store_precedence():
+    store = default_map_store()
+    strict_grid = {"width": 3, "height": 3, "cells": [], "entities": {"pc": {"x": 1, "y": 1}}}
+    legacy_battle = {
+        "active": True,
+        "grid": {"width": 9, "height": 9, "cells": [], "entities": {"legacy": {"x": 8, "y": 8}}},
+    }
+    save_active_strict_grid(store, strict_grid, map_id="strict-room")
+
+    entities = load_active_strict_grid_entities(store, legacy_battle)
+
+    assert entities == {"pc": {"x": 1, "y": 1}}
+    assert "legacy" not in entities
 
 
 def test_migrate_legacy_battle_grid_wraps_grid_with_auditable_metadata():

@@ -49,6 +49,7 @@ def _install_fake_astrbot_modules():
 _install_fake_astrbot_modules()
 
 from astrbot_plugin_auto_trpg_dm.core.ambient_image import AmbientImageConfig
+from astrbot_plugin_auto_trpg_dm.core.map_core import DEFAULT_STRICT_LOCAL_MAP_ID, save_active_strict_grid
 from astrbot_plugin_auto_trpg_dm.core.models import GameMode, GameSession
 from astrbot_plugin_auto_trpg_dm.core.router import IntentRouter, _extract_llm_usage_summary
 
@@ -287,6 +288,79 @@ def test_router_projects_tool_results_before_returning_to_dm_context():
     assert "D:/runtime" not in tool_context
     assert "example.invalid" not in tool_context
     assert "debug trace" not in tool_context
+
+
+def test_router_turn_auto_advance_uses_map_store_owner_over_stale_battle_grid():
+    repository = InMemoryRepository()
+    session = GameSession.new("group-1")
+    save_active_strict_grid(
+        session.maps,
+        {
+            "width": 6,
+            "height": 6,
+            "cells": [],
+            "entities": {
+                "pc_owner": {
+                    "id": "pc_owner",
+                    "name": "MapStore Owner",
+                    "x": 1,
+                    "y": 1,
+                    "faction": "party",
+                    "tags": {"player_id": "u-1"},
+                }
+            },
+        },
+        map_id=DEFAULT_STRICT_LOCAL_MAP_ID,
+    )
+    session.battle = {
+        "active": True,
+        "map_id": DEFAULT_STRICT_LOCAL_MAP_ID,
+        "turn_entity_id": "pc_owner",
+        "grid": {
+            "width": 6,
+            "height": 6,
+            "cells": [],
+            "entities": {
+                "pc_owner": {
+                    "id": "pc_owner",
+                    "name": "Stale Mirror Owner",
+                    "x": 4,
+                    "y": 4,
+                    "tags": {"player_id": "other"},
+                }
+            },
+        },
+        "turn": {
+            "active": True,
+            "round": 1,
+            "phase": "character_turn",
+            "turn_order": ["pc_owner"],
+            "current_index": 0,
+            "current_entity_id": "pc_owner",
+            "output_limit_chars": 1440,
+            "actions_this_round": {},
+        },
+    }
+    repository.save_session(session)
+    router = IntentRouter.__new__(IntentRouter)
+    router.repository = repository
+
+    result = asyncio.run(
+        router._maybe_auto_advance_resolved_turn(
+            session,
+            {"player_id": "u-1"},
+            "我攻击敌人",
+            "攻击成功，敌人踉跄后退。",
+            "group-1",
+        )
+    )
+
+    assert result["ok"] is True
+    assert result["from_entity_id"] == "pc_owner"
+    saved = repository.load_session("group-1")
+    summary = saved.battle["turn"]["turn_log"][-1]["summary"]
+    assert "MapStore Owner" in summary
+    assert "Stale Mirror Owner" not in summary
 
 
 def test_ambient_image_auto_generation_is_scheduled_without_waiting():

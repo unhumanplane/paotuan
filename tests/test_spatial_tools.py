@@ -199,3 +199,30 @@ def test_get_battle_snapshot_returns_safe_tactical_summary_not_raw_grid():
     ]
     assert result["compatibility"]["legacy_mirror_present"] is True
     assert result["compatibility"]["legacy_mirror_authoritative"] is False
+
+
+def test_spatial_turn_guard_reads_map_store_owner_before_stale_battle_grid():
+    repo = _repo("spatial_turn_guard_map_store")
+    repo.save_session(_ready_session())
+    tools = SpatialTools(repo, "group", actor={"player_id": "owner"})
+    asyncio.run(tools.create_grid(width=5, height=5))
+    asyncio.run(tools.place_entity("pc", "MapStore PC", 1, 1, faction="party", tags={"player_id": "owner"}))
+    session = repo.load_session("group")
+    session.battle["turn"] = {
+        "active": True,
+        "round": 1,
+        "phase": "character_turn",
+        "turn_order": ["pc"],
+        "current_index": 0,
+        "current_entity_id": "pc",
+        "actions_this_round": {},
+    }
+    session.battle["turn_entity_id"] = "pc"
+    session.battle["grid"]["entities"]["pc"]["tags"] = {"player_id": "intruder"}
+    repo.save_session(session)
+
+    result = asyncio.run(tools.move_entity("pc", 2, 1))
+
+    assert result["ok"] is True
+    session = repo.load_session("group")
+    assert session.battle["grid"]["entities"]["pc"]["x"] == 2

@@ -15,6 +15,7 @@ from .external_memory import (
     audit_safe_external_memory_result,
     external_memory_observation,
 )
+from .map_core import load_active_strict_grid_entities
 from .memory import MemoryCompressor
 from .modes import GameModeStateMachine
 from .models import GameMode, utc_now_iso
@@ -3451,8 +3452,7 @@ def _is_diagnostic_request(message: str) -> bool:
 
 
 def _turn_entity_label(session: Any, entity_id: str) -> str:
-    grid = (session.battle or {}).get("grid") or {}
-    entity = dict((grid.get("entities") or {}).get(entity_id, {}))
+    entity = dict(_active_strict_grid_entities(session).get(entity_id, {}))
     if entity.get("name"):
         return str(entity["name"])
     character = session.characters.get(entity_id)
@@ -3462,8 +3462,7 @@ def _turn_entity_label(session: Any, entity_id: str) -> str:
 
 
 def _turn_owner_player_id(session: Any, entity_id: str) -> str:
-    grid = (session.battle or {}).get("grid") or {}
-    entity = dict((grid.get("entities") or {}).get(entity_id, {}))
+    entity = dict(_active_strict_grid_entities(session).get(entity_id, {}))
     tags = dict(entity.get("tags", {}))
     if tags.get("player_id"):
         return str(tags["player_id"])
@@ -3475,6 +3474,13 @@ def _turn_owner_player_id(session: Any, entity_id: str) -> str:
         if bound_id == character_id or bound_id == entity_id:
             return str(player_id)
     return ""
+
+
+def _active_strict_grid_entities(session: Any) -> dict[str, Any]:
+    return load_active_strict_grid_entities(
+        getattr(session, "maps", {}),
+        getattr(session, "battle", {}),
+    )
 
 
 def _turn_pending_entity_for_actor(session: Any, turn: dict, actor_id: str) -> str:

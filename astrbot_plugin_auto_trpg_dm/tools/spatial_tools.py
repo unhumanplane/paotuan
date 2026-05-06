@@ -10,6 +10,7 @@ from ..core.map_core import (
     MAP_LIFECYCLE_ACTIVE_COMBAT_LINKED,
     get_strict_map_lifecycle,
     load_active_strict_grid,
+    load_active_strict_grid_entities,
     migrate_legacy_battle_grid,
     save_active_strict_grid,
 )
@@ -288,7 +289,10 @@ class SpatialTools:
 
     @staticmethod
     def _owner_player_id(session: Any, entity_id: str) -> str:
-        entities = dict(((session.battle or {}).get("grid") or {}).get("entities", {}))
+        entities = load_active_strict_grid_entities(
+            getattr(session, "maps", {}),
+            getattr(session, "battle", {}),
+        )
         grid_entity = dict(entities.get(entity_id, {}))
         tags = dict(grid_entity.get("tags", {}))
         if tags.get("player_id"):
