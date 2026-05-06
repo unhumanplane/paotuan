@@ -372,6 +372,21 @@ def load_active_strict_grid(store: dict[str, Any], legacy_battle: Any | None = N
             "reason": "active_strict_grid_missing",
             "migration_required": False,
         }
+    legacy_map_id = _legacy_battle_map_id(legacy_battle)
+    if legacy_map_id:
+        legacy_record = normalized["records"].get(legacy_map_id)
+        if isinstance(legacy_record, dict) and _is_strict_map_record(legacy_record):
+            legacy_record_grid = legacy_record.get("grid")
+            if isinstance(legacy_record_grid, dict):
+                return {
+                    "ok": True,
+                    "source": STRICT_GRID_SOURCE_MAP_STORE,
+                    "map_id": legacy_map_id,
+                    "grid": deepcopy(legacy_record_grid),
+                    "record": deepcopy(legacy_record),
+                    "migration_required": False,
+                    "compatibility_source": "battle.map_id",
+                }
     legacy_grid = _legacy_battle_grid(legacy_battle)
     if legacy_grid is not None:
         return {
@@ -801,6 +816,12 @@ def _legacy_battle_grid(value: Any) -> dict[str, Any] | None:
         return None
     grid = value.get("grid")
     return deepcopy(grid) if isinstance(grid, dict) else None
+
+
+def _legacy_battle_map_id(value: Any) -> str:
+    if not isinstance(value, dict):
+        return ""
+    return _short_text(value.get("map_id"), 160)
 
 
 def _strict_grid_archive_identity(
