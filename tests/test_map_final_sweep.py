@@ -129,16 +129,45 @@ def _install_fake_astrbot_modules():
 
 _install_fake_astrbot_modules()
 
-from astrbot_plugin_auto_trpg_dm.core.map_core import DEFAULT_STRICT_LOCAL_MAP_ID, save_active_strict_grid
+from astrbot_plugin_auto_trpg_dm.core.map_delivery_cadence import MAP_RENDER_LEGACY_LLM_SVG
+from astrbot_plugin_auto_trpg_dm.core.map_core import (
+    DEFAULT_STRICT_LOCAL_MAP_ID,
+    MAP_VIEW_DM_NARRATION,
+    project_map_store,
+    save_active_strict_grid,
+)
 from astrbot_plugin_auto_trpg_dm.core.models import Character, GameMode, GameSession
 from astrbot_plugin_auto_trpg_dm.main import AutoTrpgDmPlugin
 from astrbot_plugin_auto_trpg_dm.storage.json_repository import JsonGameRepository
+from astrbot_plugin_auto_trpg_dm.tools.map_tools import MapTools
 from astrbot_plugin_auto_trpg_dm.tools.memory_tools import MemoryTools, _battle_entity_is_terminal_for_rejoin
 
 
 def _repo(label: str) -> JsonGameRepository:
     root = Path(".pytest-runtime") / f"{label}-{uuid4().hex}"
     return JsonGameRepository(root / "data")
+
+
+class _FakeMapLlmResponse:
+    def __init__(self, completion_text: str):
+        self.completion_text = completion_text
+
+
+class _FakeMapAstrContext:
+    def __init__(self):
+        self.requests = []
+
+    async def llm_generate(self, **kwargs):
+        self.requests.append(kwargs)
+        svg = (
+            '<svg xmlns="http://www.w3.org/2000/svg" width="900" height="900" viewBox="0 0 900 900">'
+            '<rect x="0" y="0" width="900" height="900" fill="#f8fafc"/>'
+            '<rect x="80" y="120" width="420" height="420" fill="#e2e8f0" stroke="#334155"/>'
+            '<circle cx="180" cy="220" r="24" fill="#2563eb"/>'
+            '<text x="180" y="224" text-anchor="middle" dominant-baseline="middle">PC</text>'
+            "</svg>"
+        )
+        return _FakeMapLlmResponse(svg)
 
 
 def _session_with_stale_battle_grid() -> GameSession:
@@ -249,3 +278,83 @@ def test_memory_battle_character_helpers_read_map_store_before_stale_battle_grid
     map_store_grid = session.maps["records"][DEFAULT_STRICT_LOCAL_MAP_ID]["grid"]
     map_store_grid["entities"]["pc_owner"]["tags"]["dead"] = True
     assert _battle_entity_is_terminal_for_rejoin(session, "pc_owner") is True
+
+
+def test_legacy_generate_map_svg_writes_render_ref_not_last_map_svg():
+    repo = _repo("legacy_svg_render_ref")
+    session = GameSession.new("group")
+    save_active_strict_grid(
+        session.maps,
+        {
+            "width": 6,
+            "height": 6,
+            "cells": [],
+            "entities": {
+                "pc_owner": {"id": "pc_owner", "name": "MapStore Owner", "tags": {"player_id": "owner"}},
+            },
+        },
+        map_id=DEFAULT_STRICT_LOCAL_MAP_ID,
+    )
+    repo.save_session(session)
+
+    result = asyncio.run(
+        MapTools(repo, "group", astr_context=_FakeMapAstrContext()).generate_map_svg(
+            title="Legacy fallback",
+            prompt="只做旧版 fallback 视觉草图",
+            send_to_chat=True,
+        )
+    )
+
+    assert result["ok"] is True
+    assert result["render_type"] == MAP_RENDER_LEGACY_LLM_SVG
+    assert result["map_id"] == DEFAULT_STRICT_LOCAL_MAP_ID
+    assert result["render_ref"] == {
+        "type": MAP_RENDER_LEGACY_LLM_SVG,
+        "title": "Legacy fallback",
+        "name": result["file_name"],
+        "visual_only": True,
+    }
+    saved = repo.load_session("group")
+    assert "last_map_svg" not in saved.scene
+    pending = saved.scene["_pending_outputs"][0]
+    assert pending["render_type"] == MAP_RENDER_LEGACY_LLM_SVG
+    assert pending["preferred_render_type"] == MAP_RENDER_LEGACY_LLM_SVG
+    assert pending["visual_only"] is True
+    assert pending["legacy_fallback"] is True
+    assert pending["delivery_enqueued"] is True
+    assert pending["map_id"] == DEFAULT_STRICT_LOCAL_MAP_ID
+    record = saved.maps["records"][DEFAULT_STRICT_LOCAL_MAP_ID]
+    assert record["render_refs"][-1]["type"] == MAP_RENDER_LEGACY_LLM_SVG
+    assert record["render_refs"][-1]["path"] == result["file_path"]
+
+    projected = project_map_store(saved.maps, MAP_VIEW_DM_NARRATION)
+    projected_ref = projected["records"][DEFAULT_STRICT_LOCAL_MAP_ID]["render_refs"][-1]
+    assert projected_ref == {
+        "type": MAP_RENDER_LEGACY_LLM_SVG,
+        "title": "Legacy fallback",
+        "name": result["file_name"],
+        "visual_only": True,
+    }
+    assert result["file_path"] not in str(projected)
+
+
+def test_legacy_generate_map_svg_without_active_map_stays_visual_delivery_only():
+    repo = _repo("legacy_svg_without_active_map")
+    repo.save_session(GameSession.new("group"))
+
+    result = asyncio.run(
+        MapTools(repo, "group", astr_context=_FakeMapAstrContext()).generate_map_svg(
+            title="Loose legacy fallback",
+            send_to_chat=True,
+        )
+    )
+
+    assert result["ok"] is True
+    assert result["render_type"] == MAP_RENDER_LEGACY_LLM_SVG
+    assert result["map_id"] == ""
+    assert result["render_ref"] == {}
+    saved = repo.load_session("group")
+    assert saved.maps["records"] == {}
+    assert "last_map_svg" not in saved.scene
+    assert saved.scene["_pending_outputs"][0]["render_type"] == MAP_RENDER_LEGACY_LLM_SVG
+    assert saved.scene["_pending_outputs"][0]["visual_only"] is True
