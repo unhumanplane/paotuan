@@ -13,25 +13,23 @@ Stage 03.1 has already moved the map stack from legacy battle-coupled state towa
 - 03.1.07 replaced ordinary map rendering with deterministic renderer paths that consume `player_view`, write visual-only `render_refs`, and reuse map delivery infrastructure without treating SVG/PNG as map facts.
 - 03.1.07.04 established delivery cadence, deterministic-first map routing, explicit legacy fallback exposure, old pending-output compatibility, preview path privacy, and prompt projection guards.
 
-The current PR #21 head provides the immediate baseline for this PRD: deterministic renderers are preferred for ordinary map requests, `generate_map_svg` remains available only as explicit legacy/fallback/style/migration output, and old `svg_map` pending records without `render_type` are normalized as visual-only legacy records.
+`upstream/main` now includes PR #21. That merged baseline provides the immediate contract for this cleanup: deterministic renderers are preferred for ordinary map requests, `generate_map_svg` remains available only as explicit legacy/fallback/style/migration output, and old `svg_map` pending records without `render_type` are normalized as visual-only legacy records.
 
 ## Prerequisite Status
 
-This PRD depends on the delivery cadence / legacy SVG migration branch from PR #21. The final runtime cleanup should not be merged independently of that branch unless the cleanup branch is rebased onto a `main` that already contains PR #21.
+This PRD depends on the delivery cadence / legacy SVG migration work from PR #21. The final runtime cleanup should target a `main` baseline that already contains PR #21.
 
-Current local preflight at PRD time:
+Current local preflight after baseline refresh:
 
-- Baseline branch: `feat/delivery-cadence-svg-migration`.
+- Baseline branch: `upstream/main`.
 - Stacked branch: `feat/legacy-cleanup-migration-finalization`.
-- Base commit: `d3d05b5` (`docs(map-delivery): sync cadence migration status`).
+- Baseline commit: `e966479` (`feat(map-delivery): add cadence and legacy SVG migration contract (#21)`).
 - Target repository: `unhumanplane/paotuan`.
-- Preferred stacked PR target before PR #21 merges: `feat/delivery-cadence-svg-migration`.
-- Preferred target after PR #21 merges and this branch is rebased: `main`.
+- Preferred PR target: `main`.
 
 Blocking conditions for runtime cleanup:
 
-- If PR #21 receives review changes that alter delivery cadence, deterministic-first routing, preview fallback, prompt projection, or legacy SVG exposure, this PRD must be refreshed before implementation.
-- If PR #21 is not merged, this branch may still carry PRD and impact-scan docs, but final deletion/downgrade commits should clearly target PR #21 as their base and should be easy to rebase after merge.
+- If `upstream/main` changes delivery cadence, deterministic-first routing, preview fallback, prompt projection, or legacy SVG exposure again, this PRD must be refreshed before further cleanup commits.
 
 ## Relationship To PR #21
 
@@ -125,8 +123,8 @@ Primary public docs identified by the scan:
 | prompt snapshot `last_map_svg` | `prompt_snapshot_data` scene projection | old scene records | safe render ref or projected maps | Read compatibility only | Old value projects without path/raw SVG | Restore `_project_map_ref` | `test_prompts.py` | Keep only as old-save visual metadata. |
 | prompt snapshot `_pending_outputs` / `_map_delivery_cadence` | should not be ordinary prompt readers | delivery infrastructure | projection drop list | No ordinary prompt compatibility needed | silently dropped from prompt projection | restore drop list | `test_prompts.py` | Keep blocked and test. |
 | prompt/tool result raw path/SVG/layout/cadence keys | projection filters | tool results, delivery metadata, render results | prompt-safe tool result projection | No prompt/player compatibility | old tool results are projected conservatively | restore blocked key list | `test_prompt_projection.py` | Keep blocked and expand tests if new cleanup touches these paths. |
-| `get_battle_snapshot()` raw `battle` / `grid.to_dict()` | tactical toolsets, state query paths, tests, DM tool result projection | returns current session battle and grid | safe battle/status projection plus diagnostic-only raw snapshot if needed | Must be resolved by 03.1.08 or explicitly listed for 03.1.08.01 with owner and reason | Old callers may expect raw shape; migration requires compatibility wrapper or diagnostic escape hatch | restore raw tool behavior | `test_spatial_tools.py`, `test_tool_registry.py`, `test_prompt_projection.py` | Candidate cleanup target. Do not leave as open-ended future debt. Narrow ordinary exposure or add safe projection. |
-| RA tool-result raw grid exposure | RA cycle input sanitizer and action trace paths | tool results captured into cycle action buffers | RA authority projection plus sanitizer guard | Must be verified in 03.1.08; residual only if scan proves no reachable unsafe path | Old buffers should sanitize or ignore raw grid | restore sanitizer allowlist while keeping prompt/player guards | `test_cycle_buffer.py`, RA/environment tests | Verify and fix if reachable. If not changed, record as explicit 03.1.08.01 audit item. |
+| `get_battle_snapshot()` raw `battle` / `grid.to_dict()` | tactical toolsets, state query paths, tests, DM tool result projection | used to return current session battle and grid | safe `battle_status` / `tactical_map` summary; raw grid remains internal to MapStore/spatial tools | Ordinary exposure resolved in 03.1.08; raw diagnostic inspection, if needed later, must use an explicit diagnostic-only path | Old callers receive map dimensions, entities, terrain feature summaries, turn state, and map source without raw `battle.grid` | restore raw tool behavior only with explicit compatibility rollback | `test_spatial_tools.py`, `test_tool_registry.py`, `test_prompt_projection.py` | Narrowed to safe ordinary output. 03.1.08.01 should verify no downstream caller depends on raw shape. |
+| RA tool-result raw grid exposure | RA cycle input sanitizer and action trace paths | tool results captured into cycle action buffers | RA authority projection plus sanitizer guard | Raw `battle` and `grid` are blocked in RA sanitized tool inputs; safe summaries remain allowed | Old buffers should sanitize or ignore raw grid | restore sanitizer allowlist while keeping prompt/player guards | `test_cycle_buffer.py`, RA/environment tests | Fixed for ordinary RA input by blocking raw `battle` / `grid` keys and preserving `battle_status`. |
 | audit records containing map artifact paths/results | diagnostic and repository audit readers | map tools, render tools, router/main audit writes | diagnostic-only audit records; prompt/player projection must never consume raw audit | Keep diagnostic only | old audit remains readable but non-authoritative | restore audit write shape | audit/projection tests | Keep internal. Add final migration audit entries/tests where cleanup changes behavior. |
 | old saves missing `maps` | `GameSession.from_dict`, repository load | old saved sessions | `default_map_store()` and runtime migration helpers | Permanent tolerant reader | load cleanly; migrate strict grid on first strict map use | restore tolerant loader | `test_map_core.py`, repository/model tests | Keep loader. |
 | old saves with stale `_pending_outputs` | pending pop/filter path | old sessions | cadence normalization and safe drop/attach | Keep until old session queue risk is exhausted | normalize visual map records; drop unsupported or unsafe records | restore pre-cadence pop path | `test_map_delivery_cadence.py`, `test_dm_ack_and_outputs.py` | Keep compatibility but ensure no authority leakage. |
@@ -187,7 +185,7 @@ Required cleanup direction:
 - explicit legacy/fallback/style/migration exposure must have a documented compatibility window;
 - prompt text must not imply SVG can create map facts;
 - prompt snapshot projection must continue to block `_pending_outputs`, `_map_delivery_cadence`, local paths, raw SVG, layout internals, and raw strict grid;
-- `get_battle_snapshot()` must either move toward a safe ordinary battle/status projection or be clearly restricted as diagnostic/authority-only.
+- `get_battle_snapshot()` returns a safe ordinary battle/status and tactical-map summary; raw battle/grid inspection must stay diagnostic or code-owned.
 
 ## Audit / Regression Plan
 
@@ -229,9 +227,9 @@ The PRD is intentionally stricter than a passive audit. It requires each legacy 
 - Removing legacy fields reduces complexity, but old saves still need continuity.
 - Keeping compatibility mirrors helps old callers, but mirrors must not remain authority paths.
 - Hiding `generate_map_svg` improves map truth stability, but an explicit fallback may still be useful during staged migration.
-- `get_battle_snapshot()` is useful for tactical state queries, but its raw shape conflicts with projection safety.
+- `get_battle_snapshot()` is useful for tactical state queries; its ordinary output is now safe, but the legacy `battle.grid` mirror still exists for compatibility and must not regain authority.
 - Internal delivery paths need local file paths, but prompt/player outputs must never expose local paths.
-- PR #21 is still the base for this cleanup branch; review changes in PR #21 may alter cleanup assumptions.
+- `upstream/main` now contains PR #21; future delivery or prompt-projection changes on `main` may still alter cleanup assumptions.
 
 ## Out of Scope
 
@@ -305,7 +303,7 @@ Do not delegate these to prompts or agents:
 
 | Commit | Purpose | Includes | Excludes | Depends on | Validation |
 | --- | --- | --- | --- | --- | --- |
-| 1 | Add PRD and removal matrix | This docs PRD, impact scan, cleanup plan, acceptance criteria | Runtime code changes | PR #21 head | `git diff --check`; privacy scan |
+| 1 | Add PRD and removal matrix | This docs PRD, impact scan, cleanup plan, acceptance criteria | Runtime code changes | `upstream/main` with PR #21 | `git diff --check`; privacy scan |
 | 2 | Move normal strict-grid authority off legacy mirror | MapStore/legacy grid reader-writer cleanup, old-save migration guard tests | prompt/tool schema cleanup, renderer changes | commit 1 | `tests/test_map_core.py`, `tests/test_spatial_tools.py`, `tests/test_strict_lifecycle_tools.py`, `tests/test_strict_grid_render_tools.py` |
 | 3 | Narrow raw battle and legacy map tool schemas | `get_battle_snapshot` ordinary/diagnostic boundary, `generate_map_svg` exposure/window cleanup | renderer core changes | commit 2 | `tests/test_tool_registry.py`, `tests/test_spatial_tools.py`, `tests/test_prompt_projection.py`, `tests/test_prompts.py` |
 | 4 | Finalize visual-only metadata replacement | `last_map_svg` downgrade/removal of new writes, render ref / pending metadata compatibility | MapStore authority changes | commit 3 | `tests/test_prompts.py`, `tests/test_prompt_projection.py`, `tests/test_map_delivery_cadence.py`, renderer tool tests |

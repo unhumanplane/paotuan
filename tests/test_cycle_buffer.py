@@ -1,5 +1,7 @@
-from astrbot_plugin_auto_trpg_dm.core.models import CycleState, GameSession
+import json
+
 from astrbot_plugin_auto_trpg_dm.core.cycle_buffer import append_cycle_action, complete_cycle_without_ra
+from astrbot_plugin_auto_trpg_dm.core.models import CycleState, GameSession
 
 
 def test_append_cycle_action_writes_full_audit_and_sanitized_ra_input():
@@ -60,3 +62,37 @@ def test_complete_cycle_without_ra_returns_to_active_and_rotates_buffer():
     assert session.audit_buffer.actions == []
     assert session.ra_cycle_input.cycle_id == 4
     assert session.ra_cycle_input.actions == []
+
+
+def test_append_cycle_action_sanitizes_raw_grid_from_ra_tool_input():
+    session = GameSession.new("group")
+    tool_results = [
+        {
+            "tool": "get_battle_snapshot",
+            "args": {},
+            "result": {
+                "ok": True,
+                "battle": {"active": True, "grid": {"entities": {"hidden": {"x": 9, "y": 9}}}},
+                "grid": {"width": 12, "height": 12, "entities": {"hidden": {"x": 9, "y": 9}}},
+                "battle_status": {"active": True, "map_id": "strict-local-map"},
+            },
+        }
+    ]
+
+    append_cycle_action(
+        session,
+        actor={"player_id": "player-1"},
+        player_message="查看战场",
+        completion="你快速确认战场态势。",
+        tool_results=tool_results,
+    )
+
+    ra_tool = session.ra_cycle_input.actions[0]["tools_called"][0]
+    rendered = json.dumps(ra_tool, ensure_ascii=False)
+
+    assert ra_tool["name"] == "get_battle_snapshot"
+    assert "battle_status" in ra_tool["result_sanitized"]
+    assert '"battle"' not in rendered
+    assert '"grid"' not in rendered
+    assert "hidden" not in rendered
+    assert '"x": 9' not in rendered
