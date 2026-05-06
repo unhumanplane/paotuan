@@ -6,7 +6,7 @@
   renderer input is `player_view` plus an explicit render request/envelope, and
   renderer output is render refs, artifact metadata, and delivery metadata.
 - `docs/coordinate-renderer-contract.md` defines the coordinate and layout
-  contract for future deterministic map renderers. It explicitly keeps rendered
+  contract for deterministic map renderers. It explicitly keeps rendered
   SVG/PNG artifacts out of authoritative map facts.
 - `astrbot_plugin_auto_trpg_dm/core/map_core.py` already has:
   - `MAP_VIEW_PLAYER`, `MAP_VIEW_DM_NARRATION`, `MAP_VIEW_RA_AUTHORITY`, and
@@ -17,10 +17,11 @@
   - `project_map_store()` and `project_active_map_record()`;
   - `add_render_ref()` for visual-only render references.
 - The legacy visual map path still exists in
-  `astrbot_plugin_auto_trpg_dm/tools/map_tools.py` as `generate_map_svg()`.
-  That path calls an LLM sub-context to generate SVG, writes
-  `scene["last_map_svg"]`, and appends `type: "svg_map"` records to
-  `scene["_pending_outputs"]`.
+  `astrbot_plugin_auto_trpg_dm/tools/map_tools.py` as explicit fallback
+  `generate_map_svg()`. That path calls an LLM sub-context to generate SVG,
+  writes visual-only render refs when an active MapStore map exists, and appends
+  normalized `type: "svg_map"` records to `scene["_pending_outputs"]`; it no
+  longer writes new `scene["last_map_svg"]` records.
 - Chat delivery in `astrbot_plugin_auto_trpg_dm/main.py` already consumes
   `_pending_outputs` and attaches only records with `type == "svg_map"`.
 - Prompt guidance in `astrbot_plugin_auto_trpg_dm/core/prompts.py` now prefers
@@ -128,15 +129,18 @@ Decision: overview renderer input must be built from `MAP_VIEW_PLAYER`, not raw
 
 ### Renderer Inputs
 
-The production baseline has no deterministic `player_view` renderer consumer.
-The legacy renderer reads compact battle state and asks an LLM to draw SVG.
+The original production baseline had no deterministic `player_view` renderer
+consumer. Phase 3 now has deterministic strict-grid and overview-topology
+renderer tools. The legacy renderer remains only as an explicit visual fallback
+that reads compact battle state and asks an LLM to draw SVG.
 
 Evidence:
 
-- `docs/projection-consumer-matrix.md` says no production deterministic
-  `player_view` renderer consumer exists yet.
+- `tools/strict_grid_render_tools.py` and
+  `tools/overview_topology_render_tools.py` consume player-view render
+  envelopes.
 - `tools/map_tools.py` reads `session.compact_snapshot().get("battle", {})`
-  inside `generate_map_svg()`.
+  inside explicit legacy `generate_map_svg()` fallback.
 
 Decision: overview rendering needs its own request/envelope and adapter from
 projected map records to renderer input. It should not reuse the legacy
@@ -149,7 +153,8 @@ safe title/name render reference, but it is not source of truth.
 
 Evidence:
 
-- `tools/map_tools.py` writes `latest_session.scene["last_map_svg"]`.
+- `generate_map_svg()` no longer writes new `scene["last_map_svg"]`; explicit
+  legacy fallback output writes render refs / normalized pending metadata.
 - `core/prompts.py` drops raw `last_map_svg` from normal scene projection, then
   re-adds a projected safe map ref.
 - `docs/coordinate-renderer-contract.md` classifies `last_map_svg` as legacy
@@ -468,9 +473,8 @@ compatibility. The overview renderer adds `render_type:
 "overview_topology_svg"`, `width`, `height`, `visual_only`, and
 renderer-specific metadata.
 
-This task should not redesign delivery cadence. Major delivery policy,
-legacy-downgrade policy, and broad migration from `generate_map_svg` belong to a
-later delivery/legacy migration PR.
+This task did not redesign delivery cadence. Later delivery/final-sweep work
+made `generate_map_svg` explicit-only and stopped new `last_map_svg` writes.
 
 The overview render tool supports a `send_to_chat` option. When true, it appends
 a pending output record with an internal SVG path. When false, it still writes

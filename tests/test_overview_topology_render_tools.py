@@ -8,6 +8,7 @@ from astrbot_plugin_auto_trpg_dm.core.map_core import (
     add_map_fact,
     create_map_record,
     get_map_record,
+    save_active_strict_grid,
 )
 from astrbot_plugin_auto_trpg_dm.core.map_delivery_cadence import (
     MAP_DELIVERY_TRIGGER_OVERVIEW_TRANSITION,
@@ -105,6 +106,29 @@ def test_render_overview_topology_svg_writes_visual_ref_and_pending_output():
     assert saved.scene["_pending_outputs"][-1]["render_type"] == OVERVIEW_TOPOLOGY_RENDER_TYPE
     assert saved.scene["_pending_outputs"][-1]["delivery_trigger"] == MAP_DELIVERY_TRIGGER_PLAYER_REQUEST
     assert result["delivery"]["reason"] == "eligible"
+
+
+def test_render_overview_topology_svg_does_not_fallback_to_active_strict_map():
+    repository = JsonGameRepository(_runtime_root("overview-no-strict-fallback") / "data")
+    session = GameSession.new("group")
+    save_active_strict_grid(
+        session.maps,
+        {
+            "width": 3,
+            "height": 3,
+            "cells": [],
+            "entities": {"pc": {"name": "PC", "x": 1, "y": 1}},
+        },
+        map_id="strict-room",
+    )
+    repository.save_session(session)
+
+    result = asyncio.run(OverviewTopologyRenderTools(repository, "group").render_overview_topology_svg())
+
+    assert result == {"ok": False, "error": "overview_map_not_found", "map_id": ""}
+    saved = repository.load_session("group")
+    assert "_pending_outputs" not in saved.scene
+    assert saved.maps["records"]["strict-room"]["render_refs"] == []
 
 
 def test_render_overview_topology_svg_applies_cadence_before_enqueueing_transition():
