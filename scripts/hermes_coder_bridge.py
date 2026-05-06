@@ -16,8 +16,8 @@ from typing import Any
 
 try:
     from aiohttp import web
-except ImportError as exc:  # pragma: no cover - deployed bridge has aiohttp.
-    raise SystemExit(f"aiohttp is required: {exc}")
+except ImportError:  # pragma: no cover - some test envs do not run the HTTP server.
+    web = None  # type: ignore[assignment]
 
 
 ROOT = Path("/volume1/docker/hermes")
@@ -35,6 +35,16 @@ DEFAULT_ASTRBOT_API_URL = "http://127.0.0.1:6185/api/v1/im/message"
 DEFAULT_NOTIFY_SESSION_TEMPLATE = "default:GroupMessage:{group_id}"
 DEFAULT_ASTRBOT_API_TIMEOUT_SECONDS = 10
 DEFAULT_MAX_NOTIFY_CHARS = 3500
+
+
+def require_aiohttp_web():
+    if web is None:
+        raise SystemExit("aiohttp is required to run hermes_coder_bridge.py")
+    return web
+
+
+def json_response(*args, **kwargs):
+    return require_aiohttp_web().json_response(*args, **kwargs)
 
 
 def load_dotenv(path: Path) -> dict[str, str]:
@@ -159,25 +169,25 @@ class CoderBridge:
 
     async def health(self, request: web.Request) -> web.Response:
         del request
-        return web.json_response({"ok": True, "service": "hermes-coder-bridge", "uptime_seconds": int(time.time() - self.started_at)})
+        return json_response({"ok": True, "service": "hermes-coder-bridge", "uptime_seconds": int(time.time() - self.started_at)})
 
     async def _read_signed_json(self, request: web.Request) -> tuple[dict[str, Any] | None, web.Response | None]:
         if request.content_length and request.content_length > 64_000:
-            return None, web.json_response({"ok": False, "error": "payload too large"}, status=413)
+            return None, json_response({"ok": False, "error": "payload too large"}, status=413)
         body = await request.read()
         try:
             secret = read_secret(self.secret_path)
         except Exception as exc:
-            return None, web.json_response({"ok": False, "error": str(exc)}, status=500)
+            return None, json_response({"ok": False, "error": str(exc)}, status=500)
         signature = request.headers.get("X-Hermes-Coder-Signature", "")
         if not verify_signature(secret, body, signature):
-            return None, web.json_response({"ok": False, "error": "invalid signature"}, status=401)
+            return None, json_response({"ok": False, "error": "invalid signature"}, status=401)
         try:
             payload = json.loads(body.decode("utf-8"))
         except Exception:
-            return None, web.json_response({"ok": False, "error": "invalid json"}, status=400)
+            return None, json_response({"ok": False, "error": "invalid json"}, status=400)
         if not isinstance(payload, dict):
-            return None, web.json_response({"ok": False, "error": "invalid payload"}, status=400)
+            return None, json_response({"ok": False, "error": "invalid payload"}, status=400)
         return payload, None
 
     async def coder(self, request: web.Request) -> web.Response:
@@ -187,20 +197,20 @@ class CoderBridge:
         assert payload is not None
         prompt = str(payload.get("prompt") or "").strip()
         if not prompt:
-            return web.json_response({"ok": False, "error": "empty prompt"}, status=400)
+            return json_response({"ok": False, "error": "empty prompt"}, status=400)
         if len(prompt) > self.max_prompt_chars:
-            return web.json_response({"ok": False, "error": "prompt too long"}, status=400)
+            return json_response({"ok": False, "error": "prompt too long"}, status=400)
         if not (self.workdir / ".git").exists():
-            return web.json_response({"ok": False, "error": f"workdir is not a git repo: {self.workdir}"}, status=500)
+            return json_response({"ok": False, "error": f"workdir is not a git repo: {self.workdir}"}, status=500)
         hermes_prompt = build_prompt(payload)
         try:
             returncode, output = await asyncio.to_thread(run_hermes, hermes_prompt, self.timeout_seconds, self.workdir)
         except subprocess.TimeoutExpired:
-            return web.json_response({"ok": False, "error": "Hermes timed out"}, status=504)
+            return json_response({"ok": False, "error": "Hermes timed out"}, status=504)
         except Exception as exc:
-            return web.json_response({"ok": False, "error": f"Hermes execution failed: {exc}"}, status=500)
+            return json_response({"ok": False, "error": f"Hermes execution failed: {exc}"}, status=500)
         reply = tail_text(output.strip(), self.max_output_chars)
-        return web.json_response({"ok": returncode == 0, "returncode": returncode, "reply": reply})
+        return json_response({"ok": returncode == 0, "returncode": returncode, "reply": reply})
 
     async def notify(self, request: web.Request) -> web.Response:
         payload, error_response = await self._read_signed_json(request)
@@ -212,14 +222,14 @@ class CoderBridge:
             api_key = read_secret(self.astrbot_api_key_path)
             api_result = await asyncio.to_thread(self._post_astrbot_message, api_key, session, text)
         except ValueError as exc:
-            return web.json_response({"ok": False, "error": str(exc)}, status=400)
+            return json_response({"ok": False, "error": str(exc)}, status=400)
         except RuntimeError as exc:
-            return web.json_response({"ok": False, "error": str(exc)}, status=503)
+            return json_response({"ok": False, "error": str(exc)}, status=503)
         except Exception as exc:
-            return web.json_response({"ok": False, "error": f"AstrBot notify failed: {exc}"}, status=502)
+            return json_response({"ok": False, "error": f"AstrBot notify failed: {exc}"}, status=502)
         if not api_result.get("ok"):
-            return web.json_response({"ok": False, "error": api_result.get("error") or "AstrBot rejected message"}, status=502)
-        return web.json_response({"ok": True, "group_id": group_id, "session": session})
+            return json_response({"ok": False, "error": api_result.get("error") or "AstrBot rejected message"}, status=502)
+        return json_response({"ok": True, "group_id": group_id, "session": session})
 
     def _allowed_notify_groups(self) -> set[str]:
         if self.notify_group_whitelist:
@@ -302,11 +312,12 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     args = parse_args()
     bridge = CoderBridge(args)
-    app = web.Application()
+    web_mod = require_aiohttp_web()
+    app = web_mod.Application()
     app.router.add_get("/health", bridge.health)
     app.router.add_post("/coder", bridge.coder)
     app.router.add_post("/notify", bridge.notify)
-    web.run_app(app, host=args.host, port=args.port)
+    web_mod.run_app(app, host=args.host, port=args.port)
     return 0
 
 

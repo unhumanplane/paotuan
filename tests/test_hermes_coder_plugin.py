@@ -1,6 +1,7 @@
 import hashlib
 import hmac
 import json
+import logging
 import sys
 import types
 
@@ -13,6 +14,8 @@ def _install_fake_astrbot_modules():
     event = types.ModuleType("astrbot.api.event")
     star = types.ModuleType("astrbot.api.star")
     core = types.ModuleType("astrbot.core")
+    core_utils = types.ModuleType("astrbot.core.utils")
+    astrbot_path = types.ModuleType("astrbot.core.utils.astrbot_path")
     core_star = types.ModuleType("astrbot.core.star")
     filter_pkg = types.ModuleType("astrbot.core.star.filter")
     command = types.ModuleType("astrbot.core.star.filter.command")
@@ -38,12 +41,16 @@ def _install_fake_astrbot_modules():
     class GreedyStr(str):
         pass
 
+    def get_astrbot_data_path():
+        return "."
+
     api.logger = FakeLogger()
     event.AstrMessageEvent = object
     event.filter = FakeFilter
     star.Context = object
     star.Star = FakeStar
     star.register = register
+    astrbot_path.get_astrbot_data_path = get_astrbot_data_path
     command.GreedyStr = GreedyStr
 
     for name, module in {
@@ -52,6 +59,8 @@ def _install_fake_astrbot_modules():
         "astrbot.api.event": event,
         "astrbot.api.star": star,
         "astrbot.core": core,
+        "astrbot.core.utils": core_utils,
+        "astrbot.core.utils.astrbot_path": astrbot_path,
         "astrbot.core.star": core_star,
         "astrbot.core.star.filter": filter_pkg,
         "astrbot.core.star.filter.command": command,
@@ -62,6 +71,7 @@ def _install_fake_astrbot_modules():
 _install_fake_astrbot_modules()
 
 from astrbot_plugin_hermes_coder.main import HermesCoderPlugin
+from astrbot_plugin_hermes_coder.main import configure_coder_logging
 
 
 class FakeEvent:
@@ -134,3 +144,17 @@ def test_bridge_signature_uses_compact_json(monkeypatch):
     ).hexdigest()
     assert captured["body"] == b'{"prompt":"hi","group_id":"676453921"}'
     assert captured["signature"] == expected
+
+
+def test_configure_coder_logging_writes_independent_file(tmp_path):
+    log_path = tmp_path / "logs" / "hermes_coder.log"
+    plugin_logger = configure_coder_logging(log_path, max_bytes=20_000, backup_count=1)
+
+    plugin_logger.info("request_started group=%s prompt_chars=%s", "1101538762", 2)
+    for handler in plugin_logger.handlers:
+        handler.flush()
+
+    text = log_path.read_text(encoding="utf-8")
+    assert "request_started group=1101538762 prompt_chars=2" in text
+    assert plugin_logger.propagate is False
+    assert any(isinstance(handler, logging.Handler) for handler in plugin_logger.handlers)

@@ -4,15 +4,19 @@ import asyncio
 import hashlib
 import hmac
 import json
+import logging
 import time
 import urllib.error
 import urllib.request
+from logging.handlers import RotatingFileHandler
+from pathlib import Path
 from typing import Any
 
 from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.star import Context, Star, register
 from astrbot.core.star.filter.command import GreedyStr
+from astrbot.core.utils.astrbot_path import get_astrbot_data_path
 
 
 PLUGIN_VERSION = "0.1.0"
@@ -20,6 +24,47 @@ DEFAULT_BRIDGE_URL = "http://192.168.123.148:8767/coder"
 DEFAULT_TIMEOUT_SECONDS = 240
 DEFAULT_MAX_PROMPT_CHARS = 4000
 DEFAULT_MAX_REPLY_CHARS = 3500
+DEFAULT_LOG_MAX_BYTES = 1_000_000
+DEFAULT_LOG_BACKUP_COUNT = 3
+CODER_LOGGER_NAME = "astrbot_plugin_hermes_coder.private"
+
+
+def configure_coder_logging(
+    log_path: Path,
+    max_bytes: int = DEFAULT_LOG_MAX_BYTES,
+    backup_count: int = DEFAULT_LOG_BACKUP_COUNT,
+) -> logging.Logger:
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    plugin_logger = logging.getLogger(CODER_LOGGER_NAME)
+    plugin_logger.setLevel(logging.INFO)
+    plugin_logger.propagate = False
+
+    for handler in list(plugin_logger.handlers):
+        plugin_logger.removeHandler(handler)
+        handler.close()
+
+    handler = RotatingFileHandler(
+        log_path,
+        maxBytes=max(10_000, int(max_bytes)),
+        backupCount=max(1, int(backup_count)),
+        encoding="utf-8",
+    )
+    handler.setFormatter(
+        logging.Formatter(
+            fmt="%(asctime)s [%(levelname)s] %(message)s",
+            datefmt="%Y-%m-%d %H:%M:%S",
+        )
+    )
+    plugin_logger.addHandler(handler)
+    plugin_logger.info("coder_logger_configured path=%s max_bytes=%s backups=%s", log_path, max_bytes, backup_count)
+    return plugin_logger
+
+
+def noop_coder_logger() -> logging.Logger:
+    plugin_logger = logging.getLogger(CODER_LOGGER_NAME)
+    if not plugin_logger.handlers:
+        plugin_logger.addHandler(logging.NullHandler())
+    return plugin_logger
 
 
 @register(
@@ -41,8 +86,21 @@ class HermesCoderPlugin(Star):
         self.timeout_seconds = max(5, self._config_int("timeout_seconds", DEFAULT_TIMEOUT_SECONDS))
         self.max_prompt_chars = max(100, self._config_int("max_prompt_chars", DEFAULT_MAX_PROMPT_CHARS))
         self.max_reply_chars = max(500, self._config_int("max_reply_chars", DEFAULT_MAX_REPLY_CHARS))
+        self.log_enabled = self._config_bool("log_enabled", True)
+        self.log_max_bytes = max(10_000, self._config_int("log_max_bytes", DEFAULT_LOG_MAX_BYTES))
+        self.log_backup_count = max(1, self._config_int("log_backup_count", DEFAULT_LOG_BACKUP_COUNT))
+        self.coder_logger = self._init_coder_logger()
         logger.info(
             "Hermes coder plugin initialized: enabled=%s groups=%d bridge=%s secret_configured=%s timeout=%s",
+            self.enabled,
+            len(self.group_whitelist),
+            self.bridge_url,
+            bool(self.bridge_secret),
+            self.timeout_seconds,
+        )
+        self.coder_logger.info(
+            "plugin_initialized version=%s enabled=%s groups=%d bridge=%s secret_configured=%s timeout=%s",
+            PLUGIN_VERSION,
             self.enabled,
             len(self.group_whitelist),
             self.bridge_url,
@@ -62,6 +120,7 @@ class HermesCoderPlugin(Star):
 
     async def _handle_coder(self, event: AstrMessageEvent, content: Any):
         if not self.enabled:
+            self.coder_logger.info("request_denied reason=disabled")
             yield event.plain_result("Hermes /coder 当前未启用。")
             event.stop_event()
             return
@@ -69,24 +128,38 @@ class HermesCoderPlugin(Star):
         if group_id:
             if group_id not in self.group_whitelist:
                 logger.info("Hermes coder denied for group=%s", group_id)
+                self.coder_logger.info("request_denied reason=group_not_whitelisted group=%s", group_id)
                 yield event.plain_result("这个群没有启用 /coder。")
                 event.stop_event()
                 return
         elif not self.allow_private_chat:
+            self.coder_logger.info("request_denied reason=private_not_allowed")
             yield event.plain_result("/coder 只允许在白名单群聊中使用。")
             event.stop_event()
             return
 
         prompt = self._prompt_from_command_content(content)
+        sender_id = self._safe_call(event, "get_sender_id")
+        message_id = str(getattr(getattr(event, "message_obj", None), "message_id", "") or "")
         if not prompt:
+            self.coder_logger.info("request_denied reason=empty_prompt group=%s sender=%s message=%s", group_id or "", sender_id, message_id)
             yield event.plain_result("用法：/coder <要 Hermes 处理的任务>")
             event.stop_event()
             return
         if len(prompt) > self.max_prompt_chars:
+            self.coder_logger.info(
+                "request_denied reason=prompt_too_long group=%s sender=%s message=%s prompt_chars=%s max=%s",
+                group_id or "",
+                sender_id,
+                message_id,
+                len(prompt),
+                self.max_prompt_chars,
+            )
             yield event.plain_result(f"这条 /coder 太长了，最多 {self.max_prompt_chars} 字。")
             event.stop_event()
             return
         if not self.bridge_secret:
+            self.coder_logger.warning("request_denied reason=missing_bridge_secret group=%s sender=%s message=%s", group_id or "", sender_id, message_id)
             yield event.plain_result("Hermes bridge secret 还没配置。")
             event.stop_event()
             return
@@ -98,17 +171,42 @@ class HermesCoderPlugin(Star):
             payload.get("sender_id") or "",
             len(prompt),
         )
+        started_at = time.monotonic()
+        self.coder_logger.info(
+            "request_started group=%s sender=%s session=%s message=%s prompt_chars=%s",
+            group_id or "(private)",
+            payload.get("sender_id") or "",
+            payload.get("session_id") or "",
+            payload.get("message_id") or "",
+            len(prompt),
+        )
         try:
             response = await asyncio.wait_for(
                 asyncio.to_thread(self._post_bridge, payload),
                 timeout=self.timeout_seconds + 5,
             )
         except asyncio.TimeoutError:
+            self.coder_logger.warning(
+                "request_timeout group=%s sender=%s message=%s timeout=%s elapsed_ms=%s",
+                group_id or "(private)",
+                payload.get("sender_id") or "",
+                payload.get("message_id") or "",
+                self.timeout_seconds,
+                int((time.monotonic() - started_at) * 1000),
+            )
             yield event.plain_result("Hermes 处理超时了，任务可能还在后台跑。")
             event.stop_event()
             return
         except Exception as exc:
             logger.warning("Hermes coder bridge call failed: %s", exc)
+            self.coder_logger.warning(
+                "request_failed group=%s sender=%s message=%s elapsed_ms=%s error=%s",
+                group_id or "(private)",
+                payload.get("sender_id") or "",
+                payload.get("message_id") or "",
+                int((time.monotonic() - started_at) * 1000),
+                self._safe_error(exc),
+            )
             yield event.plain_result(f"Hermes bridge 调用失败：{self._safe_error(exc)}")
             event.stop_event()
             return
@@ -118,8 +216,32 @@ class HermesCoderPlugin(Star):
             text = "Hermes 没有返回文本结果。"
         if len(text) > self.max_reply_chars:
             text = text[: self.max_reply_chars].rstrip() + "\n\n[已截断]"
+        self.coder_logger.info(
+            "request_completed group=%s sender=%s message=%s status_code=%s ok=%s reply_chars=%s elapsed_ms=%s",
+            group_id or "(private)",
+            payload.get("sender_id") or "",
+            payload.get("message_id") or "",
+            response.get("status_code") or "",
+            response.get("ok") if "ok" in response else "",
+            len(text),
+            int((time.monotonic() - started_at) * 1000),
+        )
         yield event.plain_result(text)
         event.stop_event()
+
+    def _init_coder_logger(self) -> logging.Logger:
+        if not self.log_enabled:
+            return noop_coder_logger()
+        try:
+            data_dir = Path(get_astrbot_data_path()) / "plugin_data" / "astrbot_plugin_hermes_coder"
+            return configure_coder_logging(
+                data_dir / "logs" / "hermes_coder.log",
+                max_bytes=self.log_max_bytes,
+                backup_count=self.log_backup_count,
+            )
+        except Exception as exc:
+            logger.warning("Hermes coder independent logger setup failed: %s", exc)
+            return noop_coder_logger()
 
     def _post_bridge(self, payload: dict[str, Any]) -> dict[str, Any]:
         body = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")

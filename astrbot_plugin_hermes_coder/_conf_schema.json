@@ -45,5 +45,23 @@
     "type": "int",
     "hint": "3500",
     "default": 3500
+  },
+  "log_enabled": {
+    "description": "是否启用 /coder 独立文件日志。日志只记录请求元信息、耗时和错误，不记录密钥或完整 prompt。",
+    "type": "bool",
+    "hint": "true",
+    "default": true
+  },
+  "log_max_bytes": {
+    "description": "单个 /coder 独立日志文件最大字节数，超过后轮转。",
+    "type": "int",
+    "hint": "1000000",
+    "default": 1000000
+  },
+  "log_backup_count": {
+    "description": "保留的 /coder 独立日志轮转文件数量。",
+    "type": "int",
+    "hint": "3",
+    "default": 3
   }
 }
