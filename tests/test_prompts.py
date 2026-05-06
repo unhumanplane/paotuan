@@ -590,3 +590,107 @@ def test_prompt_snapshot_projection_does_not_expose_raw_strict_grid():
     assert "secret-stalker" not in rendered
     assert "secret-stalker" not in str(projected_snapshot["battle"])
     assert "'x': 4" not in rendered
+
+
+def test_compact_snapshot_uses_map_store_entities_before_stale_battle_grid():
+    session = GameSession.new("group")
+    session.characters["pc_owner"] = Character(id="pc_owner", name="MapStore Owner", player_id="owner")
+    session.battle = {
+        "active": True,
+        "turn_entity_id": "pc_owner",
+        "turn": {
+            "active": True,
+            "round": 1,
+            "phase": "character_turn",
+            "turn_order": ["pc_owner"],
+            "current_entity_id": "pc_owner",
+            "actions_this_round": {},
+        },
+        "grid": {
+            "width": 6,
+            "height": 6,
+            "cells": [],
+            "entities": {
+                "pc_owner": {"id": "pc_owner", "name": "Stale Mirror Owner", "tags": {"player_id": "intruder"}},
+                "ghost": {"id": "ghost", "name": "旧镜像幽灵", "tags": {"player_id": "intruder"}},
+            },
+        },
+    }
+    save_active_strict_grid(
+        session.maps,
+        {
+            "width": 6,
+            "height": 6,
+            "cells": [],
+            "entities": {
+                "pc_owner": {"id": "pc_owner", "name": "MapStore Owner", "tags": {"player_id": "owner"}},
+            },
+        },
+        map_id="strict-room",
+    )
+
+    compact = session.compact_snapshot()["battle"]
+    rendered = str(compact)
+
+    assert compact["turn"]["current_label"] == "MapStore Owner"
+    assert compact["turn"]["current_owner_player_id"] == "owner"
+    assert compact["grid"]["entities"] == [
+        {"id": "pc_owner", "name": "MapStore Owner", "tags": {"player_id": "owner"}}
+    ]
+    assert "Stale Mirror Owner" not in rendered
+    assert "旧镜像幽灵" not in rendered
+
+
+def test_relevant_character_projection_uses_map_store_owner_tags_before_stale_battle_grid():
+    session = GameSession.new("group")
+    session.characters["pc_owner"] = Character(id="pc_owner", name="MapStore Owner", player_id="owner")
+    session.characters["pc_hidden"] = Character(id="pc_hidden", name="Hidden Mirror", player_id="intruder")
+    session.player_character_map["owner"] = "pc_owner"
+    session.battle = {
+        "active": True,
+        "turn_entity_id": "pc_owner",
+        "turn": {
+            "active": True,
+            "phase": "character_turn",
+            "turn_order": ["pc_owner"],
+            "current_entity_id": "pc_owner",
+            "actions_this_round": {},
+        },
+        "grid": {
+            "entities": {
+                "pc_owner": {
+                    "id": "pc_owner",
+                    "name": "Stale Mirror Owner",
+                    "tags": {"player_id": "intruder", "character_id": "pc_hidden"},
+                },
+            }
+        },
+    }
+    save_active_strict_grid(
+        session.maps,
+        {
+            "width": 6,
+            "height": 6,
+            "cells": [],
+            "entities": {
+                "pc_owner": {
+                    "id": "pc_owner",
+                    "name": "MapStore Owner",
+                    "tags": {"player_id": "owner", "character_id": "pc_owner"},
+                },
+            },
+        },
+        map_id="strict-room",
+    )
+
+    projected_snapshot, _stats = prompt_snapshot_data(
+        session,
+        GameMode.TACTICAL,
+        "我结束回合",
+        actor={"player_id": "owner"},
+        snapshot_projection_enabled=True,
+    )
+    relevant_ids = [item["id"] for item in projected_snapshot["characters"]["relevant"]]
+
+    assert "pc_owner" in relevant_ids
+    assert "pc_hidden" not in relevant_ids

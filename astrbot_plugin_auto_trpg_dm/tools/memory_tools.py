@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
+from ..core.map_core import load_active_strict_grid, load_active_strict_grid_entities
 from ..core.memory import MemoryCompressor
 from ..core.models import Character, GameMode, GameSession, TagValue, compact_tag_layers, infer_tag_layer, utc_now_iso
 from ..storage.json_repository import JsonGameRepository
@@ -1002,14 +1003,15 @@ class MemoryTools:
         ids.update(str(item) for item in turn.get("pending_entity_ids", []) if str(item).strip())
         ids.update(str(item) for item in turn.get("acted_entity_ids", []) if str(item).strip())
         ids.update(str(key) for key in dict(turn.get("actions_this_round") or {}).keys())
-        grid_entities = dict(((battle.get("grid") or {}).get("entities") or {}))
+        grid_entities = load_active_strict_grid_entities(session.maps, battle)
         ids.update(str(key) for key in grid_entities.keys())
         return character_id in ids
 
     @staticmethod
     def _battle_character_label(session: GameSession, character_id: str) -> str:
         battle = session.battle or {}
-        grid_entity = dict((((battle.get("grid") or {}).get("entities") or {}).get(character_id)) or {})
+        grid_entities = load_active_strict_grid_entities(session.maps, battle)
+        grid_entity = dict(grid_entities.get(character_id) or {})
         tags = dict(grid_entity.get("tags") or {})
         for key in ("name", "label", "display_name"):
             value = grid_entity.get(key) or tags.get(key)
@@ -1642,7 +1644,10 @@ def _character_is_terminal_for_rejoin(session: GameSession, character_id: str) -
 
 def _battle_entity_is_terminal_for_rejoin(session: GameSession, character_id: str) -> bool:
     battle = session.battle or {}
-    grid = dict(battle.get("grid") or {})
+    loaded_grid = load_active_strict_grid(session.maps, battle)
+    grid = loaded_grid.get("grid") if loaded_grid.get("ok") else {}
+    if not isinstance(grid, dict):
+        grid = {}
     raw_entities = grid.get("entities") or {}
     if isinstance(raw_entities, dict):
         entities = [{"id": str(entity_id), **dict(entity)} for entity_id, entity in raw_entities.items() if isinstance(entity, dict)]
