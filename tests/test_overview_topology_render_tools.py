@@ -3,6 +3,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from astrbot_plugin_auto_trpg_dm.core.map_core import (
+    MAP_TYPE_STRICT_LOCAL,
     MAP_VISIBILITY_HIDDEN,
     MAP_VISIBILITY_PLAYER,
     add_map_fact,
@@ -111,6 +112,14 @@ def test_render_overview_topology_svg_writes_visual_ref_and_pending_output():
 def test_render_overview_topology_svg_does_not_fallback_to_active_strict_map():
     repository = JsonGameRepository(_runtime_root("overview-no-strict-fallback") / "data")
     session = GameSession.new("group")
+    create_map_record(
+        session.maps,
+        "strict-room",
+        title="Player-visible strict room",
+        map_type=MAP_TYPE_STRICT_LOCAL,
+        visibility=MAP_VISIBILITY_PLAYER,
+        set_active=True,
+    )
     save_active_strict_grid(
         session.maps,
         {
@@ -120,6 +129,22 @@ def test_render_overview_topology_svg_does_not_fallback_to_active_strict_map():
             "entities": {"pc": {"name": "PC", "x": 1, "y": 1}},
         },
         map_id="strict-room",
+        title="Player-visible strict room",
+    )
+    add_map_fact(
+        session.maps,
+        "strict-room",
+        fact_id="strict-topology-bait",
+        kind="overview_topology",
+        text="This topology-shaped fact must not make a strict map render as an overview map.",
+        visibility=MAP_VISIBILITY_PLAYER,
+        payload={
+            "nodes": [{"id": "strict-node", "label": "Strict Node", "visibility": "player"}],
+            "edges": [],
+            "areas": [],
+            "landmarks": [],
+            "current_node_id": "strict-node",
+        },
     )
     repository.save_session(session)
 

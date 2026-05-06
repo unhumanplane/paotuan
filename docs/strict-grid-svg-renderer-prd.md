@@ -324,8 +324,10 @@ fixed SVG subset rather than accepting provider-authored XML.
   delivery/final-sweep work keeps it explicit-only instead of deleting it.
 - Delivery cadence and duplicate/spam suppression, later owned by delivery
   cadence work.
-- Final legacy cleanup of `battle.grid`, `last_map_svg`, or old SVG state,
-  later owned by 03.1.08 / 03.1.08.01.
+- Final legacy cleanup of `battle.grid`, `last_map_svg`, or old SVG state; the
+  later 03.1.08 / 03.1.08.01 cleanup phases downgrade these surfaces to
+  old-save compatibility, explicit visual fallback, or internal delivery
+  metadata instead of strict renderer authority.
 
 ## Purpose And Means Alignment
 
