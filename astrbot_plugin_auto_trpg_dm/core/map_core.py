@@ -390,6 +390,16 @@ def load_active_strict_grid(store: dict[str, Any], legacy_battle: Any | None = N
     }
 
 
+def load_active_strict_grid_entities(store: dict[str, Any], legacy_battle: Any | None = None) -> dict[str, Any]:
+    loaded = load_active_strict_grid(store, legacy_battle)
+    if not loaded.get("ok"):
+        return {}
+    grid = loaded.get("grid")
+    if not isinstance(grid, dict):
+        return {}
+    return dict(grid.get("entities") or {})
+
+
 def save_active_strict_grid(
     store: dict[str, Any],
     grid: dict[str, Any],

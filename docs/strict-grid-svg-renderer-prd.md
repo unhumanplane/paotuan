@@ -224,7 +224,7 @@ The hidden-data guard must happen before SVG generation:
 | `create_grid()` created default strict map | Route through MapCore strict adapter, then deterministic renderer. | `create_grid()` now writes MapCore strict grid while preserving legacy behavior. |
 | Legacy-only `session.battle["grid"]` | Compatibility migration/fallback before rendering. | Legacy mirror is not the renderer contract. |
 | Stale `battle.grid` mirror when MapCore strict grid exists | Ignore for renderer authority. | Stale legacy mirror must not override MapCore. |
-| `get_battle_snapshot()` raw battle/grid diagnostics | Intentionally unchanged. | It remains a raw diagnostic/legacy surface and must not become player renderer input. |
+| `get_battle_snapshot()` tactical state query | Returns safe `battle_status` / `tactical_map` summaries after 03.1.08 cleanup. | It is not renderer input and must not reintroduce raw `battle.grid` or raw MapStore grids into ordinary tool output. |
 | `generate_map_svg()` | Intentionally unchanged in this task. | It remains a legacy visual fallback until the later delivery/legacy migration PR. |
 | `scene["last_map_svg"]` | Intentionally unchanged. | It is legacy visual state, not strict renderer truth. |
 | `scene["_pending_outputs"]` | Reuse only for renderer artifact delivery if needed. | Cadence, duplicate suppression, and migration are later work. |

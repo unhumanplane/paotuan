@@ -139,8 +139,90 @@ def test_legacy_battle_grid_is_migrated_on_spatial_tool_load():
     result = asyncio.run(SpatialTools(repo, "group").get_battle_snapshot())
 
     assert result["ok"] is True
+    assert "battle" not in result
+    assert "grid" not in result
+    assert result["battle_status"]["active"] is True
+    assert result["tactical_map"]["map_id"]
+    assert result["tactical_map"]["width"] == 5
+    assert result["tactical_map"]["height"] == 5
+    assert result["tactical_map"]["entities"][0]["id"] == "pc"
     session = repo.load_session("group")
     assert session.battle["map_id"]
     record = get_map_record(session.maps, session.battle["map_id"])
     assert record["archive_identity"]["migration_source"] == "battle.grid"
     assert record["grid"]["entities"]["pc"]["x"] == 1
+
+
+def test_get_battle_snapshot_returns_safe_tactical_summary_not_raw_grid():
+    repo = _repo("battle_snapshot_safe")
+    repo.save_session(_ready_session())
+    tools = SpatialTools(repo, "group")
+    asyncio.run(tools.create_grid(width=6, height=4, cells=[{"x": 2, "y": 1, "terrain": "rubble", "cover": 2}]))
+    asyncio.run(tools.place_entity("pc", "Scout", 1, 2, faction="party", tags={"secret": "do-not-project"}))
+
+    result = asyncio.run(tools.get_battle_snapshot())
+
+    assert result["ok"] is True
+    assert "battle" not in result
+    assert "grid" not in result
+    assert result["battle_status"]["active"] is True
+    assert result["battle_status"]["map_id"] == DEFAULT_STRICT_LOCAL_MAP_ID
+    assert result["battle_status"]["turn_entity_id"] == ""
+    assert result["battle_status"]["turn"]["phase"] == "idle"
+    assert result["tactical_map"]["source"] == "map_store"
+    assert result["tactical_map"]["width"] == 6
+    assert result["tactical_map"]["height"] == 4
+    assert result["tactical_map"]["entity_count"] == 1
+    assert result["tactical_map"]["entities"] == [
+        {
+            "id": "pc",
+            "name": "Scout",
+            "x": 1,
+            "y": 2,
+            "faction": "party",
+            "move_points": 6,
+            "attack_range": 1,
+            "blocks_move": True,
+        }
+    ]
+    assert result["tactical_map"]["terrain_feature_count"] == 1
+    assert result["tactical_map"]["terrain_features"] == [
+        {
+            "x": 2,
+            "y": 1,
+            "terrain": "rubble",
+            "cost": 1,
+            "blocks_move": False,
+            "blocks_los": False,
+            "cover": 2,
+        }
+    ]
+    assert result["compatibility"]["legacy_mirror_present"] is True
+    assert result["compatibility"]["legacy_mirror_authoritative"] is False
+
+
+def test_spatial_turn_guard_reads_map_store_owner_before_stale_battle_grid():
+    repo = _repo("spatial_turn_guard_map_store")
+    repo.save_session(_ready_session())
+    tools = SpatialTools(repo, "group", actor={"player_id": "owner"})
+    asyncio.run(tools.create_grid(width=5, height=5))
+    asyncio.run(tools.place_entity("pc", "MapStore PC", 1, 1, faction="party", tags={"player_id": "owner"}))
+    session = repo.load_session("group")
+    session.battle["turn"] = {
+        "active": True,
+        "round": 1,
+        "phase": "character_turn",
+        "turn_order": ["pc"],
+        "current_index": 0,
+        "current_entity_id": "pc",
+        "actions_this_round": {},
+    }
+    session.battle["turn_entity_id"] = "pc"
+    session.battle["grid"]["entities"]["pc"]["tags"] = {"player_id": "intruder"}
+    repo.save_session(session)
+
+    result = asyncio.run(tools.move_entity("pc", 2, 1))
+
+    assert result["ok"] is True
+    session = repo.load_session("group")
+    assert session.battle["grid"]["entities"]["pc"]["x"] == 2

@@ -5,6 +5,7 @@ from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
+from ..core.map_core import load_active_strict_grid_entities
 from ..core.models import GameMode, GameSession, utc_now_iso
 from ..storage.json_repository import JsonGameRepository
 
@@ -349,8 +350,7 @@ class TurnTools:
         ]
 
     def _derive_turn_order(self, session: GameSession) -> List[str]:
-        grid = (session.battle or {}).get("grid") or {}
-        entities = dict(grid.get("entities", {}))
+        entities = load_active_strict_grid_entities(session.maps, session.battle)
         if entities:
             def sort_key(item: tuple[str, Dict[str, Any]]) -> tuple[int, str]:
                 entity_id, entity = item
@@ -775,8 +775,7 @@ class TurnTools:
         return f"按当前阶段裁定；回复不超过 {limit} 字。"
 
     def _grid_entity(self, session: GameSession, entity_id: str) -> Dict[str, Any]:
-        entities = dict(((session.battle or {}).get("grid") or {}).get("entities", {}))
-        return dict(entities.get(entity_id, {}))
+        return dict(load_active_strict_grid_entities(session.maps, session.battle).get(entity_id, {}))
 
     def _entity_label(self, session: GameSession, entity_id: str) -> str:
         grid_entity = self._grid_entity(session, entity_id)

@@ -31,6 +31,8 @@ __pycache__/
 .pytest_cache/
 .pytest_tmp/
 .pytest-tmp/
+.pytest-runtime/
+.pt-*/
 .tmp/
 pytest-manual-dir/
 tests/_tmp_runtime/

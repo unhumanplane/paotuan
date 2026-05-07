@@ -142,8 +142,9 @@ Required guardrails:
 - Do not expose hidden layout records before visibility changes.
 - Do not expose local artifact paths, provider URLs, raw SVG, or raw PNG
   metadata through prompt/player facts.
-- Keep diagnostic views and raw battle snapshots out of ordinary narration
-  unless they pass through prompt/tool projection.
+- Keep diagnostic views and raw battle snapshots out of ordinary narration.
+  Ordinary tactical state queries use safe battle/map summaries; raw grid
+  inspection belongs to code-owned spatial or diagnostic paths.
 - Keep map fact revisions separate from render-layout revisions.
 
 ## Legacy Compatibility Fields
@@ -156,8 +157,8 @@ handle deliberately:
 - `scene["_pending_outputs"]` is delivery infrastructure.
 - `battle["grid"]` is a compatibility mirror and migration source, not future
   renderer authority.
-- `get_battle_snapshot()` currently returns raw battle/grid payload and is not a
-  safe player-view contract.
+- `get_battle_snapshot()` returns a prompt-safe `battle_status` /
+  `tactical_map` summary, not raw `session.battle` or `grid.to_dict()`.
 
 These fields must not be silently promoted into the coordinate contract. Later
 migration or cleanup should happen in focused PRs.

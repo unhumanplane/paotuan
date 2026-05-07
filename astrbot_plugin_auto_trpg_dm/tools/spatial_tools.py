@@ -10,6 +10,7 @@ from ..core.map_core import (
     MAP_LIFECYCLE_ACTIVE_COMBAT_LINKED,
     get_strict_map_lifecycle,
     load_active_strict_grid,
+    load_active_strict_grid_entities,
     migrate_legacy_battle_grid,
     save_active_strict_grid,
 )
@@ -178,9 +179,21 @@ class SpatialTools:
         return result
 
     async def get_battle_snapshot(self) -> Dict[str, Any]:
-        """获取当前战棋地图的结构化快照。"""
+        """获取当前战棋地图的 prompt-safe 状态摘要。"""
         session, grid = self._load_grid()
-        return {"ok": True, "battle": session.battle, "grid": grid.to_dict()}
+        battle = session.battle or {}
+        loaded = load_active_strict_grid(session.maps, battle)
+        source = str(loaded.get("source") or "map_store")
+        map_id = str(battle.get("map_id") or session.maps.get("active_strict_map_id") or "")
+        return {
+            "ok": True,
+            "battle_status": _safe_battle_status(battle),
+            "tactical_map": _safe_tactical_map_summary(grid, map_id=map_id, source=source),
+            "compatibility": {
+                "legacy_mirror_present": isinstance(battle.get("grid"), dict),
+                "legacy_mirror_authoritative": False,
+            },
+        }
 
     def _load_grid(self) -> Tuple[Any, GridState]:
         session = self.repository.load_session(self.session_id)
@@ -276,7 +289,10 @@ class SpatialTools:
 
     @staticmethod
     def _owner_player_id(session: Any, entity_id: str) -> str:
-        entities = dict(((session.battle or {}).get("grid") or {}).get("entities", {}))
+        entities = load_active_strict_grid_entities(
+            getattr(session, "maps", {}),
+            getattr(session, "battle", {}),
+        )
         grid_entity = dict(entities.get(entity_id, {}))
         tags = dict(grid_entity.get("tags", {}))
         if tags.get("player_id"):
@@ -310,3 +326,77 @@ def _clean_order(order: List[str]) -> List[str]:
             cleaned.append(value)
             seen.add(value)
     return cleaned
+
+
+def _safe_battle_status(battle: Dict[str, Any]) -> Dict[str, Any]:
+    status = {
+        "active": bool(battle.get("active", False)),
+        "map_id": str(battle.get("map_id", "") or ""),
+        "turn_entity_id": str(battle.get("turn_entity_id", "") or ""),
+    }
+    turn = battle.get("turn")
+    if isinstance(turn, dict):
+        status["turn"] = {
+            "active": bool(turn.get("active", False)),
+            "round": _safe_int(turn.get("round", 0)),
+            "phase": str(turn.get("phase", "") or ""),
+            "current_entity_id": str(turn.get("current_entity_id", "") or ""),
+            "turn_order": [str(item) for item in list(turn.get("turn_order") or [])[:24]],
+        }
+    return status
+
+
+def _safe_tactical_map_summary(grid: GridState, *, map_id: str, source: str) -> Dict[str, Any]:
+    entities = [
+        {
+            "id": entity.id,
+            "name": entity.name,
+            "x": entity.x,
+            "y": entity.y,
+            "faction": entity.faction,
+            "move_points": entity.move_points,
+            "attack_range": entity.attack_range,
+            "blocks_move": entity.blocks_move,
+        }
+        for entity in sorted(grid.entities.values(), key=lambda item: item.id)
+    ]
+    terrain_features = [
+        {
+            "x": cell.x,
+            "y": cell.y,
+            "terrain": cell.terrain,
+            "cost": cell.cost,
+            "blocks_move": cell.blocks_move,
+            "blocks_los": cell.blocks_los,
+            "cover": cell.cover,
+        }
+        for cell in sorted(grid.cells.values(), key=lambda item: (item.y, item.x))
+        if _cell_has_non_default_feature(cell)
+    ]
+    return {
+        "map_id": map_id,
+        "source": source,
+        "width": grid.width,
+        "height": grid.height,
+        "entity_count": len(entities),
+        "entities": entities[:24],
+        "terrain_feature_count": len(terrain_features),
+        "terrain_features": terrain_features[:24],
+    }
+
+
+def _cell_has_non_default_feature(cell: Cell) -> bool:
+    return (
+        cell.terrain != "normal"
+        or cell.cost != 1
+        or cell.blocks_move
+        or cell.blocks_los
+        or cell.cover != 0
+    )
+
+
+def _safe_int(value: Any) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
