@@ -2,6 +2,22 @@
 
 所有已经合入 `main` 的用户可见变更都记录在这里。日期使用香港时区对应的开发日期。
 
+## [0.1.90] - 2026-05-07
+
+### Changed
+
+- 地图交付 Phase 3 迁移收口：普通 strict / tactical / overview 地图请求优先使用确定性 renderer，legacy `generate_map_svg` 保留为显式 fallback、风格实验或迁移兼容路径。
+- README 补充交付节奏、legacy SVG 降级策略、旧存档兼容和相关目录/文档入口，避免把 SVG / PNG 或本地 artifact 路径当成权威地图事实。
+
+### Fixed
+
+- 保持 `v0.1.90` 代码版本、插件 metadata、README 和 changelog 版本说明一致。
+
+### Verified
+
+- `python -m compileall -q astrbot_plugin_auto_trpg_dm tests scripts`
+- `python -m pytest tests\test_hermes_coder_bridge.py tests\test_hermes_coder_plugin.py tests\test_hermes_notify_cron_output.py`
+- `git diff --check`
 ## [0.1.89] - 2026-05-04
 
 ### Added
