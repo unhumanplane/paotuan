@@ -65,7 +65,7 @@ The implementation must account for these current readers and writers:
 | `SpatialEngine` | `astrbot_plugin_auto_trpg_dm/spatial/engine.py`, `spatial/los.py`, and `spatial/map_calculator.py` own movement, LOS, range, and route calculations. | Renderer can display calculation-relevant fields but must not recalculate or mutate adjudication state. |
 | MapStore strict maps | `astrbot_plugin_auto_trpg_dm/core/map_core.py` defines `MAP_VIEW_PLAYER`, `strict_local_map`, `active_strict_map_id`, `load_active_strict_grid()`, `save_active_strict_grid()`, `migrate_legacy_battle_grid()`, `add_render_ref()`, and projection helpers. | Renderer input adapter should prefer MapCore strict grid and only use legacy fallback through existing migration helpers. |
 | `battle.grid` compatibility | `spatial_tools.py` keeps a temporary legacy mirror and migrates legacy grids when no active strict grid exists. | Renderer contract should not consume `battle.grid` directly; migration is compatibility input only. |
-| Legacy SVG generator | `tools/map_tools.py` exposes `generate_map_svg`, calls an LLM sub-context, sanitizes SVG, writes files, stores `scene["last_map_svg"]`, and appends `_pending_outputs`. | This task adds a deterministic strict-grid path but does not globally remove or downgrade `generate_map_svg`. |
+| Legacy SVG generator | `tools/map_tools.py` exposes explicit fallback `generate_map_svg`, calls an LLM sub-context, sanitizes SVG, writes files, records visual-only render refs where possible, and appends normalized `_pending_outputs`. It no longer writes new `scene["last_map_svg"]`. | This task adds a deterministic strict-grid path; later final sweep keeps legacy SVG explicit-only and visual-only. |
 | SVG sanitization and preview | `sanitize_svg()` lives in `tools/map_tools.py`; PNG preview and output attachment are handled in `main.py`. | Deterministic SVG should stay within supported sanitized SVG primitives and reuse delivery where safe. |
 | `_pending_outputs` | `main.py` pops pending output records for chat delivery; `map_tools.py` and other tools can append records. | This task may reuse pending output records for renderer artifacts but does not change cadence or anti-spam state. |
 | Prompt and tool schemas | `core/prompts.py` still asks for `generate_map_svg`; `tools/registry.py` still registers it and may add it to selected tools. | Normal map request routing migration is a later delivery/legacy PR; this task should only expose the minimal strict renderer path needed for deterministic rendering. |
@@ -225,9 +225,9 @@ The hidden-data guard must happen before SVG generation:
 | Legacy-only `session.battle["grid"]` | Compatibility migration/fallback before rendering. | Legacy mirror is not the renderer contract. |
 | Stale `battle.grid` mirror when MapCore strict grid exists | Ignore for renderer authority. | Stale legacy mirror must not override MapCore. |
 | `get_battle_snapshot()` tactical state query | Returns safe `battle_status` / `tactical_map` summaries after 03.1.08 cleanup. | It is not renderer input and must not reintroduce raw `battle.grid` or raw MapStore grids into ordinary tool output. |
-| `generate_map_svg()` | Intentionally unchanged in this task. | It remains a legacy visual fallback until the later delivery/legacy migration PR. |
-| `scene["last_map_svg"]` | Intentionally unchanged. | It is legacy visual state, not strict renderer truth. |
-| `scene["_pending_outputs"]` | Reuse only for renderer artifact delivery if needed. | Cadence, duplicate suppression, and migration are later work. |
+| `generate_map_svg()` | Was intentionally unchanged in the strict renderer task; later delivery/final-sweep work keeps it explicit-only. | It remains a legacy visual fallback, not normal strict renderer authority. |
+| `scene["last_map_svg"]` | Was intentionally unchanged in the strict renderer task; final sweep stops new writes and keeps old records as read compatibility. | It is legacy visual state, not strict renderer truth. |
+| `scene["_pending_outputs"]` | Reused only for renderer artifact delivery. | Cadence, duplicate suppression, and migration are owned by delivery/final-sweep work. |
 | Existing SVG sanitizer | Reuse where safe. | Deterministic renderer can emit sanitizer-compatible SVG primitives. |
 | Existing SVG-to-PNG preview | Reuse where safe. | Preview delivery is already implemented. |
 | Chat delivery cadence | Intentionally unchanged. | Combat round cadence and map-request routing belong to later delivery migration. |
@@ -248,13 +248,15 @@ Renderer artifacts should use the existing delivery shape when possible:
   preserve renderer identity;
 - keep delivery metadata separate from map facts and spatial state.
 
-This task does not implement:
+This strict renderer task did not implement:
 
 - combat every-N-round automatic map send cadence;
 - duplicate/spam suppression state;
 - broad normal player map-request routing migration;
-- global downgrade or hiding of `generate_map_svg`;
-- cleanup of legacy `last_map_svg` fields.
+- global downgrade or hiding of `generate_map_svg`; later delivery/final-sweep
+  work keeps it explicit-only;
+- cleanup of legacy `last_map_svg` fields; final sweep stops new writes and
+  keeps old records as compatibility metadata.
 
 ## SVG Sanitization / PNG Delivery Reuse Plan
 
@@ -318,9 +320,14 @@ fixed SVG subset rather than accepting provider-authored XML.
 - Perfect art style or rich illustrated battle maps.
 - Manual map editing UI.
 - Changing map facts from SVG, PNG, or rendered artifacts.
-- Global `generate_map_svg` removal, hiding, or prompt migration.
-- Delivery cadence and duplicate/spam suppression.
-- Final legacy cleanup of `battle.grid`, `last_map_svg`, or old SVG state.
+- Global `generate_map_svg` removal, hiding, or prompt migration; later
+  delivery/final-sweep work keeps it explicit-only instead of deleting it.
+- Delivery cadence and duplicate/spam suppression, later owned by delivery
+  cadence work.
+- Final legacy cleanup of `battle.grid`, `last_map_svg`, or old SVG state; the
+  later 03.1.08 / 03.1.08.01 cleanup phases downgrade these surfaces to
+  old-save compatibility, explicit visual fallback, or internal delivery
+  metadata instead of strict renderer authority.
 
 ## Purpose And Means Alignment
 

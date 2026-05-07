@@ -9,6 +9,13 @@ from typing import Any, Dict, Optional
 
 from pydantic import BaseModel, Field
 
+from ..core.map_delivery_cadence import (
+    MAP_DELIVERY_TRIGGER_PLAYER_REQUEST,
+    MAP_RENDER_LEGACY_LLM_SVG,
+    MapDeliveryRequest,
+    enqueue_map_pending_output,
+)
+from ..core.map_core import add_render_ref
 from ..core.plugin_log import get_plugin_logger
 from ..storage.json_repository import JsonGameRepository
 
@@ -140,36 +147,80 @@ class MapTools:
 
         path = self._write_svg(title, svg)
         latest_session = self.repository.load_session(self.session_id)
+        map_id = str(
+            latest_session.maps.get("active_strict_map_id")
+            or latest_session.maps.get("active_overview_map_id")
+            or ""
+        )
+        render_ref: dict[str, Any] = {}
+        if map_id:
+            try:
+                render_ref = add_render_ref(
+                    latest_session.maps,
+                    map_id,
+                    ref_type=MAP_RENDER_LEGACY_LLM_SVG,
+                    title=title,
+                    name=path.name,
+                    path=str(path),
+                    visual_only=True,
+                )
+            except ValueError:
+                map_id = ""
         map_record = {
             "type": "svg_map",
+            "render_type": MAP_RENDER_LEGACY_LLM_SVG,
+            "preferred_render_type": MAP_RENDER_LEGACY_LLM_SVG,
             "title": title,
             "name": path.name,
             "path": str(path),
             "created_at": datetime.now(timezone.utc).isoformat(),
+            "map_id": map_id,
             "width": width,
             "height": height,
             "grid_width": grid_width,
             "grid_height": grid_height,
             "player_position_count": sum(1 for item in player_positions if item.get("placed")),
             "visual_only": True,
+            "legacy_fallback": True,
         }
-        latest_session.scene["last_map_svg"] = map_record
+        delivery_decision = None
         if send_to_chat:
-            pending = list(latest_session.scene.get("_pending_outputs") or [])
-            pending.append(map_record)
-            latest_session.scene["_pending_outputs"] = pending[-3:]
+            delivery_decision, _state = enqueue_map_pending_output(
+                latest_session.scene,
+                map_record,
+                MapDeliveryRequest(
+                    trigger=MAP_DELIVERY_TRIGGER_PLAYER_REQUEST,
+                    render_type=MAP_RENDER_LEGACY_LLM_SVG,
+                    map_id=map_id,
+                    trigger_id=path.name,
+                    legacy_fallback_allowed=True,
+                ),
+            )
         self.repository.save_session(latest_session)
 
         result = {
             "ok": True,
+            "render_type": MAP_RENDER_LEGACY_LLM_SVG,
+            "map_id": map_id,
             "title": title,
             "file_path": str(path),
             "file_name": path.name,
             "svg_chars": len(svg),
             "send_to_chat": send_to_chat,
             "visual_only": True,
-            "message": "SVG 地图已生成。注意：它只是视觉层，物理坐标仍以 Spatial Engine 为准。",
+            "legacy_fallback": True,
+            "render_ref": {
+                "type": render_ref.get("type"),
+                "title": render_ref.get("title"),
+                "name": render_ref.get("name"),
+                "visual_only": render_ref.get("visual_only", True),
+            }
+            if render_ref
+            else {},
+            "message": "Legacy SVG 地图已生成；它只是视觉层，结构化地图事实仍以 MapStore / Spatial Engine 为准。",
         }
+        if delivery_decision is not None:
+            result["delivery"] = _json_safe(delivery_decision.__dict__)
         self._audit("generate_map_svg", locals_without_self(locals()), result)
         get_plugin_logger().info(
             "map_subagent_completed session=%s file=%s svg_chars=%s send_to_chat=%s",
@@ -1290,7 +1341,7 @@ def locals_without_self(values: Dict[str, Any]) -> Dict[str, Any]:
     return {
         key: value
         for key, value in values.items()
-        if key not in {"self", "session", "latest_session", "response", "raw_text", "svg", "result"}
+        if key not in {"self", "session", "latest_session", "response", "raw_text", "svg", "result", "delivery_decision"}
     }
 
 

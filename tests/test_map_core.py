@@ -436,6 +436,41 @@ def test_load_active_strict_grid_prefers_map_store_over_legacy_battle_grid():
     assert loaded["grid"] == strict_grid
 
 
+def test_load_active_strict_grid_uses_battle_map_id_only_when_active_strict_missing():
+    store = default_map_store()
+    strict_grid = {"width": 3, "height": 3, "cells": [], "entities": {"pc": {"x": 1, "y": 1}}}
+    legacy_grid = {"width": 9, "height": 9, "cells": [], "entities": {"legacy": {"x": 8, "y": 8}}}
+    save_active_strict_grid(store, strict_grid, map_id="strict-room")
+    store["active_strict_map_id"] = ""
+
+    loaded = load_active_strict_grid(store, {"active": True, "map_id": "strict-room", "grid": legacy_grid})
+
+    assert loaded["ok"] is True
+    assert loaded["source"] == "map_store"
+    assert loaded["map_id"] == "strict-room"
+    assert loaded["grid"] == strict_grid
+    assert loaded["compatibility_source"] == "battle.map_id"
+    assert loaded["migration_required"] is False
+
+
+def test_load_active_strict_grid_ignores_stale_battle_map_id_when_active_strict_exists():
+    store = default_map_store()
+    active_grid = {"width": 3, "height": 3, "cells": [], "entities": {"active": {"x": 1, "y": 1}}}
+    stale_grid = {"width": 9, "height": 9, "cells": [], "entities": {"stale": {"x": 8, "y": 8}}}
+    save_active_strict_grid(store, active_grid, map_id="active-room")
+    create_map_record(store, "stale-room", map_type=MAP_TYPE_STRICT_LOCAL)
+    store["records"]["stale-room"]["grid"] = stale_grid
+    legacy_battle = {"active": True, "map_id": "stale-room", "grid": stale_grid}
+
+    loaded = load_active_strict_grid(store, legacy_battle)
+
+    assert loaded["ok"] is True
+    assert loaded["source"] == "map_store"
+    assert loaded["map_id"] == "active-room"
+    assert loaded["grid"] == active_grid
+    assert "compatibility_source" not in loaded
+
+
 def test_load_active_strict_grid_falls_back_to_legacy_battle_grid():
     store = default_map_store()
     legacy_grid = {"width": 9, "height": 9, "cells": [], "entities": {"legacy": {"x": 8, "y": 8}}}

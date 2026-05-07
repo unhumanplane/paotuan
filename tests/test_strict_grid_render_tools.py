@@ -7,6 +7,7 @@ from astrbot_plugin_auto_trpg_dm.core.map_core import (
     DEFAULT_STRICT_LOCAL_MAP_ID,
     MAP_VIEW_PLAYER,
     MAP_TYPE_STRICT_LOCAL,
+    create_map_record,
     get_map_record,
     project_active_map_record,
     save_active_strict_grid,
@@ -134,6 +135,40 @@ def test_render_strict_grid_svg_migrates_legacy_grid_without_llm_or_generate_map
     assert record["archive_identity"]["migration_source"] == "battle.grid"
     assert record["grid"]["entities"]["hero"]["x"] == 0
     assert "_pending_outputs" not in saved.scene
+
+
+def test_render_strict_grid_svg_ignores_stale_battle_map_id_when_active_map_exists():
+    repo = _repo("strict_render_stale_battle_map_id")
+    session = GameSession.new("group")
+    save_active_strict_grid(
+        session.maps,
+        {
+            "width": 2,
+            "height": 2,
+            "cells": [],
+            "entities": {"active": {"name": "Active", "x": 0, "y": 0}},
+        },
+        map_id="active-room",
+        title="Active room",
+    )
+    stale_grid = {
+        "width": 7,
+        "height": 7,
+        "cells": [],
+        "entities": {"stale": {"name": "Stale", "x": 6, "y": 6}},
+    }
+    create_map_record(session.maps, "stale-room", map_type=MAP_TYPE_STRICT_LOCAL)
+    session.maps["records"]["stale-room"]["grid"] = stale_grid
+    session.battle = {"active": True, "map_id": "stale-room", "grid": stale_grid}
+    repo.save_session(session)
+
+    result = asyncio.run(StrictGridRenderTools(repo, "group").render_strict_grid_svg(send_to_chat=False))
+
+    assert result["ok"] is True
+    assert result["map_id"] == "active-room"
+    saved = repo.load_session("group")
+    assert get_map_record(saved.maps, "active-room")["render_refs"]
+    assert get_map_record(saved.maps, "stale-room")["render_refs"] == []
 
 
 def test_render_strict_grid_svg_reports_missing_grid_without_legacy_fallback():

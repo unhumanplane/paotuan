@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Any
 
-from .map_core import default_map_store, normalize_map_store
+from .map_core import default_map_store, load_active_strict_grid, normalize_map_store
 
 
 def utc_now_iso() -> str:
@@ -276,7 +276,10 @@ class GameSession:
 
     def _compact_battle(self) -> dict[str, Any]:
         battle = self.battle or {"active": False}
-        grid = battle.get("grid", {})
+        loaded_grid = load_active_strict_grid(self.maps, battle)
+        grid = loaded_grid.get("grid") if loaded_grid.get("ok") else {}
+        if not isinstance(grid, dict):
+            grid = {}
         entities = dict(grid.get("entities", {}))
         turn = dict(battle.get("turn", {}))
         current_entity_id = str(turn.get("current_entity_id", "") or battle.get("turn_entity_id", ""))

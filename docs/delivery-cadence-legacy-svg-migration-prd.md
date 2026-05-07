@@ -14,9 +14,11 @@ migration:
 - Both renderer tool paths write visual-only render refs and can enqueue
   `_pending_outputs` records using `type: "svg_map"` plus renderer-specific
   `render_type` metadata.
-- The legacy `generate_map_svg` path still exists, still uses an LLM sub-context
-  to write SVG, and still writes `scene["last_map_svg"]` plus pending output
-  records.
+- The legacy `generate_map_svg` path still exists and still uses an LLM
+  sub-context to write SVG, but after the final sweep it no longer writes new
+  `scene["last_map_svg"]` records. New fallback output records visual-only
+  MapStore `render_refs` when an active map exists and uses normalized pending
+  output metadata for chat delivery.
 
 Recommended branch strategy for this task is to start from current
 `upstream/main` after PR #19 and PR #20, using a feature branch such as
@@ -121,9 +123,9 @@ policy, not renderer-specific layout logic.
 | Area | Current evidence | Migration impact |
 | --- | --- | --- |
 | Tool registry exposure | `tools/registry.py` registers `render_strict_grid_svg`, `render_overview_topology_svg`, and `generate_map_svg`; `core/map_tool_routing.py` selects deterministic renderers for normal map requests and exposes `generate_map_svg` only for explicit legacy/fallback/style/migration requests. | Implemented deterministic-first exposure. Legacy `generate_map_svg` stays available but hidden from normal tools. |
-| Legacy `generate_map_svg` | `tools/map_tools.py:47` defines the tool, `tools/map_tools.py:101` calls `MAP_SYSTEM_PROMPT`, `tools/map_tools.py:121` sanitizes SVG, `tools/map_tools.py:156` writes `scene["last_map_svg"]`, and `tools/map_tools.py:158` appends `_pending_outputs`. | Keep as temporary visual-only fallback. Do not use as normal map routing when deterministic renderer output is available. |
+| Legacy `generate_map_svg` | `tools/map_tools.py` defines the tool, calls `MAP_SYSTEM_PROMPT`, sanitizes SVG, writes the SVG artifact, writes a visual-only render ref when an active MapStore map exists, and enqueues normalized `_pending_outputs`. It no longer writes new `scene["last_map_svg"]`. | Keep as explicit visual-only fallback. Do not use as normal map routing when deterministic renderer output is available. |
 | Renderer tools | `tools/strict_grid_render_tools.py` and `tools/overview_topology_render_tools.py` project `MAP_VIEW_PLAYER`, write visual-only render refs, and enqueue `svg_map` records through `enqueue_map_pending_output()`. | Both renderer tools are delivery producers under the shared cadence policy. Renderer cores still own drawing only. |
-| `scene["last_map_svg"]` | `core/prompts.py:251` projects it through `_project_map_ref`; `core/prompts.py:271` excludes raw `last_map_svg` from ordinary scene projection; `tools/map_tools.py:156` still writes it. | Keep old records as legacy visual references. Do not read it as topology, grid, coordinate, or delivery-cadence authority. Future cleanup can retire it after deterministic paths stabilize. |
+| `scene["last_map_svg"]` | `core/prompts.py` projects old records through `_project_map_ref` and excludes raw `last_map_svg` from ordinary scene projection. New visual outputs use MapStore `render_refs` and normalized pending metadata instead. | Keep old records as legacy visual references. Do not read it as topology, grid, coordinate, or delivery-cadence authority. |
 | `_pending_outputs` | `main.py` pops pending outputs for replies, filters `svg_map` records through `filter_map_pending_outputs_for_delivery()`, then clears the queue. Renderer tools and `map_tools.py` append to the same scene list. | Queue shape is reused for v1. Map records remain delivery-only metadata and cadence state suppresses repeated automatic sends. |
 | SVG/PNG preview conversion | `main.py` attaches only `type: "svg_map"` records, calls `_ensure_png_preview()`, and renders best-effort PNG previews. | Preview conversion is reused. If conversion fails, player chat receives the map name but not the local artifact path. |
 | Chat send hooks | `main.py:370` sends fast replies with pending outputs; `main.py:505` sends completion replies with non-dice outputs; `main.py:637`, `main.py:1870`, and `main.py:2144` use direct `send_message` paths. | Cadence integration should target the normal DM result path first. Direct send paths need review before automatic map sends are added there. |
@@ -145,14 +147,14 @@ policy, not renderer-specific layout logic.
 | `_build_map_prompt()` | Builds legacy LLM SVG prompt from scene/battle context. | Kept inside legacy fallback only; removed or narrowed in later cleanup. | It may still support fallback, but must not become topology/grid authority. |
 | `sanitize_svg()` | Sanitizes generated SVG before file write. | Reused where safe, especially for fallback and any future externally authored SVG. | Deterministic renderers emit safe SVG subsets, but sanitizer remains useful compatibility infrastructure. |
 | Legacy file writing in `map_tools.py` | Writes SVG artifacts for `generate_map_svg`. | Kept as fallback implementation; not used by deterministic renderers unless a shared helper is factored later. | Avoid making `map_tools.py` larger during cadence work. |
-| `scene["last_map_svg"]` | Legacy visual reference projected safely by prompts. | Intentionally unchanged for read compatibility; no new deterministic dependency. Later cleanup target. | Old sessions may contain it, but it is not map truth. |
+| `scene["last_map_svg"]` | Legacy visual reference projected safely by prompts. | Read compatibility remains; new writes have moved to render refs / pending metadata. | Old sessions may contain it, but it is not map truth. |
 | Legacy `_pending_outputs` record with no `render_type` | Delivery queue item for old SVG maps. | Treated as `legacy_generate_map_svg`, marked `visual_only`, and delivered through cadence as compatibility. | Old pending records and fallback output should still attach where safe without becoming map facts. |
 | `type: "svg_map"` delivery discriminator | Shared attachment compatibility key. | Intentionally reused. | Existing chat delivery and tests depend on it. Renderer identity should live in `render_type`. |
 | Plain local path fallback in chat | Former fallback when PNG preview failed. | Changed: fallback text includes the map name only, not the local artifact path. | Internal artifact paths are delivery metadata and should not be player-facing. |
 | Prompt rule that prefers `generate_map_svg` for ordinary maps | Legacy behavior before deterministic renderers were normal. | Updated to deterministic-first; fallback wording remains only for explicitly allowed legacy/fallback/style/migration use. | Prompt and registry now agree on the post-renderer migration goal. |
 | Registry default that appends `generate_map_svg` | Legacy normal exposure. | Replaced with explicit routing/fallback policy in `core/map_tool_routing.py`. | Normal map requests should not see LLM-written SVG as the first path. |
 | Audit records for legacy SVG | Tool audit of inputs/results. | Intentionally unchanged with projection guard; review for raw path export if audit is surfaced later. | Audit is useful for debugging but is not player/backend map authority. |
-| Old session `last_map_svg` / old render refs | Compatibility data from previous saves. | Intentionally unchanged; project only safe fields and ignore as renderer input. | Avoid in-place save migration for a delivery PR. |
+| Old session `last_map_svg` / old render refs | Compatibility data from previous saves. | Project only safe fields and ignore as renderer input. | Avoid in-place save migration; final sweep stops new `last_map_svg` writes. |
 
 ## Delivery Cadence Contract
 
@@ -318,7 +320,9 @@ This branch adds:
 - Perfect preview rendering across all chat clients.
 - Removing legacy code before deterministic replacements are stable.
 - Rewriting MapCore facts from SVG, PNG, render refs, or delivery state.
-- Full legacy cleanup of `battle.grid`, `last_map_svg`, and old SVG fields.
+- Full legacy cleanup of `battle.grid`, `last_map_svg`, and old SVG fields;
+  03.1.08.01 final sweep later stops new `last_map_svg` writes and leaves
+  `battle.grid` only as old-save / compatibility mirror state.
 - Per-character/private vision rendering.
 - Advanced facing/FOV-aware map delivery.
 - Broad UI or manual map editor work.

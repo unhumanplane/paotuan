@@ -4,7 +4,7 @@ import json
 from typing import Any
 
 from .combat_lifecycle import combat_lifecycle_active
-from .map_core import MAP_VIEW_DIAGNOSTIC, MAP_VIEW_DM_NARRATION, project_map_store
+from .map_core import MAP_VIEW_DIAGNOSTIC, MAP_VIEW_DM_NARRATION, load_active_strict_grid_entities, project_map_store
 from .map_tool_routing import (
     looks_overview_map_request,
     looks_strict_grid_map_request,
@@ -428,7 +428,7 @@ def _relevant_character_ids(session: GameSession, actor: dict[str, Any]) -> set[
     ):
         if str(candidate or "").strip():
             ids.add(str(candidate))
-    entities = dict(((battle.get("grid") or {}).get("entities") or {}))
+    entities = load_active_strict_grid_entities(session.maps, battle)
     for entity_id in list(ids):
         entity = dict(entities.get(entity_id, {}) or {})
         tags = dict(entity.get("tags") or {})

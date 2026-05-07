@@ -21,6 +21,7 @@ from astrbot.core.utils.astrbot_path import get_astrbot_data_path
 
 from .core.ambient_image import AmbientImageConfig, AmbientImageProvider
 from .core.external_memory import HonchoExternalMemory, HonchoMemoryConfig
+from .core.map_core import load_active_strict_grid_entities
 from .core.map_delivery_cadence import filter_map_pending_outputs_for_delivery
 from .core.plugin_log import configure_plugin_logging
 from .core.router import IntentRouter
@@ -1180,7 +1181,7 @@ class AutoTrpgDmPlugin(Star):
         current_id = str(turn.get("current_entity_id") or battle.get("turn_entity_id") or "").strip()
         if not current_id:
             return ""
-        entities = dict((battle.get("grid") or {}).get("entities") or {})
+        entities = load_active_strict_grid_entities(session.maps, battle)
         current_label = _entity_label(session, current_id, entities)
         owner_id = _entity_owner(session, current_id, entities)
         actor_id = str(actor.get("player_id") or "").strip()
@@ -1348,7 +1349,7 @@ class AutoTrpgDmPlugin(Star):
         if not turn.get("active"):
             return "当前没有启用轮次。"
         current_id = str(turn.get("current_entity_id") or battle.get("turn_entity_id") or "")
-        entities = dict((battle.get("grid") or {}).get("entities") or {})
+        entities = load_active_strict_grid_entities(session.maps, battle)
         label = _entity_label(session, current_id, entities) if current_id else "未指定"
         owner_id = _entity_owner(session, current_id, entities) if current_id else ""
         owner_name = str((session.participants.get(owner_id) or {}).get("display_name") or owner_id or "未绑定")
@@ -1808,7 +1809,7 @@ class AutoTrpgDmPlugin(Star):
         current_id = str(turn.get("current_entity_id") or battle.get("turn_entity_id") or "").strip()
         if not current_id:
             return {"active": True, "phase": phase, "missing_current": True}
-        entities = dict((battle.get("grid") or {}).get("entities") or {})
+        entities = load_active_strict_grid_entities(session.maps, battle)
         current_label = _entity_label(session, current_id, entities)
         waiting_since = _parse_datetime(turn.get("waiting_since_at")) or deadline
         elapsed = max(120, int((now - waiting_since).total_seconds()))
@@ -2107,7 +2108,7 @@ class AutoTrpgDmPlugin(Star):
         phase = str(turn.get("phase") or "")
         if phase == "character_turn":
             current_id = str(turn.get("current_entity_id") or battle.get("turn_entity_id") or "").strip()
-            entities = dict((battle.get("grid") or {}).get("entities") or {})
+            entities = load_active_strict_grid_entities(session.maps, battle)
             label = _entity_label(session, current_id, entities) if current_id else "未指定"
             if paused:
                 return f"暂停前停在：{label}。"
