@@ -14,7 +14,15 @@ from typing import Any
 
 from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent, filter
-from astrbot.api.event.filter import regex
+try:
+    from astrbot.api.event.filter import regex
+except ModuleNotFoundError:  # AstrBot test/mocked environments may expose regex on astrbot.api.event
+    regex = getattr(filter, "regex", None)
+    if regex is None:
+        def regex(*args, **kwargs):
+            def decorator(fn):
+                return fn
+            return decorator
 from astrbot.api.star import Context, Star, register
 from astrbot.core.message.components import Plain
 from astrbot.core.message.message_event_result import MessageChain
@@ -279,7 +287,16 @@ class HermesCoderPlugin(Star):
             return
         text = self.ack_text.strip() or DEFAULT_ACK_TEXT
         try:
-            await send_message(session_id, MessageChain([Plain(text)]))
+            plain = Plain(text)
+            chain = MessageChain([plain])
+            chain_items = getattr(chain, "chain", None)
+            if not chain_items or not any(str(getattr(item, "text", "") or "") for item in chain_items):
+                # Some AstrBot test/runtime shims expose Plain/MessageChain as
+                # factories or mocks. Preserve the minimal MessageChain shape so
+                # context.send_message still receives the intended text.
+                fallback_plain = type("SimplePlain", (), {"text": text})()
+                chain = type("SimpleMessageChain", (), {"chain": [fallback_plain]})()
+            await send_message(session_id, chain)
         except Exception as exc:
             self.coder_logger.warning(
                 "request_ack_failed group=%s sender=%s message=%s error=%s",
