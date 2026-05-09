@@ -290,6 +290,241 @@ def test_router_projects_tool_results_before_returning_to_dm_context():
     assert "debug trace" not in tool_context
 
 
+def test_router_retries_visual_map_request_when_llm_skips_renderer():
+    class FakeToolCallResponse:
+        completion_text = ""
+        tools_call_name = ["render_strict_grid_svg"]
+        tools_call_args = [{"title": "北门"}]
+        tool_calls = []
+
+    class FakeLoopLlm:
+        def __init__(self):
+            self.calls = 0
+            self.prompts = []
+
+        async def __call__(self, **kwargs):
+            self.calls += 1
+            self.prompts.append(kwargs["prompt"])
+            if self.calls == 1:
+                return FakeLlmResponse("战场示意图：\n+---+---+\n| P | E |\n+---+---+")
+            if self.calls == 2:
+                return FakeToolCallResponse()
+            return FakeLlmResponse("地图已生成，已附上。")
+
+    class RenderExecutor:
+        def __init__(self):
+            self.calls = []
+
+        async def execute(self, tool_name, args):
+            self.calls.append((tool_name, args))
+            return {"ok": True, "render_type": "strict_grid_svg", "file_name": "north.svg"}
+
+    async def run_case():
+        repository = InMemoryRepository()
+        router = IntentRouter.__new__(IntentRouter)
+        llm = FakeLoopLlm()
+        executor = RenderExecutor()
+        router.max_steps = 3
+        router._llm_generate = llm
+        router.repository = repository
+
+        result = await router._run_llm_tool_loop(
+            chat_provider_id="fake-provider",
+            system_prompt="system",
+            initial_prompt="玩家行动",
+            toolset=object(),
+            tool_executor=executor,
+            session_id="group-1",
+            raw_player_message="画一张当前战场站位图",
+            available_tool_names=["render_strict_grid_svg"],
+        )
+        return result, llm, executor, repository.last_audit_records("group-1", limit=20)
+
+    result, llm, executor, records = asyncio.run(run_case())
+    guard_records = [item for item in records if item.get("type") == "visual_map_request_guard"]
+
+    assert result.completion_text == "地图已生成，已附上。"
+    assert executor.calls == [("render_strict_grid_svg", {"title": "北门"})]
+    assert "不能用 ASCII" in llm.prompts[1]
+    assert guard_records[-1]["action"] == "renderer_retry_requested"
+    assert guard_records[-1]["completion_hash"]
+    assert "战场示意" not in str(guard_records[-1])
+
+
+def test_router_replaces_text_map_bypass_with_missing_data_response_after_retry():
+    class FakeLoopLlm:
+        def __init__(self):
+            self.calls = 0
+
+        async def __call__(self, **kwargs):
+            self.calls += 1
+            return FakeLlmResponse("地图如下：\n+---+---+\n| P | E |\n+---+---+")
+
+    class NoToolExecutor:
+        async def execute(self, tool_name, args):
+            raise AssertionError("renderer was skipped")
+
+    async def run_case():
+        repository = InMemoryRepository()
+        router = IntentRouter.__new__(IntentRouter)
+        llm = FakeLoopLlm()
+        router.max_steps = 2
+        router._llm_generate = llm
+        router.repository = repository
+
+        result = await router._run_llm_tool_loop(
+            chat_provider_id="fake-provider",
+            system_prompt="system",
+            initial_prompt="玩家行动",
+            toolset=object(),
+            tool_executor=NoToolExecutor(),
+            session_id="group-1",
+            raw_player_message="画一张当前战场站位图",
+            available_tool_names=["render_strict_grid_svg"],
+        )
+        return result, llm, repository.last_audit_records("group-1", limit=20)
+
+    result, llm, records = asyncio.run(run_case())
+    guard_records = [item for item in records if item.get("type") == "visual_map_request_guard"]
+
+    assert llm.calls == 2
+    assert "结构化地图数据" in result.completion_text
+    assert "+---+" not in result.completion_text
+    assert guard_records[-1]["action"] == "missing_data_response"
+    assert guard_records[-1]["reason"] == "renderer_not_attempted_after_retry"
+    assert guard_records[-1]["text_map_signals"] == ["ascii_box_grid"]
+
+
+def test_router_allows_explicit_text_only_map_sketch():
+    class NoToolExecutor:
+        async def execute(self, tool_name, args):
+            raise AssertionError("explicit text-only request should not require renderer")
+
+    async def run_case():
+        async def llm_generate(**kwargs):
+            return FakeLlmResponse("文字地图：\nP  门  E")
+
+        repository = InMemoryRepository()
+        router = IntentRouter.__new__(IntentRouter)
+        router.max_steps = 2
+        router._llm_generate = llm_generate
+        router.repository = repository
+
+        result = await router._run_llm_tool_loop(
+            chat_provider_id="fake-provider",
+            system_prompt="system",
+            initial_prompt="玩家行动",
+            toolset=object(),
+            tool_executor=NoToolExecutor(),
+            session_id="group-1",
+            raw_player_message="用 text-only sketch 画一张当前地图",
+            available_tool_names=["render_strict_grid_svg"],
+        )
+        return result, repository.last_audit_records("group-1", limit=20)
+
+    result, records = asyncio.run(run_case())
+
+    assert result.completion_text == "文字地图：\nP  门  E"
+    assert not any(item.get("type") == "visual_map_request_guard" for item in records)
+
+
+def test_router_replaces_renderer_missing_data_text_map_with_setup_response():
+    class FakeToolCallResponse:
+        completion_text = ""
+        tools_call_name = ["render_strict_grid_svg"]
+        tools_call_args = [{}]
+        tool_calls = []
+
+    class FakeLoopLlm:
+        def __init__(self):
+            self.calls = 0
+
+        async def __call__(self, **kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                return FakeToolCallResponse()
+            return FakeLlmResponse("战场示意图：\n+---+---+\n| P | ? |\n+---+---+")
+
+    class MissingDataExecutor:
+        async def execute(self, tool_name, args):
+            return {"ok": False, "error": "strict_grid_not_found", "message": "missing"}
+
+    async def run_case():
+        repository = InMemoryRepository()
+        router = IntentRouter.__new__(IntentRouter)
+        router.max_steps = 2
+        router._llm_generate = FakeLoopLlm()
+        router.repository = repository
+
+        result = await router._run_llm_tool_loop(
+            chat_provider_id="fake-provider",
+            system_prompt="system",
+            initial_prompt="玩家行动",
+            toolset=object(),
+            tool_executor=MissingDataExecutor(),
+            session_id="group-1",
+            raw_player_message="画一张当前战场站位图",
+            available_tool_names=["render_strict_grid_svg"],
+        )
+        return result, repository.last_audit_records("group-1", limit=20)
+
+    result, records = asyncio.run(run_case())
+    guard_records = [item for item in records if item.get("type") == "visual_map_request_guard"]
+
+    assert "结构化地图数据" in result.completion_text
+    assert "? |" not in result.completion_text
+    assert guard_records[-1]["reason"] == "renderer_missing_data"
+    assert guard_records[-1]["missing_errors"] == ["strict_grid_not_found"]
+
+
+def test_router_replaces_generic_renderer_success_completion_with_delivery_ack():
+    class FakeToolCallResponse:
+        completion_text = ""
+        tools_call_name = ["render_strict_grid_svg"]
+        tools_call_args = [{}]
+        tool_calls = []
+
+    class FakeLoopLlm:
+        def __init__(self):
+            self.calls = 0
+
+        async def __call__(self, **kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                return FakeToolCallResponse()
+            return FakeLlmResponse("好的。")
+
+    class RenderExecutor:
+        async def execute(self, tool_name, args):
+            return {"ok": True, "render_type": "strict_grid_svg", "file_name": "strict.svg"}
+
+    async def run_case():
+        repository = InMemoryRepository()
+        router = IntentRouter.__new__(IntentRouter)
+        router.max_steps = 2
+        router._llm_generate = FakeLoopLlm()
+        router.repository = repository
+
+        result = await router._run_llm_tool_loop(
+            chat_provider_id="fake-provider",
+            system_prompt="system",
+            initial_prompt="玩家行动",
+            toolset=object(),
+            tool_executor=RenderExecutor(),
+            session_id="group-1",
+            raw_player_message="画一张当前战场站位图",
+            available_tool_names=["render_strict_grid_svg"],
+        )
+        return result, repository.last_audit_records("group-1", limit=20)
+
+    result, records = asyncio.run(run_case())
+    guard_records = [item for item in records if item.get("type") == "visual_map_request_guard"]
+
+    assert result.completion_text == "地图已生成，已附上。"
+    assert guard_records[-1]["action"] == "delivery_ack_replaced"
+    assert guard_records[-1]["reason"] == "renderer_success_generic_completion"
+
+
 def test_router_turn_auto_advance_uses_map_store_owner_over_stale_battle_grid():
     repository = InMemoryRepository()
     session = GameSession.new("group-1")

@@ -158,6 +158,20 @@ def test_tool_registry_routes_layout_request_to_strict_renderer_with_svg_fallbac
     assert not any(spec["name"] == "generate_map_svg" for spec in specs)
 
 
+def test_tool_registry_hides_map_renderers_for_explicit_text_only_map_request():
+    registry = _registry_with_ready_session()
+    _toolset, names, _executor, specs = registry.for_mode(
+        GameMode.NARRATIVE,
+        "group",
+        message="先用 ASCII 文字地图画一下战场格子，不要生成图片",
+    )
+
+    assert "render_strict_grid_svg" not in names
+    assert "render_overview_topology_svg" not in names
+    assert "generate_map_svg" not in names
+    assert not any(spec["name"] in {"render_strict_grid_svg", "render_overview_topology_svg"} for spec in specs)
+
+
 def test_tool_registry_keeps_visual_map_fallback_without_background():
     registry = _registry_without_background()
     _toolset, names, _executor, specs = registry.for_mode(

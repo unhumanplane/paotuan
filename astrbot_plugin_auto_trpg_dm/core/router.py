@@ -15,6 +15,17 @@ from .external_memory import (
     audit_safe_external_memory_result,
     external_memory_observation,
 )
+from .map_request_guard import (
+    build_guard_audit_record,
+    build_map_delivery_ack,
+    build_map_request_guard,
+    build_missing_map_data_response,
+    build_renderer_required_retry_prompt,
+    classify_map_renderer_results,
+    completion_needs_map_delivery_ack,
+    completion_looks_like_text_map,
+    detect_text_map_signals,
+)
 from .map_core import load_active_strict_grid_entities
 from .memory import MemoryCompressor
 from .modes import GameModeStateMachine
@@ -662,6 +673,7 @@ class IntentRouter:
             session_id=session_id,
             audit_lock=lock,
             raw_player_message=message,
+            available_tool_names=tool_names,
         )
         completion = self._sanitize_completion_text(loop_result.completion_text)
         tool_trace = loop_result.tool_results
@@ -1411,12 +1423,79 @@ class IntentRouter:
         session_id: str,
         audit_lock: asyncio.Lock | None = None,
         raw_player_message: str = "",
+        available_tool_names: list[str] | tuple[str, ...] | None = None,
     ) -> ToolLoopResult:
         contexts: list[dict[str, str]] = []
         prompt = initial_prompt
         last_error_tool = ""
         repeated_error_count = 0
         all_tool_results: list[dict[str, Any]] = []
+        map_guard = build_map_request_guard(raw_player_message, available_tool_names)
+        renderer_retry_requested = False
+
+        async def append_map_guard_audit(
+            action: str,
+            reason: str,
+            *,
+            completion: str = "",
+            text_map_signals: tuple[str, ...] = (),
+        ) -> None:
+            renderer_summary = classify_map_renderer_results(all_tool_results)
+            audit_record = build_guard_audit_record(
+                action=action,
+                reason=reason,
+                guard=map_guard,
+                renderer_summary=renderer_summary,
+                completion=completion,
+                text_map_signals=text_map_signals,
+            )
+            if audit_lock is None:
+                self.repository.append_audit(session_id, audit_record)
+            else:
+                async with audit_lock:
+                    self.repository.append_audit(session_id, audit_record)
+            get_plugin_logger().info(
+                "visual_map_guard session=%s action=%s reason=%s attempted=%s succeeded=%s missing=%s signals=%s",
+                session_id,
+                action,
+                reason,
+                renderer_summary.attempted,
+                renderer_summary.succeeded,
+                renderer_summary.missing_data,
+                ",".join(text_map_signals),
+            )
+
+        async def guarded_completion(completion_text: str) -> str:
+            if not map_guard.visual_map_request or map_guard.text_only_map_request:
+                return completion_text
+            renderer_summary = classify_map_renderer_results(all_tool_results)
+            if renderer_summary.succeeded:
+                if completion_needs_map_delivery_ack(completion_text):
+                    await append_map_guard_audit(
+                        "delivery_ack_replaced",
+                        "renderer_success_generic_completion",
+                        completion=completion_text,
+                    )
+                    return build_map_delivery_ack()
+                return completion_text
+            text_map_signals = detect_text_map_signals(completion_text)
+            if renderer_summary.missing_data:
+                await append_map_guard_audit(
+                    "missing_data_response",
+                    "renderer_missing_data",
+                    completion=completion_text,
+                    text_map_signals=text_map_signals,
+                )
+                return build_missing_map_data_response()
+            if completion_looks_like_text_map(completion_text):
+                await append_map_guard_audit(
+                    "missing_data_response",
+                    "text_map_without_renderer_success",
+                    completion=completion_text,
+                    text_map_signals=text_map_signals,
+                )
+                return build_missing_map_data_response()
+            return completion_text
 
         for step in range(self.max_steps):
             response = await self._llm_generate(
@@ -1432,6 +1511,39 @@ class IntentRouter:
                 tool_calls = self._extract_text_tool_calls(completion_text)
             if not tool_calls:
                 completion_text = self._sanitize_completion_text(completion_text)
+                renderer_summary = classify_map_renderer_results(all_tool_results)
+                text_map_signals = detect_text_map_signals(completion_text)
+                if map_guard.renderer_attempt_required and not renderer_summary.attempted:
+                    if not renderer_retry_requested and step + 1 < self.max_steps:
+                        contexts.append(
+                            {
+                                "role": "user",
+                                "content": prompt,
+                            }
+                        )
+                        contexts.append(
+                            {
+                                "role": "assistant",
+                                "content": completion_text,
+                            }
+                        )
+                        await append_map_guard_audit(
+                            "renderer_retry_requested",
+                            "renderer_not_attempted",
+                            completion=completion_text,
+                            text_map_signals=text_map_signals,
+                        )
+                        prompt = build_renderer_required_retry_prompt(map_guard)
+                        renderer_retry_requested = True
+                        continue
+                    await append_map_guard_audit(
+                        "missing_data_response",
+                        "renderer_not_attempted_after_retry" if renderer_retry_requested else "renderer_not_attempted",
+                        completion=completion_text,
+                        text_map_signals=text_map_signals,
+                    )
+                    return ToolLoopResult(build_missing_map_data_response(), all_tool_results)
+                completion_text = await guarded_completion(completion_text)
                 get_plugin_logger().info(
                     "llm_text_response session=%s step=%s chars=%s",
                     session_id,
@@ -1528,8 +1640,11 @@ class IntentRouter:
             contexts=contexts,
             system_prompt=system_prompt,
         )
+        completion_text = self._sanitize_completion_text(
+            getattr(final_response, "completion_text", "") or str(final_response)
+        )
         return ToolLoopResult(
-            self._sanitize_completion_text(getattr(final_response, "completion_text", "") or str(final_response)),
+            await guarded_completion(completion_text),
             all_tool_results,
         )
 
