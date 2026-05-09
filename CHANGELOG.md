@@ -2,6 +2,32 @@
 
 所有已经合入 `main` 的用户可见变更都记录在这里。日期使用香港时区对应的开发日期。
 
+## [0.1.91] - 2026-05-09
+
+### Added
+
+- 已开场跑团新增可持续维护的公开进展结构：`scene.current_objective`、`open_hooks`、`clues`、`mysteries`、`stakes` 和 `pressure_clock`，用于保存当前目标、开放钩子、可见线索、未解问题、利害关系和压力变化。
+- 新增“当前目标/线索/任务”只读状态查询路径，返回简明公开状态，不推进剧情。
+- `start_game` 现在要求明确 `initial_hook`，并在开场后自动补齐首个 objective、至少两个 open hooks、stakes / pressure 结构。
+
+### Changed
+
+- DM prompt 强化普通叙事回复的可行动信息：默认包含当前可感知事实、一个正在变化的压力、至少一个可交互线索/对象/地点/NPC 动机，同时继续禁止普通回复生成封闭式 `1/2/3` 行动菜单。
+- 调查、询问、搜索、交易、交涉或战斗后，DM 会被明确引导用 `update_scene` 维护 clue/open hook/mystery/objective/stakes/pressure 状态；线索状态保持 `discovered`、`suspected`、`resolved`、`false_lead`、`blocked` 等简单值。
+- NPC/阵营关系状态投影只暴露玩家已能感知或已知的态度、恐惧、债务、已知事实和最近互动，隐藏动机、真实阵营和未来背叛计划不进入普通 DM prompt。
+
+### Fixed
+
+- Prompt projection、工具结果投影和目标/线索状态查询会过滤 `hidden`、`secret`、`dm`、`dm_only`、`gm_only` 等隐藏记录，避免幕后真相、未发现地点或 DM-only NPC 泄漏到玩家侧输出。
+- 修复 Hermes Coder 在 AstrBot 兼容层里的导入兼容问题。
+- 修复当前 Python 3.8 测试环境下 strict-grid SVG renderer 测试类型注解和长耗时安抚测试事件循环兼容问题。
+
+### Verified
+
+- `python -m compileall -q astrbot_plugin_auto_trpg_dm astrbot_plugin_hermes_coder tests scripts`
+- `python -m pytest -q`
+- `git diff --check`
+
 ## [0.1.90] - 2026-05-07
 
 ### Changed
