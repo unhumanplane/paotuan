@@ -5,6 +5,15 @@ import types
 from astrbot_plugin_auto_trpg_dm.core.models import GameSession
 
 
+def _ensure_event_loop():
+    try:
+        return asyncio.get_event_loop()
+    except RuntimeError:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        return loop
+
+
 def _install_fake_astrbot_modules():
     if "astrbot.api" in sys.modules:
         return
@@ -227,6 +236,7 @@ class FakeRepository:
 
 class FakeRouter:
     def __init__(self, completion="最终回复。", raises=None):
+        _ensure_event_loop()
         self.completion = completion
         self.raises = raises
         self.called = 0
