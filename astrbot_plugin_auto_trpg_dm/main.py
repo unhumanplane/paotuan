@@ -23,6 +23,7 @@ from .core.ambient_image import AmbientImageConfig, AmbientImageProvider
 from .core.external_memory import HonchoExternalMemory, HonchoMemoryConfig
 from .core.map_core import load_active_strict_grid_entities
 from .core.map_delivery_cadence import filter_map_pending_outputs_for_delivery
+from .core.map_tool_routing import looks_visual_map_request
 from .core.plugin_log import configure_plugin_logging
 from .core.router import IntentRouter
 from .core.security import security_precheck
@@ -36,6 +37,7 @@ from .tools.ambient_image_tools import (
 )
 from .tools.diagnostic_tools import DiagnosticTools
 from .tools.memory_tools import MemoryTools, has_campaign_background
+from .core.scene_hooks import format_scene_tracking_status
 from .tools.registry import ToolRegistry
 from .tools.turn_tools import TurnTools
 
@@ -782,6 +784,7 @@ class AutoTrpgDmPlugin(Star):
     ) -> str:
         text = self._dedupe_text(routed_message)
         normalized = text.lower()
+        visual_map_request = looks_visual_map_request(text)
         session = self.repository.load_session(session_id)
         paused = bool((session.scene or {}).get("_dm_paused", False))
 
@@ -953,20 +956,25 @@ class AutoTrpgDmPlugin(Star):
 
         if not has_campaign_background(session):
             background_patch = _guided_background_patch_from_text(text)
+            background_action = "guided_background_bootstrap"
+            if not background_patch and visual_map_request:
+                background_patch = _visual_map_background_patch_from_text(text)
+                background_action = "visual_map_background_bootstrap"
             if background_patch:
                 result = await MemoryTools(self.repository, session_id, actor=actor, message=text).update_world_tags(background_patch)
                 self.repository.append_audit(
                     session_id,
                     {
                         "type": "local_fast_path",
-                        "action": "guided_background_bootstrap",
+                        "action": background_action,
                         "actor": actor,
                         "text": text[:240],
                         "result": result,
                     },
                 )
                 self.plugin_logger.info(
-                    "guided_background_bootstrap session=%s sender=%s ok=%s keys=%s",
+                    "%s session=%s sender=%s ok=%s keys=%s",
+                    background_action,
                     session_id,
                     actor.get("player_id", ""),
                     result.get("ok"),
@@ -979,6 +987,10 @@ class AutoTrpgDmPlugin(Star):
         if normalized in {"status", "状态", "当前状态"}:
             self.repository.append_audit(session_id, {"type": "local_fast_path", "action": "status", "actor": actor})
             return self._format_local_status(session)
+
+        if _looks_like_scene_tracking_status_request(text):
+            self.repository.append_audit(session_id, {"type": "local_fast_path", "action": "scene_tracking_status", "actor": actor})
+            return format_scene_tracking_status(session.scene or {})
 
         if normalized in {"token", "tokens", "token消耗", "上下文", "上下文消耗"}:
             usage = await DiagnosticTools(
@@ -1101,6 +1113,18 @@ class AutoTrpgDmPlugin(Star):
                 },
             )
             return self._format_local_status(session)
+
+        if _looks_like_scene_tracking_status_request(text):
+            self.repository.append_audit(
+                session_id,
+                {
+                    "type": "local_fast_path",
+                    "action": "scene_tracking_status",
+                    "actor": actor,
+                    "cycle_state": session.cycle_state.value,
+                },
+            )
+            return format_scene_tracking_status(session.scene or {})
 
         if normalized in {"token", "tokens", "token消耗", "上下文", "上下文消耗"}:
             usage = await DiagnosticTools(self.repository, session_id).estimate_token_usage("summary")
@@ -3240,6 +3264,41 @@ def _looks_like_turn_status_request(text: str) -> bool:
     )
 
 
+def _looks_like_scene_tracking_status_request(text: str) -> bool:
+    normalized = str(text or "").strip().lower()
+    if not normalized:
+        return False
+    exact = {
+        "当前目标",
+        "当前任务",
+        "当前线索",
+        "当前钩子",
+        "开放钩子",
+        "线索",
+        "任务",
+        "目标",
+        "未解问题",
+        "现在目标",
+        "现在任务",
+        "现在有什么线索",
+        "有什么线索",
+        "查线索",
+        "线索状态",
+        "任务状态",
+        "目标状态",
+        "current objective",
+        "current clues",
+        "clues",
+        "objectives",
+        "hooks",
+    }
+    if normalized in exact:
+        return True
+    tracking_terms = ("目标", "任务", "线索", "钩子", "未解", "谜团", "objective", "clue", "hook", "mystery")
+    query_terms = ("当前", "现在", "有什么", "哪些", "状态", "列", "总结", "summary", "current", "status", "what")
+    return any(term in normalized for term in tracking_terms) and any(term in normalized for term in query_terms)
+
+
 def _looks_like_turn_order_request(text: str) -> bool:
     normalized = str(text or "").strip().lower()
     return any(term in normalized for term in ("行动顺序", "战斗顺序", "轮动顺序", "顺序", "队列", "所有"))
@@ -4319,6 +4378,19 @@ def _guided_background_patch_from_text(text: str) -> dict:
 
 def _terms_found(text: str, terms: tuple[str, ...]) -> list[str]:
     return [term for term in terms if term and term in text]
+
+
+def _visual_map_background_patch_from_text(text: str) -> dict:
+    source = _compact_text(text or "玩家请求绘制地图", 180)
+    return {
+        "genre": "待定跑团场景",
+        "tone": "清晰、克制、方便裁定",
+        "starting_premise": "玩家请求查看或绘制当前地图；DM 先建立最小场景上下文，再生成只作视觉参考的地图草图。",
+        "location": "当前未命名场景",
+        "ruleset": "以 d20 检定为基础；地图 SVG 只作视觉层，坐标、距离、移动和视线以结构化地图事实为准。",
+        "campaign_background": f"最小背景补全：{source}。若缺少结构化地图事实，只能生成 visual-only SVG 草图，不能据此改写物理坐标。",
+        "background_source": "visual_map_request_bootstrap",
+    }
 
 
 def _looks_like_enough_background_seed(text: str) -> bool:

@@ -64,6 +64,14 @@ def _registry_with_ready_session():
     return registry
 
 
+def _registry_without_background():
+    root = Path(".pytest-runtime") / f"tool-registry-nobg-{uuid4().hex}"
+    repo = JsonGameRepository(root / "data")
+    repo.save_session(GameSession.new("group"))
+    registry = ToolRegistry(repo, PythonRuleRuntime(root / "rules"))
+    return registry
+
+
 def test_tool_registry_prunes_estimate_token_usage_for_ordinary_requests():
     registry = _registry_with_ready_session()
     _toolset, names, _executor, _specs = registry.for_mode(
@@ -134,6 +142,34 @@ def test_tool_registry_routes_strict_map_requests_to_strict_renderer():
     assert "render_overview_topology_svg" not in names
     assert "generate_map_svg" not in names
     assert any(spec["name"] == "render_strict_grid_svg" for spec in specs)
+
+
+def test_tool_registry_routes_layout_request_to_strict_renderer_with_svg_fallback():
+    registry = _registry_with_ready_session()
+    _toolset, names, _executor, specs = registry.for_mode(
+        GameMode.NARRATIVE,
+        "group",
+        message="画一下布局吧",
+    )
+
+    assert "render_strict_grid_svg" in names
+    assert "generate_map_svg" not in names
+    assert any(spec["name"] == "render_strict_grid_svg" for spec in specs)
+    assert not any(spec["name"] == "generate_map_svg" for spec in specs)
+
+
+def test_tool_registry_keeps_visual_map_fallback_without_background():
+    registry = _registry_without_background()
+    _toolset, names, _executor, specs = registry.for_mode(
+        GameMode.NARRATIVE,
+        "group",
+        message="画一张当前战场站位图",
+    )
+
+    assert "render_strict_grid_svg" in names
+    assert "generate_map_svg" not in names
+    assert any(spec["name"] == "render_strict_grid_svg" for spec in specs)
+    assert not any(spec["name"] == "generate_map_svg" for spec in specs)
 
 
 def test_tool_registry_keeps_legacy_svg_hidden_until_explicit_fallback_request():

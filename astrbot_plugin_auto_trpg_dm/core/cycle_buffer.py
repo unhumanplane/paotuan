@@ -103,23 +103,75 @@ RA_BLOCKED_PAYLOAD_KEYS = {
     "actor",
     "audit",
     "battle",
+    "cadence_key",
     "debug",
     "diagnostic",
     "diagnostics",
     "display_name",
+    "file_path",
+    "future_betrayal",
     "grid",
+    "headers",
+    "hidden",
+    "hidden_motive",
+    "hidden_motives",
+    "html",
+    "layout",
+    "layout_updates",
+    "local_path",
     "message",
+    "metadata_path",
+    "path",
+    "pending_output",
     "player_message",
     "player_id",
+    "positions",
+    "preferred_render_type",
     "prompt",
+    "raw",
     "raw_audit",
+    "raw_content",
+    "raw_excerpt",
+    "raw_output",
     "raw_player_input",
+    "raw_svg",
     "raw_text",
     "reason",
+    "render_ref",
+    "render_refs",
+    "render_type",
+    "secret_allegiance",
+    "secret_loyalty",
+    "source_url",
+    "svg",
     "system_prompt",
     "text",
     "token_usage",
+    "true_allegiance",
+    "true_motive",
+    "url",
+    "visual_only",
+    "web_grounding",
 }
+
+RA_BLOCKED_PAYLOAD_KEY_TOKENS = (
+    "cadence",
+    "diagnostic",
+    "debug",
+    "file_path",
+    "layout",
+    "local_path",
+    "metadata_path",
+    "prompt",
+    "raw_",
+    "hidden",
+    "secret",
+    "betrayal",
+    "private",
+    "source_url",
+    "system_prompt",
+    "token_usage",
+)
 
 
 def _sanitize_ra_payload(value: Any) -> Any:
@@ -130,7 +182,7 @@ def _sanitize_ra_payload(value: Any) -> Any:
             key_lower = key_text.lower()
             if key_lower in RA_BLOCKED_PAYLOAD_KEYS:
                 continue
-            if any(token in key_lower for token in ("prompt", "diagnostic", "debug", "token_usage", "raw_audit")):
+            if any(token in key_lower for token in RA_BLOCKED_PAYLOAD_KEY_TOKENS):
                 continue
             sanitized[key_text] = _sanitize_ra_payload(item)
         return sanitized

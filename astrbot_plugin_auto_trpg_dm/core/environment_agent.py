@@ -6,7 +6,7 @@ from typing import Any, Awaitable, Callable
 from .cycle_buffer import sanitize_ra_payload
 from .cycle_state_machine import CycleStateMachine
 from .map_core import MAP_VIEW_RA_AUTHORITY, project_map_store
-from .models import AuditBuffer, CycleState, GameSession, RACycleInput, utc_now_iso
+from .models import AuditBuffer, CycleState, GameSession, RACycleInput, normalize_relationship_collections, utc_now_iso
 from .prompts import build_cycle_start_prompt, build_ra_cycle_prompt, build_ra_system_prompt
 
 
@@ -161,6 +161,7 @@ def validate_ra_patch_candidates(session: GameSession, summary: dict[str, Any]) 
         "character_status": {"update_character_tags", "turn_control", "execute_rule"},
         "enemy_status": {"update_scene", "update_character_tags", "turn_control", "move_entity", "check_attack_vector", "execute_rule"},
         "world_changes": {"update_scene", "update_world_tags", "start_game"},
+        "relationship_changes": {"update_scene", "update_character_tags"},
         "rule_sets": {"register_rule", "execute_rule"},
     }
     for category, backing_tools in categories.items():
@@ -187,73 +188,104 @@ def validate_ra_patch_candidates(session: GameSession, summary: dict[str, Any]) 
                 )
             continue
         for item in items[:24]:
-            applied = _apply_ra_patch_candidate(session, category, item)
-            accepted.append(
-                {
-                    "category": category,
-                    "reason": "tool_backed_candidate_recorded",
-                    "backing_tools": sorted(successful_tools.intersection(backing_tools)),
-                    "applied": applied,
-                    "value": _compact_json_value(item, depth=2),
-                }
-            )
+            validation = _validate_ra_patch_candidate(session, category, item)
+            record = {
+                "category": category,
+                "reason": validation["reason"],
+                "backing_tools": sorted(successful_tools.intersection(backing_tools)),
+                "value": _compact_json_value(item, depth=2),
+            }
+            if not validation["ok"]:
+                rejected.append(record)
+                continue
+            applied = _apply_validated_ra_patch_candidate(session, category, validation["patch"])
+            accepted.append({**record, "reason": "tool_backed_candidate_recorded", "applied": applied})
     return {"accepted": accepted, "rejected": rejected}
 
 
-def _apply_ra_patch_candidate(session: GameSession, category: str, item: Any) -> bool:
+def _validate_ra_patch_candidate(session: GameSession, category: str, item: Any) -> dict[str, Any]:
     if not isinstance(item, dict):
-        return False
+        return {"ok": False, "reason": "invalid_candidate_type", "patch": None}
     if category == "world_changes":
         patch = item.get("scene_patch") if isinstance(item.get("scene_patch"), dict) else item.get("patch")
         if not isinstance(patch, dict):
-            return False
+            return {"ok": False, "reason": "missing_allowlisted_fields", "patch": None}
         allowed_scene_keys = {
             "summary",
             "current_conflict",
             "location",
             "npcs",
+            "relations",
             "immediate_hooks",
             "recent_events",
         }
-        safe_patch = {
+        raw_patch = {
             str(key): _compact_json_value(value, depth=3)
             for key, value in patch.items()
             if str(key) in allowed_scene_keys
         }
+        safe_patch = normalize_relationship_collections(raw_patch)
         if not safe_patch:
+            return {"ok": False, "reason": "missing_allowlisted_fields", "patch": None}
+        return {"ok": True, "reason": "allowlisted_tool_backed_candidate", "patch": safe_patch}
+    if category == "character_status":
+        safe_patch = _validate_character_status_patch(session, item)
+        if not safe_patch:
+            return {"ok": False, "reason": "missing_allowlisted_fields", "patch": None}
+        return {"ok": True, "reason": "allowlisted_tool_backed_candidate", "patch": safe_patch}
+    if category == "relationship_changes":
+        return {"ok": False, "reason": "relationship_candidates_summary_only", "patch": None}
+    if category in {"enemy_status", "rule_sets"}:
+        return {"ok": False, "reason": "unsupported_patch_category", "patch": None}
+    return {"ok": False, "reason": "unsupported_patch_category", "patch": None}
+
+
+def _apply_validated_ra_patch_candidate(session: GameSession, category: str, patch: Any) -> bool:
+    if category == "world_changes":
+        if not isinstance(patch, dict):
             return False
-        session.scene.update(safe_patch)
+        session.scene.update(patch)
         return True
     if category == "character_status":
-        character_id = str(item.get("character_id") or item.get("id") or "").strip()
-        character = session.characters.get(character_id)
-        tags = item.get("tags")
-        if not character or not isinstance(tags, list):
+        if not isinstance(patch, dict):
             return False
-        safe_tags: list[dict[str, Any]] = []
-        for tag in tags[:12]:
-            if not isinstance(tag, dict):
-                continue
-            layer = str(tag.get("layer") or "status").strip().lower()
-            if layer not in {"status", "notes"}:
-                continue
-            key = str(tag.get("key") or "").strip()
-            if not key:
-                continue
-            safe_tags.append(
-                {
-                    "key": key[:80],
-                    "value": _compact_json_value(tag.get("value", ""), depth=2),
-                    "type": str(tag.get("type") or "text")[:40],
-                    "source": "ra_validated_patch",
-                    "layer": layer,
-                }
-            )
-        if not safe_tags:
+        character = session.characters.get(str(patch.get("character_id") or ""))
+        safe_tags = patch.get("tags")
+        if not character or not isinstance(safe_tags, list):
             return False
         character.upsert_tags(safe_tags)
         return True
     return False
+
+
+def _validate_character_status_patch(session: GameSession, item: dict[str, Any]) -> dict[str, Any]:
+    character_id = str(item.get("character_id") or item.get("id") or "").strip()
+    character = session.characters.get(character_id)
+    tags = item.get("tags")
+    if not character or not isinstance(tags, list):
+        return {}
+    safe_tags: list[dict[str, Any]] = []
+    for tag in tags[:12]:
+        if not isinstance(tag, dict):
+            continue
+        layer = str(tag.get("layer") or "status").strip().lower()
+        if layer not in {"status", "notes"}:
+            continue
+        key = str(tag.get("key") or "").strip()
+        if not key:
+            continue
+        safe_tags.append(
+            {
+                "key": key[:80],
+                "value": _compact_json_value(tag.get("value", ""), depth=2),
+                "type": str(tag.get("type") or "text")[:40],
+                "source": "ra_validated_patch",
+                "layer": layer,
+            }
+        )
+    if not safe_tags:
+        return {}
+    return {"character_id": character_id, "tags": safe_tags}
 
 
 def _normalise_ra_summary(payload: dict[str, Any], expected_cycle_id: int) -> dict[str, Any]:
@@ -275,6 +307,7 @@ def _normalise_ra_summary(payload: dict[str, Any], expected_cycle_id: int) -> di
         "character_status": _list_value(payload.get("character_status", [])),
         "enemy_status": _list_value(payload.get("enemy_status", [])),
         "world_changes": _list_value(payload.get("world_changes", [])),
+        "relationship_changes": _list_value(payload.get("relationship_changes", [])),
         "rules_triggered": _list_value(payload.get("rules_triggered", [])),
         "rule_sets": _list_value(payload.get("rule_sets", [])),
         "dm_narrative_aligned": bool(payload.get("dm_narrative_aligned", True)),

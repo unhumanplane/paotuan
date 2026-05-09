@@ -1,6 +1,7 @@
 import asyncio
 
 from astrbot_plugin_auto_trpg_dm.core.models import Character, GameSession, TagValue
+from astrbot_plugin_auto_trpg_dm.core.scene_hooks import format_scene_tracking_status
 from astrbot_plugin_auto_trpg_dm.storage.json_repository import JsonGameRepository
 from astrbot_plugin_auto_trpg_dm.tools.memory_tools import (
     MemoryTools,
@@ -106,6 +107,7 @@ def test_start_game_accepts_json_string_outline_and_text_scene(tmp_path):
         tools.start_game(
             opening_intro="底巢警报在头盔中尖啸，你踏入废弃枢纽站，黑暗管廊里传来爪刃刮擦金属的声音。热雾从破裂管道里涌出，鸟卜仪同时捕捉到一个高速逼近的异形信号。",
             player_guidance="你可以侦查、喷火压制，或呼叫队友封锁侧翼。",
+            initial_hook="鸟卜仪捕捉到一个高速逼近的异形信号。",
             campaign_outline='{"act_1":"斥候突袭暴露巢穴入口","act_2":"深入底巢发现教派仪式","act_3":"摧毁节点或撤离呼叫支援"}',
             scene_patch="底巢废弃枢纽站，第一只斥候正从黑暗中扑出。",
         )
@@ -115,6 +117,89 @@ def test_start_game_accepts_json_string_outline_and_text_scene(tmp_path):
     saved = repository.load_session("group")
     assert saved.scene["_game_started"] is True
     assert "底巢废弃枢纽站" in saved.scene["summary"]
+    assert saved.scene["current_objective"]
+    assert len(saved.scene["open_hooks"]) >= 2
+    assert saved.scene["stakes"]
+    assert saved.scene["pressure_clock"]["status"] == "active"
+
+
+def test_start_game_requires_initial_hook_even_with_background_and_outline(tmp_path):
+    repository = JsonGameRepository(tmp_path / "data")
+    session = GameSession.new("group")
+    session.world_tags.update(
+        {
+            "genre": "urban_occult",
+            "tone": "调查悬疑",
+            "starting_premise": "失踪案把队伍带到旧城区。",
+            "_background_ready": True,
+        }
+    )
+    repository.save_session(session)
+
+    tools = MemoryTools(repository, "group", actor={"player_id": "p1"})
+    result = asyncio.run(
+        tools.start_game(
+            opening_intro="雨水沿着旧城区招牌滴落，你们站在废弃剧院门前，空气里有潮湿灰尘和旧胶片的味道。",
+            campaign_outline={
+                "act_1": "抵达剧院并接触失踪者留下的物件",
+                "act_2": "追踪线索发现旧放映室的异常",
+                "act_3": "在午夜场做出救人或封锁入口的抉择",
+            },
+            scene_patch={"summary": "旧剧院门前，雨水很冷。"},
+        )
+    )
+
+    assert result["ok"] is False
+    assert any("initial_hook" in item for item in result["missing_requirements"])
+
+
+def test_update_scene_normalizes_clue_status_records(tmp_path):
+    repository = JsonGameRepository(tmp_path / "data")
+    session = GameSession.new("group")
+    session.world_tags["_background_ready"] = True
+    repository.save_session(session)
+
+    tools = MemoryTools(repository, "group", actor={"player_id": "p1"}, message="我调查门口血迹")
+    result = asyncio.run(
+        tools.update_scene(
+            {
+                "clues": ["门口血迹被雨水冲淡，仍指向剧院侧门。"],
+                "open_hooks": {"side-door": "侧门锁孔有新鲜刮痕。"},
+                "pressure_clock": "巡警的脚步声正在靠近。",
+            }
+        )
+    )
+
+    assert result["ok"] is True
+    saved = repository.load_session("group")
+    assert saved.scene["clues"][0]["status"] == "discovered"
+    assert saved.scene["clues"][0]["visibility"] == "player"
+    assert saved.scene["open_hooks"][0]["id"] == "side-door"
+    assert saved.scene["pressure_clock"]["status"] == "active"
+
+
+def test_scene_tracking_status_projection_hides_dm_only_records():
+    scene = {
+        "current_objective": "确认旧剧院里失踪者的去向。",
+        "clues": [
+            {"id": "mud", "text": "门口有新鲜泥脚印。", "status": "discovered", "visibility": "player"},
+            {"id": "killer", "text": "幕后黑手就是馆长。", "status": "suspected", "visibility": "dm"},
+        ],
+        "open_hooks": [
+            {"id": "side-door", "text": "侧门锁孔有新鲜刮痕。", "status": "open"},
+            {"id": "secret-roof", "text": "屋顶藏着未发现目击者。", "visibility": "dm"},
+        ],
+        "hidden_truth": "馆长已经和镜中实体交易。",
+    }
+
+    status = format_scene_tracking_status(scene)
+
+    assert "确认旧剧院里失踪者的去向" in status
+    assert "门口有新鲜泥脚印" in status
+    assert "侧门锁孔有新鲜刮痕" in status
+    assert "幕后黑手就是馆长" not in status
+    assert "未发现目击者" not in status
+    assert "镜中实体" not in status
 
 
 def test_blocks_post_start_permanent_mutation_power_tags():
@@ -267,3 +352,149 @@ def test_terminal_rejoin_can_bind_existing_unowned_successor(tmp_path):
     saved = repository.load_session("group")
     assert saved.player_character_map["p1"] == "pc_successor"
     assert saved.characters["pc_successor"].player_id == "p1"
+
+
+def test_update_scene_normalizes_npc_relationship_state(tmp_path):
+    repository = JsonGameRepository(tmp_path / "data")
+    session = GameSession.new("group")
+    session.world_tags["_background_ready"] = True
+    repository.save_session(session)
+
+    tools = MemoryTools(repository, "group", actor={"player_id": "p1"}, message="/dm 我威胁守卫")
+    result = asyncio.run(
+        tools.update_scene(
+            {
+                "npcs": [
+                    {
+                        "id": "npc_guard",
+                        "name": "守卫",
+                        "relations": {
+                            "attitude": "警惕",
+                            "trust": "低",
+                            "fear": "高",
+                            "known_facts": ["玩家当众威胁过他"],
+                            "last_interaction": "威胁后退让，但记住了玩家的脸。",
+                            "future_betrayal": "会向队长告密",
+                        },
+                    }
+                ]
+            }
+        )
+    )
+
+    saved = repository.load_session("group")
+    relation = saved.scene["npcs"][0]["relations"]
+    audit_records = repository.last_audit_records("group", limit=1)
+
+    assert result["ok"] is True
+    assert relation["attitude"] == "suspicious"
+    assert relation["trust"] == "low"
+    assert relation["fear"] == "high"
+    assert relation["known_facts"] == ["玩家当众威胁过他"]
+    assert relation["future_betrayal"] == "会向队长告密"
+    assert audit_records[0]["result"]["scene"]["npcs"][0]["relations"]["fear"] == "high"
+
+
+def test_update_world_tags_normalizes_faction_relationship_state(tmp_path):
+    repository = JsonGameRepository(tmp_path / "data")
+    session = GameSession.new("group")
+    repository.save_session(session)
+
+    tools = MemoryTools(repository, "group", actor={"player_id": "p1"}, message="/dm 我归还失物给商会")
+    result = asyncio.run(
+        tools.update_world_tags(
+            {
+                "factions": {
+                    "merchant_guild": {
+                        "name": "商会",
+                        "attitude": "友好",
+                        "debt": "中等",
+                        "known_facts": ["队伍归还了失物"],
+                        "secret_allegiance": "走私团",
+                    }
+                }
+            }
+        )
+    )
+
+    saved = repository.load_session("group")
+    relation = saved.world_tags["factions"]["merchant_guild"]
+
+    assert result["ok"] is True
+    assert relation["attitude"] == "friendly"
+    assert relation["debt"] == "moderate"
+    assert relation["known_facts"] == ["队伍归还了失物"]
+    assert relation["secret_allegiance"] == "走私团"
+
+
+def test_update_character_tags_allows_runtime_relation_consequence_after_start(tmp_path):
+    repository = JsonGameRepository(tmp_path / "data")
+    session = GameSession.new("group")
+    session.world_tags["_background_ready"] = True
+    session.world_tags["_plot_locked"] = True
+    session.scene["_game_started"] = True
+    session.characters["pc_face"] = Character(id="pc_face", name="交涉者", player_id="p1")
+    session.player_character_map["p1"] = "pc_face"
+    repository.save_session(session)
+
+    tools = MemoryTools(repository, "group", actor={"player_id": "p1"}, message="/dm 我救了线人")
+    result = asyncio.run(
+        tools.update_character_tags(
+            "pc_face",
+            tags=[
+                {
+                    "key": "线人关系",
+                    "layer": "relations",
+                    "value": {
+                        "target_id": "npc_informant",
+                        "attitude": "友好",
+                        "debt": "高",
+                        "known_facts": ["玩家把线人从追兵手里救下"],
+                        "last_interaction": "获救后承诺提供一次线索。",
+                    },
+                }
+            ],
+        )
+    )
+
+    saved = repository.load_session("group")
+    relation_tags = [tag for tag in saved.characters["pc_face"].tags if tag.layer == "relations"]
+
+    assert result["ok"] is True
+    assert relation_tags[0].value["attitude"] == "friendly"
+    assert relation_tags[0].value["debt"] == "high"
+
+
+def test_update_character_tags_rejects_unearned_social_control_after_start(tmp_path):
+    repository = JsonGameRepository(tmp_path / "data")
+    session = GameSession.new("group")
+    session.world_tags["_background_ready"] = True
+    session.world_tags["_plot_locked"] = True
+    session.scene["_game_started"] = True
+    session.characters["pc_face"] = Character(id="pc_face", name="交涉者", player_id="p1")
+    session.player_character_map["p1"] = "pc_face"
+    repository.save_session(session)
+
+    tools = MemoryTools(repository, "group", actor={"player_id": "p1"}, message="/dm 他一定相信我")
+    result = asyncio.run(
+        tools.update_character_tags(
+            "pc_face",
+            tags=[
+                {
+                    "key": "守卫关系",
+                    "layer": "relations",
+                    "value": {
+                        "target_id": "npc_guard",
+                        "attitude": "loyal",
+                        "last_interaction": "守卫必定相信并无条件协助我。",
+                    },
+                }
+            ],
+        )
+    )
+
+    saved = repository.load_session("group")
+
+    assert result["ok"] is False
+    assert result["error"] == "character_card_locked_after_start"
+    assert saved.characters["pc_face"].tags == []

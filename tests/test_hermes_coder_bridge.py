@@ -1,3 +1,4 @@
+import asyncio
 import argparse
 import importlib.util
 import json
@@ -30,6 +31,7 @@ def _bridge(tmp_path, *, groups="", config_groups=None):
     args = argparse.Namespace(
         secret_path=str(secret_path),
         timeout_seconds=240,
+        job_timeout_seconds=1800,
         max_prompt_chars=4000,
         max_output_chars=12000,
         workdir=str(tmp_path),
@@ -114,3 +116,63 @@ def test_post_astrbot_message_uses_im_open_api_payload(tmp_path, monkeypatch):
     }
     assert captured["api_key"] == "api-key"
     assert captured["timeout"] == 10
+
+
+def test_format_coder_job_reply_prefixes_nonzero_exit(tmp_path):
+    bridge = _bridge(tmp_path, groups="1101538762")
+    bridge.max_notify_chars = 200
+
+    reply = bridge._format_coder_job_reply(2, "failed")
+
+    assert reply.startswith("【Hermes /coder 异常退出：2】")
+    assert "failed" in reply
+
+
+def test_session_for_group_uses_notify_whitelist(tmp_path):
+    bridge = _bridge(tmp_path, groups="1101538762")
+
+    assert bridge._session_for_group("1101538762") == "default:GroupMessage:1101538762"
+
+    try:
+        bridge._session_for_group("123")
+    except ValueError as exc:
+        assert "whitelist" in str(exc)
+    else:
+        raise AssertionError("expected ValueError")
+
+
+def test_run_coder_job_posts_result_to_astrbot(tmp_path, monkeypatch):
+    async def run_case():
+        bridge = _bridge(tmp_path, groups="1101538762")
+        captured = {}
+
+        def fake_run_hermes(prompt, timeout, workdir):
+            captured["prompt"] = prompt
+            captured["timeout"] = timeout
+            captured["workdir"] = workdir
+            return 0, "审查完成"
+
+        def fake_post(api_key, session, text):
+            captured["api_key"] = api_key
+            captured["session"] = session
+            captured["text"] = text
+            return {"ok": True}
+
+        monkeypatch.setattr(bridge_mod, "run_hermes", fake_run_hermes)
+        monkeypatch.setattr(bridge, "_post_astrbot_message", fake_post)
+
+        await bridge._run_coder_job(
+            {"group_id": "1101538762", "message_id": "msg1"},
+            "prompt",
+        )
+
+        assert captured["timeout"] == 1800
+        assert captured["session"] == "default:GroupMessage:1101538762"
+        assert captured["text"] == "审查完成"
+
+    asyncio.run(run_case())
+
+
+def test_background_accepted_reply_constant_is_defined():
+    assert bridge_mod.DEFAULT_BACKGROUND_ACCEPTED_REPLY
+    assert "后台" in bridge_mod.DEFAULT_BACKGROUND_ACCEPTED_REPLY

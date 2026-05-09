@@ -1,3 +1,5 @@
+import json
+
 from astrbot_plugin_auto_trpg_dm.core.models import Character, GameMode, GameSession, TagValue
 from astrbot_plugin_auto_trpg_dm.core.map_core import (
     MAP_TYPE_STRICT_LOCAL,
@@ -57,6 +59,41 @@ def test_system_prompt_prefers_overview_topology_renderer_before_llm_svg_fallbac
     assert "不要把普通地图请求直接交给 LLM 写 SVG" in prompt
 
 
+def test_system_prompt_requires_social_consequence_relationship_writes():
+    session = GameSession.new("group")
+
+    prompt = build_system_prompt(
+        session,
+        GameMode.NARRATIVE,
+        ["update_scene", "update_character_tags", "execute_rule"],
+        actor={"player_id": "player-1"},
+        message="我威胁守卫，让他交出线索",
+    )
+
+    assert "社交、威胁、欺骗、帮助、交易和暴力都会留下关系后果" in prompt
+    assert "attitude/trust/fear/debt/leverage/known_facts/last_interaction/flags" in prompt
+    assert "威胁通常提高 fear、降低 trust" in prompt
+    assert "玩家口头说“他相信我/必定协助/交出资源/效忠我”只是一项目标" in prompt
+    assert "update_scene 的 npcs/factions/relations" in prompt
+    assert "hidden_motive、secret_allegiance、true_motive、future_betrayal" in prompt
+
+
+def test_system_prompt_keeps_open_narrative_hooks_without_action_menu():
+    session = GameSession.new("group")
+
+    prompt = build_system_prompt(
+        session,
+        GameMode.NARRATIVE,
+        ["update_scene", "start_game"],
+        actor={"player_id": "player-1"},
+    )
+
+    assert "普通已开场叙事默认包含：当前可感知事实、一个正在变化的压力、至少一个可交互线索" in prompt
+    assert "不要把结尾写成行动选项菜单" in prompt
+    assert "不要输出“你可以选择 1/2/3”" in prompt
+    assert "封闭行动菜单" in prompt
+
+
 def test_user_prompt_routes_overview_map_requests_to_deterministic_renderer_hint():
     overview_prompt = build_user_prompt("画一张当前区域路线概览地图")
     tactical_prompt = build_user_prompt("画一张当前战场站位图")
@@ -71,6 +108,14 @@ def test_user_prompt_routes_overview_map_requests_to_deterministic_renderer_hint
     assert "render_overview_topology_svg" not in tactical_prompt
 
 
+def test_user_prompt_investigation_actions_encourage_clue_scene_updates():
+    prompt = build_user_prompt("我搜索桌上的信件，再询问门卫有没有见过失踪者")
+
+    assert "用 update_scene 写入 clues/open_hooks/mysteries/current_objective/stakes/pressure_clock" in prompt
+    assert "discovered/suspected/resolved/false_lead/blocked" in prompt
+    assert "不要把未确认的幕后真相" in prompt
+
+
 def test_ra_system_prompt_restricts_input_and_output_contract():
     prompt = build_ra_system_prompt()
 
@@ -83,6 +128,8 @@ def test_ra_system_prompt_restricts_input_and_output_contract():
     assert "raw audit" in prompt
     assert "合法 JSON" in prompt
     assert "不调用工具" in prompt
+    assert "relationship_changes" in prompt
+    assert "真正写入必须已有 update_scene/update_character_tags/tool trace 支撑" in prompt
 
 
 def test_cycle_start_prompt_uses_validated_summary_not_raw_patch_candidates():
@@ -130,6 +177,44 @@ def test_system_prompt_only_includes_ra_summary_when_enabled():
 
     assert "上一周期摘要" not in disabled_prompt
     assert "上一周期摘要" in enabled_prompt
+
+
+def test_system_prompt_ra_snapshot_context_is_projected_not_raw_summary_record():
+    session = GameSession.new("group")
+    session.environment_summaries.append(
+        {
+            "cycle_id": 1,
+            "summary": "上一周期摘要",
+            "discrepancies": ["叙事和工具结果冲突"],
+            "patch_candidates": {"character_status": [{"id": "pc-1", "hp": 999}]},
+            "patch_validation": {
+                "rejected": [
+                    {
+                        "category": "world_changes",
+                        "reason": "missing_tool_backing",
+                        "value": {"text": "hidden map fact should not enter DM prompt"},
+                    }
+                ]
+            },
+            "raw_ra_output": '{"secret": true}',
+        }
+    )
+
+    prompt = build_system_prompt(
+        session,
+        GameMode.NARRATIVE,
+        [],
+        actor={},
+        include_ra_context=True,
+    )
+
+    assert "上一周期摘要" in prompt
+    assert "叙事和工具结果冲突" in prompt
+    assert "rejected_count" in prompt
+    assert "raw_ra_output" not in prompt
+    assert "patch_candidates" not in prompt
+    assert '"hp":999' not in prompt
+    assert "hidden map fact should not enter DM prompt" not in prompt
 
 
 def test_system_prompt_minifies_snapshot_and_avoids_duplicate_memory_summary():
@@ -407,6 +492,130 @@ def test_prompt_snapshot_projection_applies_without_mutating_session():
     }
     assert "/internal/path" not in str(projected_snapshot["scene"])
     assert session.compact_snapshot() == original_snapshot
+
+
+def test_prompt_snapshot_projection_filters_hidden_scene_clues_and_truths():
+    session = GameSession.new("group")
+    session.scene["current_objective"] = "确认旧剧院里失踪者的去向。"
+    session.scene["clues"] = [
+        {"id": "mud", "text": "门口有新鲜泥脚印。", "status": "discovered", "visibility": "player"},
+        {"id": "killer", "text": "幕后黑手就是馆长。", "status": "hidden", "visibility": "hidden"},
+    ]
+    session.scene["mysteries"] = [
+        {"id": "missing", "text": "失踪者为什么都去过午夜场？", "status": "open", "visibility": "player"},
+        {"id": "secret-room", "text": "地下秘密房间在舞台下。", "visibility": "dm_only"},
+    ]
+    session.scene["hidden_truth"] = "馆长已经和镜中实体交易。"
+
+    projected_snapshot, _stats = prompt_snapshot_data(
+        session,
+        GameMode.NARRATIVE,
+        "我观察剧院入口",
+        snapshot_projection_enabled=True,
+    )
+    rendered = json.dumps(projected_snapshot["scene"], ensure_ascii=False)
+
+    assert "门口有新鲜泥脚印" in rendered
+    assert "失踪者为什么都去过午夜场" in rendered
+    assert "幕后黑手就是馆长" not in rendered
+    assert "地下秘密房间" not in rendered
+    assert "镜中实体" not in rendered
+
+
+def test_prompt_snapshot_projection_filters_dm_only_scene_objects():
+    session = GameSession.new("group")
+    session.scene["current_objective"] = "找到能进入钟楼的公开路径。"
+    session.scene["npcs"] = [
+        {"id": "porter", "name": "门房", "visibility": "player", "text": "门房握着一串铜钥匙。"},
+        {"id": "hidden-scout", "name": "屋顶窥探者", "visibility": "dm", "text": "他知道暗门位置。"},
+    ]
+    session.scene["locations"] = {
+        "square": {"name": "钟楼广场", "visibility": "player"},
+        "secret_attic": {"name": "未发现阁楼", "visibility": "dm"},
+    }
+
+    projected_snapshot, _stats = prompt_snapshot_data(
+        session,
+        GameMode.NARRATIVE,
+        "我看看广场上有什么",
+        snapshot_projection_enabled=True,
+    )
+    rendered = json.dumps(projected_snapshot["scene"], ensure_ascii=False)
+
+    assert "门房" in rendered
+    assert "钟楼广场" in rendered
+    assert "屋顶窥探者" not in rendered
+    assert "暗门位置" not in rendered
+    assert "未发现阁楼" not in rendered
+
+
+def test_prompt_snapshot_projects_relationships_without_hidden_motives():
+    session = GameSession.new("group")
+    session.scene["npcs"] = [
+        {
+            "id": "npc_captain",
+            "name": "Watch Captain",
+            "relations": {
+                "attitude": "suspicious",
+                "trust": "low",
+                "fear": "moderate",
+                "known_facts": ["玩家威胁过守卫"],
+                "last_interaction": "谈判失败后保持警惕。",
+                "secret_allegiance": "cult",
+                "hidden_motive": "lead party into ambush",
+                "future_betrayal": "betrays at midnight",
+            },
+        }
+    ]
+    session.world_tags["factions"] = {
+        "merchant_guild": {
+            "name": "Merchant Guild",
+            "attitude": "friendly",
+            "debt": "moderate",
+            "known_facts": ["队伍归还了货物"],
+            "true_motive": "raise prices later",
+            "secret_allegiance": "smugglers",
+        }
+    }
+    session.characters["pc_face"] = Character(
+        id="pc_face",
+        name="Face",
+        player_id="player-1",
+        tags=[
+            TagValue(
+                key="broker_relation",
+                layer="relations",
+                value={
+                    "target_id": "npc_broker",
+                    "attitude": "friendly",
+                    "known_facts": ["玩家支付了报酬"],
+                    "hidden_motive": "sell them out",
+                },
+            )
+        ],
+    )
+
+    projected_snapshot, _stats = prompt_snapshot_data(
+        session,
+        GameMode.NARRATIVE,
+        "守卫和商会现在怎么看我？",
+        actor={"player_id": "player-1"},
+        snapshot_projection_enabled=True,
+    )
+    rendered = str(projected_snapshot)
+
+    assert "suspicious" in rendered
+    assert "friendly" in rendered
+    assert "玩家威胁过守卫" in rendered
+    assert "队伍归还了货物" in rendered
+    assert "玩家支付了报酬" in rendered
+    assert "secret_allegiance" not in rendered
+    assert "hidden_motive" not in rendered
+    assert "future_betrayal" not in rendered
+    assert "true_motive" not in rendered
+    assert "ambush" not in rendered
+    assert "smugglers" not in rendered
+    assert "sell them out" not in rendered
 
 
 def test_prompt_snapshot_projection_can_be_disabled_for_full_snapshot():

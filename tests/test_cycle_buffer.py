@@ -96,3 +96,59 @@ def test_append_cycle_action_sanitizes_raw_grid_from_ra_tool_input():
     assert '"grid"' not in rendered
     assert "hidden" not in rendered
     assert '"x": 9' not in rendered
+
+
+def test_append_cycle_action_sanitizes_visual_backend_metadata_from_ra_input():
+    session = GameSession.new("group")
+    tool_results = [
+        {
+            "tool": "render_overview_topology_svg",
+            "args": {
+                "title": "North Gate",
+                "metadata_path": "D:/runtime/maps/overview.svg.json",
+            },
+            "result": {
+                "ok": True,
+                "render_type": "overview_topology_svg",
+                "file_path": "D:/runtime/maps/overview.svg",
+                "url": "https://example.invalid/overview.svg",
+                "svg": "<svg>secret coordinates</svg>",
+                "raw_svg": "<svg>raw hidden</svg>",
+                "pending_output": {
+                    "type": "svg_map",
+                    "name": "overview.svg",
+                    "path": "D:/runtime/maps/overview.svg",
+                    "cadence_key": "internal-cadence-key",
+                    "layout_revision": "internal-layout-revision",
+                },
+                "layout": {
+                    "positions": {
+                        "hidden-room": {"x": 9, "y": 9, "visibility": "hidden"},
+                    }
+                },
+            },
+        }
+    ]
+
+    append_cycle_action(
+        session,
+        actor={"player_id": "player-1"},
+        player_message="draw a map",
+        completion="Map rendered.",
+        tool_results=tool_results,
+    )
+
+    rendered = json.dumps(session.ra_cycle_input.actions[0]["tools_called"][0], ensure_ascii=False)
+
+    assert session.ra_cycle_input.actions[0]["tools_called"][0]["name"] == "render_overview_topology_svg"
+    assert "D:/runtime" not in rendered
+    assert "example.invalid" not in rendered
+    assert "<svg" not in rendered
+    assert "secret coordinates" not in rendered
+    assert "raw hidden" not in rendered
+    assert "internal-cadence-key" not in rendered
+    assert "internal-layout-revision" not in rendered
+    assert "render_type" not in rendered
+    assert "visual_only" not in rendered
+    assert "hidden-room" not in rendered
+    assert '"x": 9' not in rendered

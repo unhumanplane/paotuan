@@ -358,3 +358,66 @@ def test_legacy_generate_map_svg_without_active_map_stays_visual_delivery_only()
     assert "last_map_svg" not in saved.scene
     assert saved.scene["_pending_outputs"][0]["render_type"] == MAP_RENDER_LEGACY_LLM_SVG
     assert saved.scene["_pending_outputs"][0]["visual_only"] is True
+
+
+def test_legacy_generate_map_svg_prompt_uses_safe_summary_not_raw_grid():
+    repo = _repo("legacy_svg_safe_prompt")
+    session = GameSession.new("group")
+    session.battle = {
+        "active": True,
+        "grid": {
+            "width": 8,
+            "height": 8,
+            "cells": [{"x": 4, "y": 4, "blocks_los": True}],
+            "entities": {
+                "hidden-assassin": {
+                    "id": "hidden-assassin",
+                    "name": "Hidden Assassin",
+                    "x": 7,
+                    "y": 7,
+                    "tags": {"player_id": "secret-owner"},
+                }
+            },
+        },
+        "turn": {
+            "active": True,
+            "round": 2,
+            "phase": "character_turn",
+            "turn_order": ["hidden-assassin"],
+            "actions_this_round": {},
+        },
+    }
+    save_active_strict_grid(
+        session.maps,
+        {
+            "width": 8,
+            "height": 8,
+            "cells": [],
+            "entities": {
+                "mapstore-pc": {"id": "mapstore-pc", "name": "MapStore PC", "x": 1, "y": 1},
+            },
+        },
+        map_id=DEFAULT_STRICT_LOCAL_MAP_ID,
+    )
+    repo.save_session(session)
+    context = _FakeMapAstrContext()
+
+    result = asyncio.run(
+        MapTools(repo, "group", astr_context=context).generate_map_svg(
+            title="Safe legacy prompt",
+            prompt="显式 legacy fallback 草图",
+            send_to_chat=False,
+        )
+    )
+
+    prompt = context.requests[0]["prompt"]
+    assert result["ok"] is True
+    assert "当前战棋安全摘要" in prompt
+    assert '"grid_width":8' in prompt
+    assert "Hidden Assassin" not in prompt
+    assert "hidden-assassin" not in prompt
+    assert "secret-owner" not in prompt
+    assert '"x":7' not in prompt
+    assert '"y":7' not in prompt
+    assert "MapStore PC" not in prompt
+    assert "mapstore-pc" not in prompt

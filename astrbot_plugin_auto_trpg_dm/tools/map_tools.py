@@ -83,6 +83,7 @@ class MapTools:
             grid_width = grid_width or int(grid.get("width") or 0)
             grid_height = grid_height or int(grid.get("height") or 0)
         player_positions = _player_position_records(session, battle)
+        battle_prompt_summary = _legacy_svg_battle_prompt_summary(battle)
         map_prompt = _build_map_prompt(
             title=title,
             prompt=prompt or str(session.scene.get("summary") or "根据当前跑团场景绘制战术地图。"),
@@ -91,7 +92,7 @@ class MapTools:
             height=height,
             grid_width=grid_width,
             grid_height=grid_height,
-            battle=battle,
+            battle=battle_prompt_summary,
             player_positions=player_positions,
         )
 
@@ -100,7 +101,7 @@ class MapTools:
             self.session_id,
             title,
             len(map_prompt),
-            len(str(battle)),
+            len(str(battle_prompt_summary)),
         )
         response = await self._llm_generate(
             prompt=map_prompt,
@@ -299,13 +300,47 @@ class MapTools:
             )
 
 
+def _legacy_svg_battle_prompt_summary(battle: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(battle, dict):
+        return {}
+    turn = dict(battle.get("turn") or {}) if isinstance(battle.get("turn"), dict) else {}
+    grid = dict(battle.get("grid") or {}) if isinstance(battle.get("grid"), dict) else {}
+    entities = grid.get("entities") or []
+    entity_count = len(entities) if isinstance(entities, (dict, list)) else 0
+    obstacle_count = len(grid.get("obstacles") or [])
+    if not obstacle_count:
+        cells = grid.get("cells")
+        if isinstance(cells, list):
+            obstacle_count = sum(
+                1
+                for cell in cells
+                if isinstance(cell, dict) and (cell.get("blocks_move") or cell.get("blocks_los"))
+            )
+    summary: dict[str, Any] = {
+        "active": bool(battle.get("active")),
+        "grid_width": _safe_int(grid.get("width"), 0),
+        "grid_height": _safe_int(grid.get("height"), 0),
+        "entity_count": entity_count,
+        "obstacle_count": obstacle_count,
+    }
+    if turn:
+        summary["turn"] = {
+            "active": bool(turn.get("active")),
+            "round": _safe_int(turn.get("round"), 0),
+            "phase": _safe_text(turn.get("phase"), 40),
+            "turn_order_count": len(turn.get("turn_order") or []),
+            "acted_count": len(turn.get("actions_this_round") or {}),
+        }
+    return {key: value for key, value in summary.items() if value not in ("", None, [], {})}
+
+
 MAP_SYSTEM_PROMPT = """你是 TRPG 地图绘制子 agent。你的唯一任务是输出一张完整、可保存的 SVG 战术俯视图。
 
 硬性规则：
 1. 只输出 <svg ...>...</svg>，不要 Markdown、解释、JSON 或代码围栏。
 2. SVG 必须自包含，禁止 script、foreignObject、image、use、a、iframe、animation、外部 URL、base64、data URI。
 3. 只画视觉示意，不得改变游戏事实；坐标、移动、视线、攻击范围仍以主系统 Spatial Engine 为准。
-4. 若收到战棋快照，优先按快照画网格、障碍、友方、敌方和关键位置；不要发明实体坐标。
+4. 若收到战棋摘要，只能把宽高、实体数量和回合状态当作视觉草图参考；不要发明实体坐标，也不要把草图当作权威站位。
 5. 使用清晰战术俯视图，不要做粗糙草图：必须有浅色背景、标题栏、主网格区、图例区、地形/障碍层、实体层、标签层。
 6. 版式必须留白：标题栏高度至少 90px；主网格不要压到标题文字；图例放在独立小框内，不要压住实体和格子编号。
 7. 图层顺序固定为：背景 -> 标题栏 -> 网格底色和格线 -> 墙/障碍/掩体/入口出口 -> 友方 -> 敌方 -> 当前行动/威胁标记 -> 标签 -> 图例。
@@ -346,7 +381,7 @@ def _build_map_prompt(
 绘图需求：
 {_short_text(prompt, 2000)}
 
-当前战棋快照：
+当前战棋安全摘要：
 {battle_text or "无"}
 
 玩家/PC 位置事实：
@@ -435,6 +470,13 @@ def _battle_entity_list(battle: dict[str, Any]) -> list[dict[str, Any]]:
     if isinstance(raw_entities, list):
         return [dict(item) for item in raw_entities if isinstance(item, dict)]
     return []
+
+
+def _safe_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
 
 
 def _find_character_entity(entities: list[dict[str, Any]], player_id: str, character_id: str) -> dict[str, Any] | None:

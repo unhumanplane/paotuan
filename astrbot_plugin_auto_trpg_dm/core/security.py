@@ -133,6 +133,21 @@ _WORLD_FACT_REWRITE_WORDS = (
     "剧情已经变成",
     "设定改成",
     "我规定",
+    "npc一定相信",
+    "npc必定相信",
+    "他一定相信",
+    "她一定相信",
+    "他们一定相信",
+    "他必定相信",
+    "她必定相信",
+    "他们必定相信",
+    "他直接相信",
+    "她直接相信",
+    "他们直接相信",
+    "必定协助我",
+    "一定协助我",
+    "交出资源",
+    "效忠我",
 )
 
 _OTHER_PLAYER_AGENCY_WORDS = (
@@ -156,6 +171,16 @@ _OTHER_PLAYER_AGENCY_WORDS = (
     "让他相信",
     "让她相信",
     "让他们相信",
+    "让他协助",
+    "让她协助",
+    "让他们协助",
+    "让他交出",
+    "让她交出",
+    "让他们交出",
+    "让npc相信",
+    "让 npc 相信",
+    "npc必须",
+    "npc 必须",
     "所有玩家的角色",
     "所有玩家的人物",
     "全部玩家的角色",
@@ -323,6 +348,13 @@ def security_precheck(message: str) -> SecurityVerdict:
             "本地安全层标记：玩家可能在强制其他玩家角色的意志、同意或行动；没有持有人明确同意或客观规则结果时默认不成立。"
         )
 
+    if _looks_like_npc_social_control_claim(normalized):
+        if "npc_agency_claim" not in categories:
+            categories.append("npc_agency_claim")
+        notes.append(
+            "本地安全层标记：玩家可能在直接规定 NPC/阵营相信、协助、效忠或交出资源；只能视作社交目标，必须按关系、风险、检定、交易或工具结果裁定。"
+        )
+
     if _contains_any(
         normalized,
         (
@@ -441,6 +473,34 @@ def _looks_like_dm_autopilot_takeover(text: str) -> bool:
         or "玩家不再介入" in text
     )
     return all_player_scope and takeover
+
+
+def _looks_like_npc_social_control_claim(text: str) -> bool:
+    npc_subject = (
+        "npc" in text
+        or "商人" in text
+        or "守卫" in text
+        or "队长" in text
+        or "村长" in text
+        or "阵营" in text
+        or "帮派" in text
+        or "公会" in text
+    )
+    social_result = (
+        "一定相信" in text
+        or "必定相信" in text
+        or "直接相信" in text
+        or "必须相信" in text
+        or "一定协助" in text
+        or "必定协助" in text
+        or "必须协助" in text
+        or "交出资源" in text
+        or "交出金币" in text
+        or "交出情报" in text
+        or "效忠我" in text
+        or "加入我" in text
+    )
+    return npc_subject and social_result
 
 
 def _blocked_reply(categories: list[str]) -> str:

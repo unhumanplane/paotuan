@@ -10,8 +10,9 @@ from .map_tool_routing import (
     looks_strict_grid_map_request,
     looks_visual_map_request,
 )
-from .models import GameMode, GameSession
+from .models import GameMode, GameSession, infer_tag_layer, project_public_relation_state
 from .prompt_projection import project_ra_summary_for_dm_prompt
+from .scene_hooks import project_visible_scene_value
 
 
 DEFAULT_ADJUDICATION_PROFILE = {
@@ -37,6 +38,12 @@ def _standard_snapshot_data(session: GameSession, include_ra_context: bool) -> d
     snapshot_data.pop("memory_summary", None)
     if not include_ra_context:
         snapshot_data.pop("environment_summaries", None)
+    elif snapshot_data.get("environment_summaries"):
+        snapshot_data["environment_summaries"] = [
+            project_ra_summary_for_dm_prompt(item)
+            for item in snapshot_data.get("environment_summaries", [])
+            if isinstance(item, dict)
+        ]
     return snapshot_data
 
 
@@ -229,6 +236,7 @@ def _project_snapshot_for_profile(
         return _diagnostic_snapshot(session, session.mode)
     projected = dict(snapshot)
     projected["scene"] = _project_scene(snapshot.get("scene", {}), profile)
+    projected["world_tags"] = _project_world_tags(snapshot.get("world_tags", {}), profile)
     projected["characters"] = _project_characters(
         snapshot.get("characters", []),
         session,
@@ -246,13 +254,18 @@ def _project_snapshot_for_profile(
 def _project_scene(scene: Any, profile: str) -> Any:
     if not isinstance(scene, dict):
         return scene
+    scene = project_visible_scene_value(scene, depth=4, text_limit=500, item_limit=24)
+    if not isinstance(scene, dict):
+        return {}
     projected: dict[str, Any] = {}
     for key, value in scene.items():
         if value in (None, "", [], {}):
             continue
         if key in SCENE_PROJECTION_DROP_KEYS or key.startswith(SCENE_PROJECTION_DROP_PREFIXES):
             continue
-        projected[key] = _project_scene_value(key, value, profile)
+        projected_value = _project_scene_value(key, value, profile)
+        if projected_value not in ({}, [], "", None):
+            projected[key] = projected_value
     if scene.get("last_map_svg"):
         projected["last_map_svg"] = _project_map_ref(scene.get("last_map_svg"))
     recent_limit = 2 if profile in {"state_query", "character_profile"} else 4
@@ -287,10 +300,20 @@ SCENE_PROJECTION_DROP_PREFIXES = (
 
 
 def _project_scene_value(key: str, value: Any, profile: str) -> Any:
+    if _looks_like_relationship_projection_key(key):
+        return _project_generic_value(project_public_relation_state(value), depth=3, text_limit=280, item_limit=16)
     if key in {"summary", "current_conflict", "_opening_intro"}:
         return _short_text(value, 1200 if profile not in {"state_query", "character_profile"} else 800)
     if key in {"_player_guidance", "last_resolution", "last_player_intent"}:
         return _short_text(value, 500)
+    if key in {"current_objective", "open_hooks", "clues", "mysteries", "stakes", "pressure_clock"}:
+        return project_visible_scene_value(
+            value,
+            key=key,
+            depth=3,
+            text_limit=360 if profile not in {"state_query", "character_profile"} else 240,
+            item_limit=12,
+        )
     if isinstance(value, dict):
         return _project_mapping(value, depth=2, text_limit=360, item_limit=16)
     if isinstance(value, list):
@@ -298,6 +321,36 @@ def _project_scene_value(key: str, value: Any, profile: str) -> Any:
     if isinstance(value, str):
         return _short_text(value, 500)
     return value
+
+
+def _project_world_tags(world_tags: Any, profile: str) -> Any:
+    if not isinstance(world_tags, dict):
+        return world_tags
+    projected: dict[str, Any] = {}
+    for key, value in world_tags.items():
+        if value in (None, "", [], {}):
+            continue
+        key_text = str(key)
+        if _projection_hidden_key(key_text):
+            continue
+        if _looks_like_relationship_projection_key(key_text):
+            projected_value = _project_generic_value(
+                project_public_relation_state(value),
+                depth=3,
+                text_limit=280,
+                item_limit=16,
+            )
+        elif isinstance(value, dict):
+            projected_value = _project_mapping(value, depth=2, text_limit=360, item_limit=16)
+        elif isinstance(value, list):
+            projected_value = _project_list(value, depth=2, text_limit=280, item_limit=16)
+        elif isinstance(value, str):
+            projected_value = _short_text(value, 500)
+        else:
+            projected_value = value
+        if projected_value not in ({}, [], "", None):
+            projected[key_text] = projected_value
+    return projected
 
 
 def _project_map_ref(value: Any) -> Any:
@@ -381,13 +434,26 @@ def _minimal_character(character: dict[str, Any]) -> dict[str, Any]:
 
 def _project_mapping(value: dict[str, Any], depth: int, text_limit: int, item_limit: int) -> dict[str, Any]:
     if depth <= 0:
-        return {"keys": sorted(str(key) for key in value.keys())[:item_limit]}
+        return {"keys": sorted(str(key) for key in value.keys() if not _projection_hidden_key(str(key)))[:item_limit]}
     projected: dict[str, Any] = {}
     for index, (key, item) in enumerate(value.items()):
         if index >= item_limit:
             projected["_truncated_items"] = max(0, len(value) - item_limit)
             break
-        projected[str(key)] = _project_generic_value(item, depth - 1, text_limit, item_limit)
+        key_text = str(key)
+        if _projection_hidden_key(key_text) or _hidden_projection_record(item):
+            continue
+        if _looks_like_relationship_projection_key(key_text):
+            projected_item = _project_generic_value(
+                project_public_relation_state(item),
+                depth - 1,
+                text_limit,
+                item_limit,
+            )
+            if projected_item not in ({}, [], "", None):
+                projected[key_text] = projected_item
+            continue
+        projected[key_text] = _project_generic_value(item, depth - 1, text_limit, item_limit)
     return projected
 
 
@@ -395,6 +461,7 @@ def _project_list(value: list[Any], depth: int, text_limit: int, item_limit: int
     items = [
         _project_generic_value(item, depth - 1, text_limit, item_limit)
         for item in value[:item_limit]
+        if not _hidden_projection_record(item)
     ]
     if len(value) > item_limit:
         items.append({"_truncated_items": len(value) - item_limit})
@@ -409,6 +476,45 @@ def _project_generic_value(value: Any, depth: int, text_limit: int, item_limit: 
     if isinstance(value, list):
         return _project_list(value, depth, text_limit, item_limit)
     return value
+
+
+def _looks_like_relationship_projection_key(key: str) -> bool:
+    text = str(key or "").strip().lower()
+    if text in {
+        "relations",
+        "relationship",
+        "relationships",
+        "npc_relations",
+        "faction_relations",
+        "npcs",
+        "factions",
+        "关系",
+        "阵营关系",
+        "npc关系",
+    }:
+        return True
+    return infer_tag_layer(text) == "relations"
+
+
+def _projection_hidden_key(key: str) -> bool:
+    text = str(key or "").strip().lower()
+    return (
+        text.startswith("_")
+        or "hidden" in text
+        or "secret" in text
+        or "betrayal" in text
+        or "private" in text
+        or "dm_only" in text
+        or "gm_only" in text
+        or text in {"agenda", "true_motive", "true_allegiance", "dm_notes", "gm_notes"}
+    )
+
+
+def _hidden_projection_record(value: Any) -> bool:
+    if not isinstance(value, dict):
+        return False
+    visibility = str(value.get("visibility") or "").strip().lower()
+    return visibility in {"hidden", "secret", "dm", "gm", "diagnostic"}
 
 
 def _relevant_character_ids(session: GameSession, actor: dict[str, Any]) -> set[str]:
@@ -637,6 +743,8 @@ SNAPSHOT_RULE_QUERY_TERMS = (
 BASE_RULES = """共享基础规则：
 - 玩家只能声明意图，不能直接声明成功、命中、击杀、获得物品、改写世界事实或控制其他玩家角色。
 - 叙事可以有风格和夸张，但 HP、位置、资源、状态、回合、规则结果等权威字段必须以工具返回、validator 结果和状态迁移为准。
+- NPC/阵营关系是可审计的场内后果记忆，不是好感度攻略条；态度、信任、恐惧、债务、把柄、已知事实和协助意愿必须来自场内行动、检定、交易、资源交换、暴力或已知剧情。
+- 已开场跑团必须持续维护玩家可感知的目标与线索：scene.current_objective、open_hooks、clues、mysteries、stakes、pressure_clock 只写角色已能观察、合理怀疑或确认的信息；不要把 hidden_truth、幕后黑手、秘密地点、真实动机写进普通 DM prompt 或玩家输出。
 - 周期结束只能通过 `cycle_control(action="end_cycle")` 显式工具调用；不要使用完成文本、暗号或启发式猜测来结束周期。
 - RA 只读取 `ra_cycle_input` 过滤投影和清洗后的权威字段快照，不读取完整 `GameSession`、原始玩家输入、prompt、诊断字段或 raw audit。
 - RA 输出的状态字段只是补丁候选；框架只应用 allowlisted、tool-backed、validator 通过的权威字段。"""
@@ -755,8 +863,16 @@ def build_system_prompt(
 17. 不要把“整活”和“成功”混为一谈。离谱设定可以成为风格、传闻、缺陷或需要检定的尝试；只有通过裁定、规则或工具验证后才成为有效结果。
 18. PVP、抢夺其他玩家角色控制权、强制改变其他玩家角色背景/状态/信仰/死亡等，默认不成立。除非被影响玩家明确同意，或规则/战斗流程给出客观结果。
     玩家改昵称、自称某角色、替别人说“我防御/跳过/移动/攻击”、要求绑定别人角色，都不能视为获得控制权。
+18a. 社交、威胁、欺骗、帮助、交易和暴力都会留下关系后果：
+    - 每次与 NPC 或阵营发生有意义互动后，先判断是否需要更新关系状态；成功、失败和部分成功都可能改变 attitude/trust/fear/debt/leverage/known_facts/last_interaction/flags。
+    - 威胁通常提高 fear、降低 trust，可能留下 grudge 或 future_risk；救助、履约或让渡资源可提高 debt/friendly；欺骗成功也只代表当下骗过，必须记录 future_risk 或 exposed_if_checked；交易改变价格、可得线索和协助意愿。
+    - 关系变化必须来自场内行动、检定、资源交换、工具结果或已知剧情；玩家口头说“他相信我/必定协助/交出资源/效忠我”只是一项目标，不能直接写入。
+    - NPC 或阵营关系可写入 update_scene 的 npcs/factions/relations，或写入相关角色的 relations tag；公共可观察事实用 update_scene，角色私人的可审计关系记忆用 update_character_tags。
+    - 查询 NPC/阵营关系时，只返回玩家已能感知或已知的部分，例如公开态度、最近互动、债务、可见恐惧、已知事实和显性敌意；不要泄漏 hidden_motive、secret_allegiance、true_motive、future_betrayal 或未揭露计划。
+    - 后续裁定必须参考既有关系：敌对/怀疑影响 DC、价格、线索可得性和敌意；友好/欠债可带来有限协助，但仍受风险、资源和 NPC 自身利益约束。
 19. 玩家要求改变裁定松紧度时，可以用 update_world_tags 写入 world_tags.adjudication；但不能把规则调到“所有玩家主张自动成功”。
 20. 回复必须精简但有氛围。默认 120-360 个中文字符，复杂战斗/轮次裁定最多 600 字；不要长篇设定展开。
+    普通已开场叙事默认包含：当前可感知事实、一个正在变化的压力、至少一个可交互线索/对象/地点/NPC 动机；这些要嵌进叙事，不要改成封闭行动菜单。
     常用结构：一句画面感描述 + 明确结果/裁定 + 可感知线索、压力或后果。默认把决定权交还给玩家，不要把结尾写成行动选项菜单。
     列表最多 3 条；不要重复完整角色卡，除非玩家明确要求查看详情。
     状态查询只报关键数字和当前最重要事项；建卡只报核心身份、能力、风险，不展开长传记。
@@ -793,8 +909,9 @@ def build_system_prompt(
     若玩家已经给出粗略题材、势力、地点或冲突，例如“战锤40K极限战士清剿基因窃取者”，这已经足够写入背景；缺的 tone/location/ruleset 由你保守补全。
     最小背景至少包含两类要素，例如 genre/tone/starting_premise/location/factions/ruleset；不要用空 patch 或纯风格词敷衍。
 29. 当玩家要求“开始游戏/开场/进入剧情/正式开局”时，必须先判断内容是否足够，并优先调用 start_game。
-    start_game 需要你提交：简短开场介绍、玩家行动引导、至少三段式的跌宕剧情骨架、当前开场场景 patch。
+    start_game 需要你提交：简短开场介绍、initial_hook、玩家行动引导、至少三段式的跌宕剧情骨架、当前开场场景 patch。
     剧情骨架要预备导火索、升级/压力、反转或重大抉择、高潮方向；不要只写一句“冒险开始了”。
+    开场 scene_patch 应写入 current_objective、至少两个 open_hooks、stakes 或 pressure_clock；open_hooks/clues/mysteries 只写角色已可感知或合理怀疑的信息，不写未发现真相。
     start_game 成功后，背景、题材、主线、核心剧本锁定。开场后玩家不能再要求“改成另一个剧本/换背景/改主线/改题材”。
     必须明确区分两个阶段：开场前可以建卡/补卡/调整角色设定；开场后既有角色卡锁定。
     开场后仍允许新玩家加入并创建新的合理角色卡；老玩家不能改名、改摘要、补职业/能力/装备/默认战斗行为、重绑或换卡。
@@ -823,6 +940,9 @@ def build_system_prompt(
     - 角色位置、警戒/睡眠/暴露/隐藏、手持物、伤势、资源、发现的线索、NPC 反应、场景危险和最近行动都属于状态；
     - 如果是当前发言人角色自身状态，用 update_character_tags 写入 status 层；开场后不要写 combat 层作为默认战斗行为或新增能力；
     - 如果是公共场景、敌情、地点变化、最近事件或其他人可观察到的事实，用 update_scene 写入；
+    - 如果是 NPC/阵营态度、信任、恐惧、债务、把柄、已知事实、最近互动或后续敌意，用 relations 结构写入 update_scene 或 update_character_tags；不要只在叙事里说“他记住了”却不落盘；
+    - 调查、询问、搜索、交易、交涉或战斗后出现新信息时，用 update_scene 维护 clues/open_hooks/mysteries/current_objective/stakes/pressure_clock；clue status 保持简单：discovered、suspected、resolved、false_lead、blocked；
+    - 未被角色确认的幕后黑手、隐藏地点、真实动机和剧情真相只能作为未解问题或可见线索的表述，不能直接写给玩家侧 prompt；除非角色已经确认，否则不要写“幕后黑手就是 X”；
     - 即使检定失败，也要记录失败造成的客观后果，例如“未发现敌情”“火箭盲射失败但暴露塔楼警觉”；
     - 输出最终回复前先确认这类事实已经通过工具或本地状态写入，避免下一轮忘记刚发生的事。
 
@@ -948,7 +1068,8 @@ def build_ra_system_prompt() -> str:
 RA 工作边界：
 - 只根据 `ra_cycle_input`、清洗后的权威字段快照和 BASE_RULES 输出 JSON。
 - 不生成面向玩家的叙事，不调用工具，不重写 DM 创意叙事。
-- `summary` 可总结本周期发生了什么；`character_status`、`enemy_status`、`world_changes`、`rule_sets` 只能作为补丁候选。
+- `summary` 可总结本周期发生了什么；`character_status`、`enemy_status`、`world_changes`、`relationship_changes`、`rule_sets` 只能作为补丁候选。
+- 关系变化候选只能总结已有工具轨迹支持的社交后果；真正写入必须已有 update_scene/update_character_tags/tool trace 支撑，不能因玩家口头宣称 NPC 相信、协助、效忠或交出资源就成立。
 - 权威字段必须能从工具结果、validator 结果或已有权威状态推出；无法确认时写入 `discrepancies`，不要猜测。
 - 输出必须是合法 JSON，不要包含 Markdown、解释文字或代码块。"""
 
@@ -966,6 +1087,7 @@ def build_ra_cycle_prompt(ra_cycle_input: dict, authority_snapshot: dict) -> str
   "character_status": [],
   "enemy_status": [],
   "world_changes": [],
+  "relationship_changes": [],
   "rules_triggered": [],
   "dm_narrative_aligned": true,
   "discrepancies": []
@@ -973,7 +1095,8 @@ def build_ra_cycle_prompt(ra_cycle_input: dict, authority_snapshot: dict) -> str
 
 字段要求：
 - `summary` 只总结已发生内容，不新增剧情事实。
-- `character_status`、`enemy_status`、`world_changes`、`rules_triggered` 都只是补丁候选；只有工具结果或 validator 已支撑的内容才可写入。
+- `character_status`、`enemy_status`、`world_changes`、`relationship_changes`、`rules_triggered` 都只是补丁候选；只有工具结果或 validator 已支撑的内容才可写入。
+- `relationship_changes` 只写候选摘要，例如 NPC/阵营、attitude/trust/fear/debt/leverage/known_facts/last_interaction/flags 和证据；如果没有 update_scene、update_character_tags 或明确工具轨迹支撑，写入 `discrepancies`。
 - 无法确认、DM 叙事与工具结果不一致、或候选缺少权威依据时，写入 `discrepancies`，不要自行圆谎。
 
 本周期 RA 输入：
@@ -1034,6 +1157,13 @@ def build_user_prompt(message: str, security_notes: list[str] | None = None) -> 
 只有缺少必要身份/归属/目标或存在明显矛盾时，才问一个最小澄清问题。
 
 """
+    investigation_hint = ""
+    if _looks_like_investigation_or_social_action(message):
+        investigation_hint = """本地意图提示：玩家这句话可能会发现信息、改变线索状态、打开/关闭钩子，或改变 NPC/阵营反应。
+如果本轮裁定后有可见新信息、失败后果、阻塞原因、误导线索或未解问题变化，请用 update_scene 写入 clues/open_hooks/mysteries/current_objective/stakes/pressure_clock；clue status 用 discovered/suspected/resolved/false_lead/blocked 这类简单值。
+不要把未确认的幕后真相、真实身份、秘密地点直接写入玩家侧文本；只能写成可见线索或未解问题。
+
+"""
     return f"""{security_block}玩家自然语言输入：
 {message}
 
@@ -1041,6 +1171,7 @@ def build_user_prompt(message: str, security_notes: list[str] | None = None) -> 
 {full_output_hint}
 {start_game_hint}
 {write_when_enough_hint}
+{investigation_hint}
 请先把玩家输入视为“意图/主张”，做合理性裁定：可直接成立、需要检定、代价成立、不成立或需澄清。
 若需要工具，先调用工具获取事实；若已经足够，直接写入或输出精简但有氛围的最终叙事、裁定结果。
 不要追问可选细节；只有缺少必要字段、角色归属、行动目标或存在越权/矛盾时，才提出一个最小澄清问题。
@@ -1221,3 +1352,52 @@ def _looks_like_state_write_request(message: str) -> bool:
         "退休",
     )
     return any(term in text for term in state_terms)
+
+
+def _looks_like_investigation_or_social_action(message: str) -> bool:
+    text = str(message or "").strip().lower()
+    if not text:
+        return False
+    terms = (
+        "调查",
+        "搜索",
+        "搜查",
+        "寻找",
+        "查看",
+        "检查",
+        "观察",
+        "侦察",
+        "打听",
+        "询问",
+        "问",
+        "盘问",
+        "审问",
+        "交涉",
+        "说服",
+        "威胁",
+        "恐吓",
+        "欺骗",
+        "交易",
+        "交换",
+        "购买",
+        "贿赂",
+        "线索",
+        "痕迹",
+        "蛛丝马迹",
+        "追踪",
+        "推理",
+        "战斗",
+        "攻击",
+        "俘虏",
+        "搜身",
+        "search",
+        "investigate",
+        "inspect",
+        "ask",
+        "question",
+        "negotiate",
+        "persuade",
+        "trade",
+        "fight",
+    )
+    return any(term in text for term in terms)

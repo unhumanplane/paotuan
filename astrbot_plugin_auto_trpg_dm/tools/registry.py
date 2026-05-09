@@ -10,7 +10,7 @@ from astrbot.core.agent.tool import FunctionTool, ToolSet
 from astrbot.core.astr_agent_context import AstrAgentContext
 
 from ..core.models import GameMode
-from ..core.map_tool_routing import add_map_renderer_tools, looks_visual_map_request
+from ..core.map_tool_routing import add_map_renderer_tools, looks_legacy_svg_fallback_request, looks_visual_map_request
 from ..rules.python_runtime import PythonRuleRuntime
 from ..storage.json_repository import JsonGameRepository
 from .cycle_tools import CycleControlArgs, CycleTools
@@ -254,7 +254,12 @@ class ToolRegistry:
             ),
             "update_scene": make_tool(
                 name="update_scene",
-                description="更新当前场景、冲突、地点、NPC 摘要等叙事状态。",
+                description=(
+                    "更新当前场景、冲突、地点、NPC 摘要、可见线索和开放钩子等叙事状态。"
+                    "调查、询问、搜索、交易、交涉或战斗后若发现信息或改变风险，优先写入 "
+                    "clues/open_hooks/mysteries/current_objective/stakes/pressure_clock；"
+                    "clue status 用 discovered/suspected/resolved/false_lead/blocked。不要写未确认的幕后真相。"
+                ),
                 model=UpdateSceneArgs,
                 handler=memory_tools.update_scene,
             ),
@@ -266,7 +271,12 @@ class ToolRegistry:
             ),
             "start_game": make_tool(
                 name="start_game",
-                description="当玩家要求开始游戏、开场或进入剧情时使用。先检查背景、角色、开场介绍和跌宕剧情骨架是否足够；足够才正式开场并锁定剧情主干。开场后仍允许新玩家加入。",
+                description=(
+                    "当玩家要求开始游戏、开场或进入剧情时使用。先检查背景、角色、开场介绍、"
+                    "initial_hook 和跌宕剧情骨架是否足够；足够才正式开场并锁定剧情主干。"
+                    "开场 scene_patch 应落盘 current_objective、至少两个 open_hooks、stakes 或 pressure_clock。"
+                    "开场后仍允许新玩家加入。"
+                ),
                 model=StartGameArgs,
                 handler=memory_tools.start_game,
             ),
@@ -636,8 +646,14 @@ class ToolRegistry:
         """Before the campaign background exists, expose only setup-safe tools."""
         allowed = []
         opening_seed = _looks_like_delegated_opening_seed(message)
+        visual_map_request = looks_visual_map_request(message)
+        legacy_svg_fallback_request = looks_legacy_svg_fallback_request(message)
         for name in names:
             if name in {"update_world_tags", "query_core_rules", "session_control", "estimate_token_usage"} and name not in allowed:
+                allowed.append(name)
+            if visual_map_request and name in {"render_strict_grid_svg", "render_overview_topology_svg"} and name not in allowed:
+                allowed.append(name)
+            if legacy_svg_fallback_request and name == "generate_map_svg" and name not in allowed:
                 allowed.append(name)
             if opening_seed and name in {"create_character", "bind_player_character", "start_game"} and name not in allowed:
                 allowed.append(name)

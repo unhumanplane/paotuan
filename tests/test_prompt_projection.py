@@ -48,6 +48,45 @@ def test_tool_results_projection_blocks_raw_hidden_and_backend_materials():
     assert "full rule package" not in rendered
 
 
+def test_update_scene_tool_projection_filters_hidden_clues_and_truths():
+    projected = project_tool_results_for_dm_prompt(
+        [
+            {
+                "tool": "update_scene",
+                "args": {
+                    "patch": {
+                        "clues": [
+                            {"id": "visible", "text": "信封上有海盐味。", "status": "discovered"},
+                            {"id": "truth", "text": "幕后黑手就是船长。", "visibility": "hidden"},
+                        ],
+                        "hidden_truth": "船长献祭了灯塔守卫。",
+                    }
+                },
+                "result": {
+                    "ok": True,
+                    "scene": {
+                        "current_objective": "确认灯塔守卫为何失踪。",
+                        "clues": [
+                            {"id": "visible", "text": "信封上有海盐味。", "status": "discovered"},
+                            {"id": "truth", "text": "幕后黑手就是船长。", "visibility": "hidden"},
+                        ],
+                        "mysteries": [{"id": "why", "text": "守卫为何在涨潮前离岗？"}],
+                        "hidden_truth": "船长献祭了灯塔守卫。",
+                    },
+                },
+            }
+        ]
+    )
+
+    rendered = json.dumps(projected, ensure_ascii=False)
+
+    assert "信封上有海盐味" in rendered
+    assert "守卫为何在涨潮前离岗" in rendered
+    assert "幕后黑手就是船长" not in rendered
+    assert "献祭" not in rendered
+    assert "hidden_truth" not in rendered
+
+
 def test_strict_grid_renderer_tool_projection_keeps_metadata_without_paths_or_grid():
     projected = project_tool_results_for_dm_prompt(
         [
@@ -84,9 +123,10 @@ def test_strict_grid_renderer_tool_projection_keeps_metadata_without_paths_or_gr
 
     assert projected[0]["tool"] == "render_strict_grid_svg"
     assert projected[0]["args"] == {"title": "北门战场"}
-    assert "strict_grid_svg" in rendered
     assert "strict.svg" in rendered
-    assert "visual_only" in rendered
+    assert "visual_only" not in rendered
+    assert "render_type" not in rendered
+    assert "render_ref" not in rendered
     assert "D:/runtime" not in rendered
     assert "hidden" not in rendered
     assert "raw_svg" not in rendered
@@ -149,11 +189,14 @@ def test_overview_topology_render_projection_blocks_paths_svg_and_hidden_layout(
 
     assert projected[0]["tool"] == "render_overview_topology_svg"
     assert projected[0]["args"] == {"title": "北门概览", "map_id": "overview-1", "width": 900, "height": 700}
-    assert "overview_topology_svg" in rendered
     assert "北门通往旧集市" in rendered
     assert "D:/runtime" not in rendered
     assert "internal-cadence-key" not in rendered
     assert "cadence_key" not in rendered
+    assert "render_type" not in rendered
+    assert "preferred_render_type" not in rendered
+    assert "delivery_trigger" not in rendered
+    assert "visual_only" not in rendered
     assert "<svg" not in rendered
     assert "secret coordinates" not in rendered
     assert "hidden-room" not in rendered
@@ -203,3 +246,57 @@ def test_ra_summary_projection_keeps_counts_not_rejected_values():
     assert "patch_candidates" not in rendered
     assert "隐藏地图事实" not in rendered
     assert '"hp": 7' not in rendered
+
+
+def test_tool_projection_keeps_public_relationship_fields_not_hidden_motives():
+    projected = project_tool_results_for_dm_prompt(
+        [
+            {
+                "tool": "update_scene",
+                "args": {
+                    "patch": {
+                        "npcs": [
+                            {
+                                "name": "Watch Captain",
+                                "relations": {
+                                    "attitude": "hostile",
+                                    "fear": "high",
+                                    "known_facts": ["玩家威胁过他"],
+                                    "secret_allegiance": "cult",
+                                    "hidden_motive": "lead party into ambush",
+                                },
+                            }
+                        ]
+                    }
+                },
+                "result": {
+                    "ok": True,
+                    "scene": {
+                        "npcs": [
+                            {
+                                "name": "Watch Captain",
+                                "relations": {
+                                    "attitude": "hostile",
+                                    "fear": "high",
+                                    "known_facts": ["玩家威胁过他"],
+                                    "future_betrayal": "midnight",
+                                    "secret_allegiance": "cult",
+                                },
+                            }
+                        ]
+                    },
+                },
+            }
+        ]
+    )
+
+    rendered = json.dumps(projected, ensure_ascii=False)
+
+    assert "Watch Captain" in rendered
+    assert "hostile" in rendered
+    assert "玩家威胁过他" in rendered
+    assert "secret_allegiance" not in rendered
+    assert "hidden_motive" not in rendered
+    assert "future_betrayal" not in rendered
+    assert "ambush" not in rendered
+    assert "cult" not in rendered

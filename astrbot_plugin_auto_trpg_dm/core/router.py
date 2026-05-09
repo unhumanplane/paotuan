@@ -1628,6 +1628,11 @@ class IntentRouter:
                 repaired["opening_intro"] = repaired.pop("opening")
             if "player_guidance" not in repaired and repaired.get("guidance"):
                 repaired["player_guidance"] = repaired.pop("guidance")
+            if "initial_hook" not in repaired:
+                for alias in ("hook", "opening_hook", "initial_prompt", "first_hook"):
+                    if repaired.get(alias):
+                        repaired["initial_hook"] = repaired.pop(alias)
+                        break
             if "campaign_outline" in repaired:
                 repaired["campaign_outline"] = _coerce_campaign_outline(repaired.get("campaign_outline"))
             if "campaign_outline" not in repaired:
@@ -1644,7 +1649,7 @@ class IntentRouter:
                         scene_value = repaired.pop(alias)
                         repaired["scene_patch"] = scene_value if isinstance(scene_value, dict) else {"summary": str(scene_value)}
                         break
-            allowed = {"opening_intro", "player_guidance", "campaign_outline", "scene_patch"}
+            allowed = {"opening_intro", "player_guidance", "initial_hook", "campaign_outline", "scene_patch"}
             return {key: value for key, value in repaired.items() if key in allowed}
         if tool_name == "session_control":
             if not str(repaired.get("action") or "").strip():

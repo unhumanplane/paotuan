@@ -26,6 +26,7 @@ HERMES_ENV = OPS / "bin" / "hermes-env.sh"
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8767
 DEFAULT_TIMEOUT_SECONDS = 240
+DEFAULT_JOB_TIMEOUT_SECONDS = 1800
 DEFAULT_MAX_PROMPT_CHARS = 4000
 DEFAULT_WORKDIR = OPS / "work" / "paotuan"
 DEFAULT_SECRET_PATH = OPS / "secrets" / "coder_bridge_secret"
@@ -35,6 +36,7 @@ DEFAULT_ASTRBOT_API_URL = "http://127.0.0.1:6185/api/v1/im/message"
 DEFAULT_NOTIFY_SESSION_TEMPLATE = "default:GroupMessage:{group_id}"
 DEFAULT_ASTRBOT_API_TIMEOUT_SECONDS = 10
 DEFAULT_MAX_NOTIFY_CHARS = 3500
+DEFAULT_BACKGROUND_ACCEPTED_REPLY = "Hermes 已转入后台执行，完成后会把结果发回群里。"
 
 
 def require_aiohttp_web():
@@ -151,10 +153,18 @@ def run_hermes(prompt: str, timeout: int, workdir: Path) -> tuple[int, str]:
     return proc.returncode, proc.stdout or ""
 
 
+async def run_blocking(func, *args):
+    to_thread = getattr(asyncio, "to_thread", None)
+    if to_thread is not None:
+        return await to_thread(func, *args)
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(None, lambda: func(*args))
+
 class CoderBridge:
     def __init__(self, args: argparse.Namespace):
         self.secret_path = Path(args.secret_path)
         self.timeout_seconds = int(args.timeout_seconds)
+        self.job_timeout_seconds = int(args.job_timeout_seconds)
         self.max_prompt_chars = int(args.max_prompt_chars)
         self.max_output_chars = int(args.max_output_chars)
         self.workdir = Path(args.workdir)
@@ -203,14 +213,57 @@ class CoderBridge:
         if not (self.workdir / ".git").exists():
             return json_response({"ok": False, "error": f"workdir is not a git repo: {self.workdir}"}, status=500)
         hermes_prompt = build_prompt(payload)
+        print(
+            f"coder_request_accepted group={payload.get('group_id') or ''} "
+            f"message={payload.get('message_id') or ''} prompt_chars={len(prompt)} "
+            f"job_timeout={self.job_timeout_seconds}",
+            flush=True,
+        )
+        asyncio.create_task(self._run_coder_job(payload, hermes_prompt))
+        return json_response({"ok": True, "accepted": True, "reply": DEFAULT_BACKGROUND_ACCEPTED_REPLY})
+
+    async def _run_coder_job(self, payload: dict[str, Any], hermes_prompt: str) -> None:
+        group_id = str(payload.get("group_id") or "").strip()
+        message_id = str(payload.get("message_id") or "").strip()
         try:
-            returncode, output = await asyncio.to_thread(run_hermes, hermes_prompt, self.timeout_seconds, self.workdir)
+            session = self._session_for_group(group_id)
+            print(f"coder_job_started group={group_id} message={message_id}", flush=True)
+            returncode, output = await run_blocking(run_hermes, hermes_prompt, self.job_timeout_seconds, self.workdir)
+            text = self._format_coder_job_reply(returncode, output)
+            print(
+                f"coder_job_completed group={group_id} message={message_id} "
+                f"returncode={returncode} output_chars={len(output or '')} notify_chars={len(text)}",
+                flush=True,
+            )
         except subprocess.TimeoutExpired:
-            return json_response({"ok": False, "error": "Hermes timed out"}, status=504)
+            text = f"【Hermes /coder 超时】任务超过 {self.job_timeout_seconds} 秒仍未完成，已停止等待。"
         except Exception as exc:
-            return json_response({"ok": False, "error": f"Hermes execution failed: {exc}"}, status=500)
-        reply = tail_text(output.strip(), self.max_output_chars)
-        return json_response({"ok": returncode == 0, "returncode": returncode, "reply": reply})
+            text = f"【Hermes /coder 执行失败】{str(exc)[:300]}"
+        try:
+            api_key = read_secret(self.astrbot_api_key_path)
+            api_result = await run_blocking(self._post_astrbot_message, api_key, session, text)
+            if not api_result.get("ok"):
+                print(f"coder_job_notify_failed group={group_id} message={message_id} error={api_result.get('error')}", flush=True)
+            else:
+                print(f"coder_job_notify_sent group={group_id} message={message_id} session={session}", flush=True)
+        except Exception as exc:
+            print(f"coder_job_notify_failed group={group_id} message={message_id} error={str(exc)[:200]}", flush=True)
+
+    def _session_for_group(self, group_id: str) -> str:
+        if not group_id:
+            raise ValueError("missing group_id")
+        allowed_groups = self._allowed_notify_groups()
+        if group_id not in allowed_groups:
+            raise ValueError("group is not in notify whitelist")
+        return self.notify_session_template.format(group_id=group_id)
+
+    def _format_coder_job_reply(self, returncode: int, output: str) -> str:
+        text = tail_text((output or "").strip(), self.max_output_chars)
+        if not text:
+            text = "Hermes /coder 任务完成，但没有返回文本结果。"
+        if returncode != 0:
+            text = f"【Hermes /coder 异常退出：{returncode}】\n{text}"
+        return truncate_text(text, self.max_notify_chars)
 
     async def notify(self, request: web.Request) -> web.Response:
         payload, error_response = await self._read_signed_json(request)
@@ -220,7 +273,7 @@ class CoderBridge:
         try:
             group_id, session, text = self._resolve_notify_payload(payload)
             api_key = read_secret(self.astrbot_api_key_path)
-            api_result = await asyncio.to_thread(self._post_astrbot_message, api_key, session, text)
+            api_result = await run_blocking(self._post_astrbot_message, api_key, session, text)
         except ValueError as exc:
             return json_response({"ok": False, "error": str(exc)}, status=400)
         except RuntimeError as exc:
@@ -296,6 +349,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--port", type=int, default=int(os.environ.get("HERMES_CODER_BRIDGE_PORT", str(DEFAULT_PORT))))
     parser.add_argument("--secret-path", default=os.environ.get("HERMES_CODER_BRIDGE_SECRET_PATH", str(DEFAULT_SECRET_PATH)))
     parser.add_argument("--timeout-seconds", type=int, default=int(os.environ.get("HERMES_CODER_TIMEOUT_SECONDS", str(DEFAULT_TIMEOUT_SECONDS))))
+    parser.add_argument("--job-timeout-seconds", type=int, default=int(os.environ.get("HERMES_CODER_JOB_TIMEOUT_SECONDS", str(DEFAULT_JOB_TIMEOUT_SECONDS))))
     parser.add_argument("--max-prompt-chars", type=int, default=int(os.environ.get("HERMES_CODER_MAX_PROMPT_CHARS", str(DEFAULT_MAX_PROMPT_CHARS))))
     parser.add_argument("--max-output-chars", type=int, default=int(os.environ.get("HERMES_CODER_MAX_OUTPUT_CHARS", "12000")))
     parser.add_argument("--workdir", default=os.environ.get("HERMES_CODER_WORKDIR", str(DEFAULT_WORKDIR)))

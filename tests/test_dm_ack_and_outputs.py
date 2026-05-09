@@ -130,7 +130,7 @@ def _install_fake_astrbot_modules():
 _install_fake_astrbot_modules()
 
 from astrbot_plugin_auto_trpg_dm.core.ambient_image import AmbientImageConfig
-from astrbot_plugin_auto_trpg_dm.core.models import GameSession
+from astrbot_plugin_auto_trpg_dm.core.models import CycleState, GameSession
 from astrbot_plugin_auto_trpg_dm.main import AutoTrpgDmPlugin
 
 
@@ -323,6 +323,74 @@ def test_manual_ambient_image_fast_path_reports_missing_independent_key():
     assert "独立生图 API key 没有读取到" in reply
     assert "PACKYAPI_SORA_API_KEY" in reply
     assert repo.audits[-1]["action"] == "manual_ambient_image_blocked"
+
+
+def test_scene_tracking_status_fast_path_returns_visible_hooks_without_advancing():
+    session = GameSession.new("group")
+    session.world_tags["_background_ready"] = True
+    session.scene.update(
+        {
+            "_game_started": True,
+            "current_objective": "确认旧剧院里失踪者的去向。",
+            "clues": [
+                {"id": "mud", "text": "门口有新鲜泥脚印。", "status": "discovered", "visibility": "player"},
+                {"id": "truth", "text": "幕后黑手就是馆长。", "visibility": "hidden"},
+            ],
+            "open_hooks": [{"id": "side-door", "text": "侧门锁孔有新鲜刮痕。", "status": "open"}],
+            "pressure_clock": {"label": "巡警靠近", "text": "街角手电光正在转向剧院。", "status": "active"},
+        }
+    )
+    repo = FakeRepository(session)
+    plugin = AutoTrpgDmPlugin.__new__(AutoTrpgDmPlugin)
+    plugin.repository = repo
+    plugin.ambient_image_config = AmbientImageConfig(enabled=False)
+    plugin.plugin_logger = FakeLogger()
+
+    reply = asyncio.run(
+        plugin._local_fast_path(
+            FakeEvent(),
+            "group",
+            {"player_id": "player-a"},
+            "当前目标/线索",
+        )
+    )
+
+    assert "当前目标：确认旧剧院里失踪者的去向" in reply
+    assert "门口有新鲜泥脚印" in reply
+    assert "侧门锁孔有新鲜刮痕" in reply
+    assert "幕后黑手就是馆长" not in reply
+    assert repo.session.cycle_state == CycleState.CYCLE_ACTIVE
+    assert repo.audits[-1]["action"] == "scene_tracking_status"
+
+
+def test_visual_map_requests_without_background_reach_tool_chain():
+    for message in ("显示现有地图", "画一下布局吧"):
+        session = GameSession.new("group")
+        repo = FakeRepository(session)
+        plugin = AutoTrpgDmPlugin.__new__(AutoTrpgDmPlugin)
+        plugin.repository = repo
+        plugin.ambient_image_config = AmbientImageConfig(enabled=False)
+        plugin.plugin_logger = FakeLogger()
+        plugin.honcho_config = types.SimpleNamespace(
+            enabled=False,
+            read_enabled=False,
+            max_context_chars=0,
+        )
+
+        reply = asyncio.run(
+            plugin._local_fast_path(
+                FakeEvent(),
+                "group",
+                {"player_id": "player-a"},
+                message,
+            )
+        )
+
+        assert reply == ""
+        assert repo.session.world_tags["_background_ready"] is True
+        assert repo.session.world_tags["background_source"] == "visual_map_request_bootstrap"
+        assert any(record.get("action") == "visual_map_background_bootstrap" for record in repo.audits)
+        assert not any(record.get("action") == "background_required" for record in repo.audits)
 
 
 def test_empty_dm_greedystr_sentinel_uses_status_prompt():

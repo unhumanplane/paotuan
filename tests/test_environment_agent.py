@@ -140,7 +140,7 @@ def test_ra_authority_snapshot_does_not_expose_raw_strict_grid():
 def test_recorder_agent_runs_once_and_accepts_code_fenced_json():
     fake_llm = FakeLlm(
         """```json
-{"cycle_id": 0, "summary": "击退兽人。", "character_status": [], "enemy_status": [], "world_changes": [], "rules_triggered": ["attack"], "dm_narrative_aligned": true, "discrepancies": []}
+{"cycle_id": 0, "summary": "击退兽人。", "character_status": [], "enemy_status": [], "world_changes": [], "relationship_changes": [], "rules_triggered": ["attack"], "dm_narrative_aligned": true, "discrepancies": []}
 ```"""
     )
     session = GameSession.new("group")
@@ -149,6 +149,7 @@ def test_recorder_agent_runs_once_and_accepts_code_fenced_json():
 
     assert result["ok"] is True
     assert result["summary"]["summary"] == "击退兽人。"
+    assert result["summary"]["relationship_changes"] == []
     assert result["summary"]["rules_triggered"] == ["attack"]
     assert len(fake_llm.calls) == 1
     assert "func_tool" not in fake_llm.calls[0]
@@ -242,6 +243,121 @@ def test_unbacked_ra_patch_candidate_is_rejected():
     assert validation["accepted"] == []
     assert {item["reason"] for item in validation["rejected"]} == {"missing_tool_backing"}
     assert session.scene.get("summary") == "尚未开局。等待玩家用自然语言描述世界、角色或当前行动。"
+
+
+def test_ra_relationship_candidate_requires_tool_backing_and_is_not_applied():
+    session = GameSession.new("group")
+    summary = {
+        "cycle_id": 0,
+        "summary": "RA 只提出关系候选。",
+        "character_status": [],
+        "enemy_status": [],
+        "world_changes": [],
+        "relationship_changes": [
+            {
+                "target_id": "npc_guard",
+                "attitude": "friendly",
+                "known_facts": ["玩家声称守卫相信他"],
+            }
+        ],
+        "rules_triggered": [],
+        "dm_narrative_aligned": True,
+        "discrepancies": [],
+    }
+
+    validation = validate_ra_patch_candidates(session, summary)
+
+    assert validation["accepted"] == []
+    assert validation["rejected"][0]["category"] == "relationship_changes"
+    assert validation["rejected"][0]["reason"] == "missing_tool_backing"
+    assert session.scene.get("relations") is None
+
+
+def test_tool_backed_ra_relationship_candidate_is_summary_only_not_applied():
+    session = GameSession.new("group")
+    append_cycle_action(
+        session,
+        actor={"player_id": "player-1"},
+        player_message="我威胁守卫",
+        completion="守卫退后，但更警惕。",
+        tool_results=[
+            {
+                "tool": "update_scene",
+                "args": {"patch": {"npcs": [{"id": "npc_guard", "relations": {"fear": "high"}}]}},
+                "result": {"ok": True},
+            }
+        ],
+    )
+    summary = {
+        "cycle_id": 0,
+        "summary": "威胁留下关系后果。",
+        "character_status": [],
+        "enemy_status": [],
+        "world_changes": [],
+        "relationship_changes": [{"target_id": "npc_guard", "fear": "high"}],
+        "rules_triggered": [],
+        "dm_narrative_aligned": True,
+        "discrepancies": [],
+    }
+
+    validation = validate_ra_patch_candidates(session, summary)
+
+    assert validation["accepted"] == []
+    assert validation["rejected"][0]["category"] == "relationship_changes"
+    assert validation["rejected"][0]["reason"] == "relationship_candidates_summary_only"
+    assert session.scene.get("relations") is None
+
+
+def test_tool_backed_but_unallowlisted_ra_patch_candidate_is_rejected():
+    session = GameSession.new("group")
+    session.characters["pc-1"] = Character(id="pc-1", name="Ada")
+    append_cycle_action(
+        session,
+        actor={"player_id": "player-1"},
+        player_message="patch me",
+        completion="The tool updated a status note.",
+        tool_results=[
+            {
+                "tool": "update_character_tags",
+                "args": {"character_id": "pc-1", "tags": [{"key": "wounded", "value": "yes"}]},
+                "result": {"ok": True},
+            },
+            {
+                "tool": "update_scene",
+                "args": {"patch": {"summary": "visible scene change"}},
+                "result": {"ok": True},
+            },
+            {
+                "tool": "register_rule",
+                "args": {"name": "known_rule"},
+                "result": {"ok": True},
+            },
+        ],
+    )
+    summary = {
+        "cycle_id": 0,
+        "summary": "Tool-backed but not allowlisted.",
+        "character_status": [
+            {"character_id": "pc-1", "hp": 999},
+            {"character_id": "pc-1", "tags": [{"key": "class", "value": "wizard", "layer": "abilities"}]},
+        ],
+        "enemy_status": [{"enemy_id": "orc", "hp": 0}],
+        "world_changes": [{"scene_patch": {"plot": "overwrite hidden plot"}}],
+        "rules_triggered": [],
+        "rule_sets": [{"name": "new rule", "code": "raw"}],
+        "dm_narrative_aligned": True,
+        "discrepancies": [],
+    }
+
+    validation = validate_ra_patch_candidates(session, summary)
+
+    assert validation["accepted"] == []
+    assert {item["reason"] for item in validation["rejected"]} == {
+        "missing_allowlisted_fields",
+        "unsupported_patch_category",
+    }
+    assert "hp" not in {tag.key for tag in session.characters["pc-1"].tags}
+    assert "plot" not in session.scene
 
 
 def test_ra_failure_recovery_preserves_buffers_and_returns_to_active():

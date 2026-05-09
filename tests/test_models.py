@@ -3,10 +3,13 @@ from pathlib import Path
 
 from astrbot_plugin_auto_trpg_dm.core.models import (
     AuditBuffer,
+    Character,
     CycleAction,
     CycleState,
     GameSession,
     RACycleInput,
+    TagValue,
+    infer_tag_layer,
 )
 
 
@@ -84,3 +87,66 @@ def test_config_schema_defines_ra_enabled_default_off():
 
     assert schema["ra_enabled"]["type"] == "bool"
     assert schema["ra_enabled"]["hint"] == "false"
+
+
+def test_relationship_tag_layer_inference_and_public_compaction():
+    assert infer_tag_layer("attitude_to_watch_captain") == "relations"
+    assert infer_tag_layer("阵营关系") == "relations"
+    character = Character(
+        id="npc_watch",
+        name="Watch Captain",
+        tags=[
+            TagValue.from_dict(
+                {
+                    "key": "watch_captain",
+                    "layer": "relations",
+                    "value": {
+                        "attitude": "敌对",
+                        "trust": "低",
+                        "fear": "高",
+                        "known_facts": ["玩家救过巡逻兵"],
+                        "secret_allegiance": "hidden cult",
+                        "hidden_motive": "诱导队伍进埋伏",
+                    },
+                }
+            )
+        ],
+    )
+
+    compact = character.tags[0].value
+    layers = GameSession(session_id="group", characters={"npc_watch": character}).compact_snapshot()["characters"][0]["tag_layers"]
+
+    assert compact["attitude"] == "hostile"
+    assert compact["trust"] == "low"
+    assert compact["fear"] == "high"
+    assert compact["secret_allegiance"] == "hidden cult"
+    assert "secret_allegiance" not in str(layers)
+    assert "hidden_motive" not in str(layers)
+    assert "玩家救过巡逻兵" in str(layers)
+
+
+def test_old_save_with_plain_relation_fields_still_loads():
+    session = GameSession.from_dict(
+        {
+            "session_id": "group",
+            "characters": {
+                "npc_broker": {
+                    "id": "npc_broker",
+                    "name": "Broker",
+                    "tags": [
+                        {
+                            "key": "broker_relation",
+                            "value": "owes the party a favor",
+                            "layer": "relations",
+                        }
+                    ],
+                }
+            },
+            "scene": {"npcs": [{"name": "Broker", "stance": "neutral"}]},
+            "world_tags": {"factions": {"guild": {"attitude": "friendly"}}},
+        }
+    )
+
+    assert session.characters["npc_broker"].tags[0].value == "owes the party a favor"
+    assert session.scene["npcs"][0]["stance"] == "neutral"
+    assert session.world_tags["factions"]["guild"]["attitude"] == "friendly"

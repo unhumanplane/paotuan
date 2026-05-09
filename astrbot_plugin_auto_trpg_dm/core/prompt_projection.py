@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from .scene_hooks import project_visible_scene_value
+
 
 DM_PROMPT_BLOCKED_KEYS = {
     "api_key",
@@ -15,6 +17,9 @@ DM_PROMPT_BLOCKED_KEYS = {
     "grid",
     "headers",
     "html",
+    "hidden",
+    "hidden_motive",
+    "hidden_motives",
     "image_bytes",
     "layout",
     "layout_updates",
@@ -22,7 +27,9 @@ DM_PROMPT_BLOCKED_KEYS = {
     "metadata_path",
     "password",
     "path",
+    "pending_output",
     "positions",
+    "preferred_render_type",
     "prompt",
     "provider",
     "raw",
@@ -34,15 +41,23 @@ DM_PROMPT_BLOCKED_KEYS = {
     "raw_ra_output",
     "raw_svg",
     "raw_text",
+    "render_ref",
+    "render_refs",
+    "render_type",
     "rule_packages",
     "rule_sets",
+    "secret_allegiance",
+    "secret_loyalty",
     "source_url",
     "svg",
     "system_prompt",
     "token_usage",
     "tool_trace",
     "tool_traces",
+    "true_allegiance",
+    "true_motive",
     "url",
+    "visual_only",
     "web_grounding",
 }
 
@@ -58,6 +73,9 @@ DM_PROMPT_BLOCKED_KEY_TOKENS = (
     "provider_payload",
     "raw_",
     "secret",
+    "hidden",
+    "betrayal",
+    "private",
     "system_prompt",
     "token_usage",
 )
@@ -115,6 +133,14 @@ def project_dm_prompt_value(
     if _hidden_or_diagnostic_record(value):
         return {}
     if isinstance(value, dict):
+        if _looks_like_scene_patch(value):
+            visible_scene = project_visible_scene_value(
+                value,
+                depth=depth,
+                text_limit=text_limit,
+                item_limit=DM_PROMPT_MAPPING_LIMIT,
+            )
+            return visible_scene or {}
         if depth <= 0:
             return {"keys": _safe_mapping_keys(value)}
         projected: dict[str, Any] = {}
@@ -172,7 +198,29 @@ def _hidden_or_diagnostic_record(value: Any) -> bool:
     if not isinstance(value, dict):
         return False
     visibility = str(value.get("visibility") or "").strip().lower()
-    return visibility in {"hidden", "diagnostic"}
+    status = str(value.get("status") or "").strip().lower()
+    return visibility in {"hidden", "secret", "private", "dm_only", "gm_only", "diagnostic"} or status in {
+        "hidden",
+        "secret",
+        "undiscovered",
+    }
+
+
+def _looks_like_scene_patch(value: dict[str, Any]) -> bool:
+    return any(
+        key in value
+        for key in (
+            "current_objective",
+            "open_hooks",
+            "clues",
+            "mysteries",
+            "stakes",
+            "pressure_clock",
+            "hidden_truth",
+            "secret_clues",
+            "hidden_clues",
+        )
+    )
 
 
 def _blocked_dm_prompt_key(key: str) -> bool:

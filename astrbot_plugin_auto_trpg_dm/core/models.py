@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
@@ -37,12 +38,16 @@ class TagValue:
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "TagValue":
         key = str(data.get("key", ""))
+        layer = str(data.get("layer") or infer_tag_layer(key))
+        value = data.get("value")
+        if layer == "relations":
+            value = normalize_relation_state(value)
         return cls(
             key=key,
-            value=data.get("value"),
+            value=value,
             type=str(data.get("type", "text")),
             source=str(data.get("source", "llm")),
-            layer=str(data.get("layer") or infer_tag_layer(key)),
+            layer=layer,
         )
 
 
@@ -399,7 +404,156 @@ TAG_LAYER_KEYWORDS = {
     "equipment": ("装备", "武器", "主武器", "常用装备", "护甲", "道具", "物品", "弹药"),
     "combat": ("默认战斗行为", "战斗习惯", "战术", "攻击", "防御", "射击", "近战", "施法偏好"),
     "status": ("状态", "伤势", "生命", "体力", "资源", "buff", "debuff", "增益", "减益", "异常", "弱点", "缺陷", "限制", "克制"),
-    "relations": ("关系", "盟友", "敌人", "组织", "所属", "联系人", "羁绊"),
+    "relations": (
+        "关系",
+        "态度",
+        "信任",
+        "恐惧",
+        "债",
+        "把柄",
+        "盟友",
+        "敌人",
+        "组织",
+        "所属",
+        "联系人",
+        "羁绊",
+        "npc",
+        "faction",
+        "attitude",
+        "trust",
+        "fear",
+        "debt",
+        "leverage",
+        "known_facts",
+        "last_interaction",
+    ),
+}
+
+
+RELATION_ATTITUDE_ALIASES = {
+    "hostile": "hostile",
+    "敌对": "hostile",
+    "敌意": "hostile",
+    "仇视": "hostile",
+    "suspicious": "suspicious",
+    "怀疑": "suspicious",
+    "警惕": "suspicious",
+    "不信任": "suspicious",
+    "neutral": "neutral",
+    "中立": "neutral",
+    "普通": "neutral",
+    "friendly": "friendly",
+    "友好": "friendly",
+    "亲近": "friendly",
+    "loyal": "loyal",
+    "忠诚": "loyal",
+    "效忠": "loyal",
+}
+
+RELATION_INTENSITY_ALIASES = {
+    "none": "none",
+    "无": "none",
+    "低": "low",
+    "low": "low",
+    "少量": "low",
+    "moderate": "moderate",
+    "medium": "moderate",
+    "中": "moderate",
+    "中等": "moderate",
+    "high": "high",
+    "高": "high",
+    "强": "high",
+    "critical": "critical",
+    "极高": "critical",
+    "重大": "critical",
+}
+
+RELATION_STRUCTURED_FIELDS = {
+    "id",
+    "target_id",
+    "target",
+    "name",
+    "type",
+    "kind",
+    "scope",
+    "attitude",
+    "trust",
+    "fear",
+    "debt",
+    "leverage",
+    "known_facts",
+    "last_interaction",
+    "flags",
+    "relations",
+    "relationship",
+    "relationships",
+    "secret_allegiance",
+    "hidden_motive",
+    "hidden_motives",
+    "true_motive",
+    "future_betrayal",
+    "evidence",
+    "source",
+    "updated_at",
+    "visibility",
+    "notes",
+    "public_notes",
+}
+
+RELATION_PUBLIC_FIELDS = {
+    "id",
+    "target_id",
+    "target",
+    "name",
+    "type",
+    "kind",
+    "scope",
+    "attitude",
+    "trust",
+    "fear",
+    "debt",
+    "leverage",
+    "known_facts",
+    "last_interaction",
+    "flags",
+    "relations",
+    "relationship",
+    "relationships",
+    "evidence",
+    "updated_at",
+    "public_notes",
+}
+
+RELATION_HIDDEN_FIELDS = {
+    "hidden",
+    "hidden_motive",
+    "hidden_motives",
+    "secret",
+    "secret_allegiance",
+    "secret_loyalty",
+    "true_allegiance",
+    "true_motive",
+    "private_notes",
+    "dm_notes",
+    "gm_notes",
+    "future_betrayal",
+    "planned_betrayal",
+    "unrevealed",
+    "unrevealed_facts",
+    "agenda",
+}
+
+RELATION_COLLECTION_KEYS = {
+    "relations",
+    "relationship",
+    "relationships",
+    "npc_relations",
+    "faction_relations",
+    "npcs",
+    "factions",
+    "关系",
+    "阵营关系",
+    "npc关系",
 }
 
 
@@ -410,10 +564,182 @@ def infer_tag_layer(key: str) -> str:
     alias = TAG_LAYER_ALIASES.get(text)
     if alias:
         return alias
+    if any(
+        token in text
+        for token in (
+            "关系",
+            "attitude",
+            "trust",
+            "fear",
+            "debt",
+            "leverage",
+            "known_facts",
+            "last_interaction",
+            "npc",
+            "faction",
+        )
+    ):
+        return "relations"
     for layer, keywords in TAG_LAYER_KEYWORDS.items():
         if any(keyword.lower() in text for keyword in keywords):
             return layer
     return "notes"
+
+
+def normalize_relation_state(value: Any) -> Any:
+    """Normalize lightweight NPC/faction relationship JSON without hiding audit fields."""
+    if isinstance(value, list):
+        return [normalize_relation_state(item) for item in value]
+    if not isinstance(value, Mapping):
+        return value
+    normalized: dict[str, Any] = {}
+    for raw_key, raw_item in value.items():
+        key = str(raw_key)
+        if not key:
+            continue
+        if key == "attitude":
+            normalized[key] = _normalize_relation_attitude(raw_item)
+        elif key in {"trust", "fear", "debt", "leverage"}:
+            normalized[key] = _normalize_relation_intensity_or_note(raw_item)
+        elif key in {"known_facts", "flags"}:
+            normalized[key] = _compact_relation_list(raw_item, 12)
+        elif key == "last_interaction":
+            normalized[key] = _short_snapshot(raw_item, 240)
+        elif _looks_like_relation_key(key) and isinstance(raw_item, (dict, list)):
+            normalized[key] = normalize_relation_state(raw_item)
+        else:
+            normalized[key] = raw_item
+    if _looks_structured_relation(normalized):
+        normalized.setdefault("attitude", "neutral")
+    return normalized
+
+
+def normalize_relationship_collections(value: Any, key: str = "") -> Any:
+    """Normalize relationship-shaped scene/world patches while preserving legacy saves."""
+    if isinstance(value, list):
+        if _looks_like_relation_key(key):
+            return [normalize_relationship_collections(item, key) for item in value]
+        return [
+            normalize_relationship_collections(item, key)
+            if isinstance(item, (dict, list))
+            else item
+            for item in value
+        ]
+    if not isinstance(value, Mapping):
+        return value
+    if _looks_like_relation_key(key):
+        if _looks_structured_relation(value):
+            return normalize_relation_state(value)
+        return {
+            str(raw_key): normalize_relation_state(raw_item) if isinstance(raw_item, (dict, list)) else raw_item
+            for raw_key, raw_item in value.items()
+            if str(raw_key)
+        }
+    normalized: dict[str, Any] = {}
+    for raw_key, raw_item in value.items():
+        item_key = str(raw_key)
+        if _looks_like_relation_key(item_key):
+            normalized[item_key] = normalize_relationship_collections(raw_item, item_key)
+        elif _looks_like_relation_key(key):
+            normalized[item_key] = normalize_relation_state(raw_item)
+        elif isinstance(raw_item, (dict, list)):
+            normalized[item_key] = normalize_relationship_collections(raw_item, item_key)
+        else:
+            normalized[item_key] = raw_item
+    if _looks_like_relation_key(key) or _looks_structured_relation(normalized):
+        return normalize_relation_state(normalized)
+    return normalized
+
+
+def project_public_relation_state(value: Any) -> Any:
+    """Return the player-knowable part of relationship state."""
+    if isinstance(value, list):
+        return [
+            item
+            for item in (project_public_relation_state(item) for item in value)
+            if item not in ({}, [], "", None)
+        ]
+    if not isinstance(value, Mapping):
+        return value
+    visibility = str(value.get("visibility") or "").strip().lower()
+    if visibility in {"hidden", "secret", "dm", "gm", "diagnostic"}:
+        return {}
+    projected: dict[str, Any] = {}
+    relation_like = _looks_structured_relation(value)
+    for raw_key, raw_item in value.items():
+        key = str(raw_key)
+        if _relation_key_is_hidden(key):
+            continue
+        if relation_like and key not in RELATION_PUBLIC_FIELDS:
+            continue
+        if isinstance(raw_item, (dict, list)):
+            projected_item = project_public_relation_state(raw_item)
+        else:
+            projected_item = raw_item
+        if projected_item not in ({}, [], "", None):
+            projected[key] = projected_item
+    return projected
+
+
+def _looks_like_relation_key(key: str) -> bool:
+    text = str(key or "").strip().lower()
+    return text in RELATION_COLLECTION_KEYS or infer_tag_layer(text) == "relations"
+
+
+def _looks_structured_relation(value: Mapping[str, Any]) -> bool:
+    keys = {str(key) for key in value.keys()}
+    return bool(keys.intersection(RELATION_STRUCTURED_FIELDS))
+
+
+def _relation_key_is_hidden(key: str) -> bool:
+    text = str(key or "").strip().lower()
+    if text in RELATION_HIDDEN_FIELDS:
+        return True
+    return (
+        text.startswith("_")
+        or "hidden" in text
+        or "secret" in text
+        or "betrayal" in text
+        or "private" in text
+        or "dm_only" in text
+        or "gm_only" in text
+    )
+
+
+def _normalize_relation_attitude(value: Any) -> str:
+    text = str(value or "").strip().lower()
+    return RELATION_ATTITUDE_ALIASES.get(text, text or "neutral")
+
+
+def _normalize_relation_intensity_or_note(value: Any) -> Any:
+    if isinstance(value, (int, float)):
+        number = max(-2, min(2, int(value)))
+        return {-2: "none", -1: "low", 0: "moderate", 1: "high", 2: "critical"}[number]
+    if isinstance(value, list):
+        return _compact_relation_list(value, 8)
+    if isinstance(value, Mapping):
+        return normalize_relation_state(value)
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    return RELATION_INTENSITY_ALIASES.get(text.lower(), _short_snapshot(text, 160))
+
+
+def _compact_relation_list(value: Any, limit: int) -> list[Any]:
+    items = value if isinstance(value, list) else [value]
+    compacted: list[Any] = []
+    for item in items[:limit]:
+        if isinstance(item, str):
+            text = _short_snapshot(item, 180)
+            if text:
+                compacted.append(text)
+        elif isinstance(item, Mapping):
+            projected = project_public_relation_state(normalize_relation_state(item))
+            if projected:
+                compacted.append(projected)
+        elif item not in (None, "", [], {}):
+            compacted.append(item)
+    return compacted
 
 
 def compact_tag_layers(tags: list[TagValue], max_layers: int = 6, max_tags_per_layer: int = 8) -> dict[str, Any]:
@@ -423,10 +749,13 @@ def compact_tag_layers(tags: list[TagValue], max_layers: int = 6, max_tags_per_l
         items = layered.setdefault(layer, [])
         if len(items) >= max_tags_per_layer:
             continue
+        value = project_public_relation_state(tag.value) if layer == "relations" else tag.value
+        if layer == "relations" and value in ({}, [], "", None):
+            continue
         items.append(
             {
                 "key": tag.key,
-                "value": _short_snapshot(tag.value, 120),
+                "value": _short_snapshot(value, 120),
                 "type": tag.type,
             }
         )

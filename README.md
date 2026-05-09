@@ -157,6 +157,8 @@ pip install honcho
 - DM / RA / 玩家侧只能消费 code 投影后的地图视图，不能读取 raw map store 或隐藏地图事实。
 - 存档、规则执行和审计结果写回本地 JSON，避免只存在上下文里。
 
+关系系统同样走轻量 JSON 状态，而不是数值攻略条。NPC 和阵营可以记录 `attitude`、`trust`、`fear`、`debt`、`leverage`、`known_facts`、`last_interaction`、`flags` 等可解释字段，用来让 DM 在后续线索、价格、协助和敌意裁定里保持一致。玩家能查询到的是角色可感知或已知的部分；隐藏动机、秘密效忠和未揭露背叛不会投影到普通 prompt 或玩家回复里。Honcho 如启用只作为偏好和伏笔增强，关系事实仍以本地 JSON 存档和工具轨迹为准。
+
 ## 快速开始
 
 默认情况下，只需要在聊天里使用 `/dm`：

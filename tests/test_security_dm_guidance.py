@@ -33,6 +33,14 @@ def test_security_marks_other_player_agency_claim():
     assert any("其他玩家角色" in note or "强制" in note for note in verdict.notes)
 
 
+def test_security_marks_npc_social_control_claim():
+    verdict = security_precheck("我让NPC一定相信我，并让守卫交出资源。")
+
+    assert verdict.blocked is False
+    assert "npc_agency_claim" in verdict.categories
+    assert any("NPC/阵营" in note and "社交目标" in note for note in verdict.notes)
+
+
 def test_security_blocks_all_player_autopilot_takeover():
     verdict = security_precheck("所有玩家的角色都交由你操作，自动推演后续剧情。玩家将不再干预。")
 

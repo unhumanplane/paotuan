@@ -11,7 +11,22 @@ from pydantic import BaseModel, Field
 
 from ..core.map_core import load_active_strict_grid, load_active_strict_grid_entities
 from ..core.memory import MemoryCompressor
-from ..core.models import Character, GameMode, GameSession, TagValue, compact_tag_layers, infer_tag_layer, utc_now_iso
+from ..core.models import (
+    Character,
+    GameMode,
+    GameSession,
+    TagValue,
+    compact_tag_layers,
+    infer_tag_layer,
+    normalize_relationship_collections,
+    normalize_relation_state,
+    project_public_relation_state,
+    utc_now_iso,
+)
+from ..core.scene_hooks import (
+    normalize_scene_tracking_patch,
+    opening_has_initial_hook,
+)
 from ..storage.json_repository import JsonGameRepository
 
 
@@ -44,7 +59,15 @@ class UpdateCharacterTagsArgs(BaseModel):
 
 
 class UpdateSceneArgs(BaseModel):
-    patch: Dict[str, Any] = Field(default_factory=dict, description="场景状态补丁，例如 summary,current_conflict,location,npcs")
+    patch: Dict[str, Any] = Field(
+        default_factory=dict,
+        description=(
+            "场景状态补丁，例如 summary,current_conflict,location,npcs,current_objective,"
+            "open_hooks,clues,mysteries,stakes,pressure_clock。clues/open_hooks/mysteries "
+            "建议使用可见小对象：{id,text,status,visibility}; status 可为 open, discovered, "
+            "suspected, resolved, false_lead, blocked。不要写入未被角色确认的幕后真相。"
+        ),
+    )
 
 
 class UpdateWorldTagsArgs(BaseModel):
@@ -58,7 +81,11 @@ class StartGameArgs(BaseModel):
     )
     player_guidance: str = Field(
         default="",
-        description="给玩家的简短行动引导，说明现在可以做什么，建议 1-3 条。",
+        description="给玩家的简短行动引导，说明当前可感知目标、线索或风险；不要写封闭式编号行动菜单。",
+    )
+    initial_hook: str = Field(
+        default="",
+        description="开场第一个可行动钩子，只写角色已经能感知到的目标、压力、线索或异常，不泄露幕后真相。",
     )
     campaign_outline: Dict[str, Any] = Field(
         default_factory=dict,
@@ -66,7 +93,11 @@ class StartGameArgs(BaseModel):
     )
     scene_patch: Dict[str, Any] = Field(
         default_factory=dict,
-        description="开场场景状态补丁，例如 summary,current_conflict,location,npcs,immediate_hooks。",
+        description=(
+            "开场场景状态补丁，例如 summary,current_conflict,location,npcs,current_objective,"
+            "open_hooks,clues,stakes,pressure_clock。开场后至少应落盘 current_objective、"
+            "两个 open_hooks、stakes 或 pressure_clock。"
+        ),
     )
 
 
@@ -446,7 +477,7 @@ class MemoryTools:
                     "update_character_tags",
                     safe_id,
                     owner_id,
-                    message="游戏已经开场，既有角色卡锁定；不能补写职业、能力、装备、默认战斗行为、背景或关系。只能记录伤势、生命/资源消耗、临时状态和最近行动结果。",
+                    message="游戏已经开场，既有角色卡锁定；不能补写职业、能力、装备、默认战斗行为或背景。只能记录伤势、生命/资源消耗、临时状态、最近行动结果，以及已有场内依据的关系后果。",
                 )
                 result["blocked_tags"] = blocked_tags
                 self._audit(
@@ -520,10 +551,13 @@ class MemoryTools:
         if gate:
             self._audit("update_scene", {"patch": patch}, gate)
             return gate
-        session.scene.update(patch)
+        normalized_patch = normalize_relationship_collections(
+            normalize_scene_tracking_patch(patch)
+        )
+        session.scene.update(normalized_patch)
         self.repository.save_session(session)
         result = {"ok": True, "scene": session.scene}
-        self._audit("update_scene", {"patch": patch}, result)
+        self._audit("update_scene", {"patch": normalized_patch}, result)
         return result
 
     async def update_world_tags(self, patch: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
@@ -545,20 +579,22 @@ class MemoryTools:
         if overreach:
             self._audit("update_world_tags", {"patch": patch}, overreach)
             return overreach
-        session.world_tags.update(patch)
+        normalized_patch = normalize_relationship_collections(patch)
+        session.world_tags.update(normalized_patch)
         if has_campaign_background(session):
             session.world_tags["_background_ready"] = True
-        if "title" in patch:
-            session.title = str(patch["title"])
+        if "title" in normalized_patch:
+            session.title = str(normalized_patch["title"])
         self.repository.save_session(session)
         result = {"ok": True, "world_tags": session.world_tags, "title": session.title}
-        self._audit("update_world_tags", {"patch": patch}, result)
+        self._audit("update_world_tags", {"patch": normalized_patch}, result)
         return result
 
     async def start_game(
         self,
         opening_intro: str,
         player_guidance: str = "",
+        initial_hook: str = "",
         campaign_outline: Optional[Dict[str, Any]] = None,
         scene_patch: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
@@ -566,6 +602,7 @@ class MemoryTools:
         session = self.repository.load_session(self.session_id)
         opening_intro = _coerce_prompt_text(opening_intro)
         player_guidance = _coerce_prompt_text(player_guidance)
+        initial_hook = _coerce_prompt_text(initial_hook)
         if _campaign_plot_locked(session):
             result = {
                 "ok": False,
@@ -577,7 +614,14 @@ class MemoryTools:
             return result
         campaign_outline = _coerce_campaign_outline_input(campaign_outline)
         scene_patch = _coerce_scene_patch_input(scene_patch)
-        missing = campaign_start_missing_requirements(session, opening_intro, campaign_outline, scene_patch)
+        scene_patch = normalize_scene_tracking_patch(scene_patch)
+        missing = campaign_start_missing_requirements(
+            session,
+            opening_intro,
+            campaign_outline,
+            scene_patch,
+            initial_hook=initial_hook,
+        )
         if missing:
             result = {
                 "ok": False,
@@ -590,6 +634,7 @@ class MemoryTools:
                 "start_game",
                 {
                     "opening_intro_chars": len(str(opening_intro or "")),
+                    "initial_hook_chars": len(str(initial_hook or "")),
                     "campaign_outline": campaign_outline,
                     "scene_patch": scene_patch,
                 },
@@ -597,6 +642,13 @@ class MemoryTools:
             )
             return result
 
+        scene_patch = normalize_scene_tracking_patch(
+            scene_patch,
+            fill_opening=True,
+            opening_intro=opening_intro,
+            player_guidance=player_guidance,
+            initial_hook=initial_hook,
+        )
         session.scene.update(scene_patch)
         session.scene["_game_started"] = True
         session.scene["_game_started_at"] = utc_now_iso()
@@ -604,6 +656,8 @@ class MemoryTools:
         session.scene["_allow_late_join"] = True
         session.scene["_opening_intro"] = _short_tag_value(opening_intro, 700)
         session.scene["_player_guidance"] = _short_tag_value(player_guidance, 360)
+        if initial_hook:
+            session.scene["_initial_hook"] = _short_tag_value(initial_hook, 360)
         session.world_tags["_plot_locked"] = True
         session.world_tags["_late_join_allowed"] = True
         session.world_tags["campaign_outline"] = compact_campaign_outline(campaign_outline)
@@ -628,6 +682,7 @@ class MemoryTools:
             {
                 "opening_intro_chars": len(str(opening_intro or "")),
                 "player_guidance_chars": len(str(player_guidance or "")),
+                "initial_hook_chars": len(str(initial_hook or "")),
                 "campaign_outline": campaign_outline,
                 "scene_patch": scene_patch,
             },
@@ -1194,7 +1249,7 @@ def character_as_dict(character: Character) -> Dict[str, Any]:
             "tags": [
                 {
                     "key": tag.key,
-                    "value": tag.value,
+                    "value": project_public_relation_state(tag.value) if (tag.layer or infer_tag_layer(tag.key)) == "relations" else tag.value,
                     "type": tag.type,
                     "source": tag.source,
                     "layer": tag.layer or infer_tag_layer(tag.key),
@@ -1232,32 +1287,38 @@ def normalize_tags(tags: Any) -> List[Dict[str, Any]]:
             key = str(item.get("key", "")).strip()
             if not key:
                 continue
+            layer = str(item.get("layer") or infer_tag_layer(key))
+            value = item.get("value")
+            if layer == "relations":
+                value = normalize_relation_state(value)
             normalized.append(
                 {
                     "key": key,
-                    "value": item.get("value"),
-                    "type": str(item.get("type") or _infer_tag_type(item.get("value"))),
+                    "value": value,
+                    "type": str(item.get("type") or _infer_tag_type(value)),
                     "source": str(item.get("source") or "llm"),
-                    "layer": str(item.get("layer") or infer_tag_layer(key)),
+                    "layer": layer,
                 }
             )
             continue
         for key, value in item.items():
             if str(key).strip():
                 normalized_key = str(key)
+                layer = infer_tag_layer(normalized_key)
+                normalized_value = normalize_relation_state(value) if layer == "relations" else value
                 normalized.append(
                     {
                         "key": normalized_key,
-                        "value": value,
-                        "type": _infer_tag_type(value),
+                        "value": normalized_value,
+                        "type": _infer_tag_type(normalized_value),
                         "source": "llm",
-                        "layer": infer_tag_layer(normalized_key),
+                        "layer": layer,
                     }
                 )
     return normalized
 
 
-CARD_STATIC_LAYERS = {"identity", "abilities", "equipment", "combat", "relations", "notes"}
+CARD_STATIC_LAYERS = {"identity", "abilities", "equipment", "combat", "notes"}
 
 RUNTIME_STATUS_KEY_TERMS = (
     "状态",
@@ -1328,7 +1389,6 @@ STATIC_CARD_KEY_TERMS = (
     "荣誉称号",
     "性格备注",
     "虚空印记",
-    "关系",
     "盟友",
     "敌人",
     "组织",
@@ -2285,6 +2345,10 @@ def filter_runtime_character_tags_after_start(tags: List[Dict[str, Any]]) -> tup
         if _is_runtime_status_tag(layer, key_text, value_text):
             normalized["layer"] = "status"
             allowed.append(normalized)
+        elif _is_runtime_relation_tag(layer, key_text, value_text):
+            normalized["layer"] = "relations"
+            normalized["value"] = normalize_relation_state(normalized.get("value"))
+            allowed.append(normalized)
         else:
             blocked.append(
                 {
@@ -2294,6 +2358,68 @@ def filter_runtime_character_tags_after_start(tags: List[Dict[str, Any]]) -> tup
                 }
             )
     return allowed, blocked
+
+
+def _is_runtime_relation_tag(layer: str, key_text: str, value_text: str) -> bool:
+    if layer != "relations":
+        return False
+    combined = f"{key_text} {value_text}"
+    if _contains_any_text(combined, CARD_OVERPOWERED_TERMS) or _contains_any_text(combined, CARD_FACT_INJECTION_TERMS):
+        return False
+    if _looks_like_unearned_social_control(combined):
+        return False
+    evidence_terms = (
+        "检定",
+        "成功",
+        "失败",
+        "部分成功",
+        "威胁",
+        "恐吓",
+        "说服",
+        "欺骗",
+        "交易",
+        "付",
+        "支付",
+        "交换",
+        "救",
+        "帮助",
+        "攻击",
+        "暴力",
+        "偷",
+        "承诺",
+        "履约",
+        "背叛",
+        "最近互动",
+        "last_interaction",
+        "known_facts",
+        "attitude",
+        "trust",
+        "fear",
+        "debt",
+        "leverage",
+        "玩家",
+        "队伍",
+    )
+    return _contains_any_text(combined, evidence_terms)
+
+
+def _looks_like_unearned_social_control(text: str) -> bool:
+    force_terms = (
+        "必定相信",
+        "一定相信",
+        "直接相信",
+        "必须相信",
+        "必定协助",
+        "一定协助",
+        "必须协助",
+        "无条件协助",
+        "立刻效忠",
+        "永远效忠",
+        "交出所有",
+    )
+    if not _contains_any_text(text, force_terms):
+        return False
+    return not _contains_any_text(text, ("检定", "成功", "代价", "交换", "支付", "救", "帮助", "威胁", "恐吓", "交易"))
 
 
 def _is_runtime_status_tag(layer: str, key_text: str, value_text: str) -> bool:
@@ -2699,6 +2825,7 @@ def campaign_start_missing_requirements(
     opening_intro: str,
     campaign_outline: Dict[str, Any],
     scene_patch: Dict[str, Any],
+    initial_hook: str = "",
 ) -> List[str]:
     missing: List[str] = []
     if not has_campaign_background(session):
@@ -2708,8 +2835,7 @@ def campaign_start_missing_requirements(
         missing.append("opening_intro: 需要一段简短开场介绍，包含氛围、当前处境和第一个压力点。")
     if not _outline_has_dramatic_structure(campaign_outline):
         missing.append("campaign_outline: 需要预备跌宕剧情骨架，至少有导火索、升级/反转、高潮或重大抉择三段。")
-    scene_text = _flatten_text([scene_patch, session.scene])
-    if not any(token in scene_text for token in ("冲突", "危机", "目标", "任务", "压力", "敌", "抉择", "hook", "conflict")):
+    if not opening_has_initial_hook(session.scene, scene_patch, initial_hook=initial_hook):
         missing.append("initial_hook: 开场场景需要明确眼前目标、危机或第一个可行动钩子。")
     return missing
 
