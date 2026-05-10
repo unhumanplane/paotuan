@@ -203,7 +203,7 @@ strict map lifecycle 是 MapCore record 上的 code-owned 状态，不由 LLM、
 | map-owned | positions、spatial occupancy、blockers、hazards、visibility、coordinates、zones、strict grid raw payload | 只能通过 `project_map_store(..., dm_narration_view)`、`player_view`、`ra_authority_view` 或 `diagnostic_view` 进入对应消费者；ordinary DM snapshot 不读取 raw MapStore 或 legacy `battle.grid`。 |
 | character-owned | HP、abilities、equipment、character cards、character tags | 通过 character projection 进入 DM/RA；空间坐标不归 character snapshot 自行解释。 |
 | battle-owned | initiative、rounds、turn/action state、`battle.active`、combat lifecycle、`battle.map_id` link | DM battle projection 保留 combat/turn/link 状态；不携带 raw `grid`、entities 坐标或 obstacle payload。 |
-| owner/control-owned | who controls what、player/GM/NPC ownership、player-character binding | 保留 `participants`、`player_character_map` 和必要 owner id；LLM 不能用 map entity tags 自行扩权。 |
+| owner/control-owned | who owns what、active controller、player/GM/NPC ownership、player-character binding | 通过 `core/control_authority.py` 解析 owner 与 active controller；ordinary DM projection 只保留安全 status/id/type，不携带 raw consent、private hosting instructions 或 diagnostic audit payload。LLM 不能用 speaker、actor、turn actor、map entity tags 或 stale focus 自行扩权。 |
 | rule-owned | reusable rules、dice/math procedures、registered rule packages | ordinary DM 可读规则摘要或工具结果；raw rule packages 不直接进入 ordinary narration。 |
 | legacy/ambiguous | `session.battle["grid"]` mirror、旧存档迁移字段、tool audit traces | 暂时保留给 spatial tools、migration 和诊断；后续 03.1.08 或 focused tool-schema PR 再清理公共工具 shape。 |
 
@@ -211,9 +211,33 @@ strict map lifecycle 是 MapCore record 上的 code-owned 状态，不由 LLM、
 | --- | --- | --- | --- |
 | `player_view` | renderer / player-facing map data | player-safe map facts 和安全 render refs | `dm` / `hidden` facts、raw path、URL、raw grid。 |
 | `dm_narration_view` | ordinary DM prompt | public/player/dm map facts、安全 render refs、battle-owned turn/link state | raw MapStore、hidden map facts、legacy `battle.grid`、raw strict grid、tool traces、raw RA output、web grounding payload、raw rule packages。 |
-| `ra_authority_view` | RA authority analysis | 清洗后的 authority snapshot、DM-visible map facts、battle/character/rule authority摘要 | hidden map facts、raw prompt、raw player input、raw audit、raw strict grid。 |
+| `ra_authority_view` | RA authority analysis | 清洗后的 authority snapshot、DM-visible map facts、battle/character/control/rule authority 摘要、必要 audit refs | hidden map facts、raw prompt、raw player input、raw consent text、raw audit payload、raw strict grid。 |
 | `diagnostic_view` | debug / tests / explicit diagnostics | counts、record metadata、projection telemetry | fact payload、hidden text、raw grid payload。 |
 | raw store / hidden facts | code-owned local state only | deterministic tools、validators、migration adapters | ordinary DM narration、player-facing renderer、RA prompt。 |
+
+### Control Authority Projection Boundary
+
+04.1 introduces `GameSession.control_authority` as owner/control-owned state.
+It is intentionally outside MapCore: map entity tags may help recover legacy
+owner identity, but they do not grant control by themselves.
+
+Runtime checks should call `resolve_control_authority()` before mutating a
+player-controlled character, turn action, or map-affecting character entity.
+The resolver distinguishes:
+
+- `owner`: long-term character owner;
+- `active_controller`: current authorized controller;
+- `speaker`: chat message source only;
+- `actor`: normalized request/tool-call identity only;
+- `turn_actor`: current battle entity only.
+
+Prompt consumers receive projected control status through
+`project_control_authority(..., "dm_narration_view")` or a narrower consumer
+view. Ordinary DM narration may see current owner/controller ids, status,
+controller type, risk ceiling, and duration summary. It must not see
+`consent_reference`, raw hosting instructions, or diagnostic audit payloads.
+RA authority may see structured audit refs when needed for state tracking, but
+still must not receive raw consent text.
 
 ## Strict Grid Renderer Consumer Boundary
 
