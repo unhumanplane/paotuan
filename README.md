@@ -41,6 +41,7 @@
 - 后续玩家地图渲染必须从结构化坐标、边界、锚点、路径点和连接记录生成，不能把 SVG / PNG 或模糊空间短语当成权威地图事实；坐标与布局合同见 [docs/coordinate-renderer-contract.md](docs/coordinate-renderer-contract.md)。
 - MapCore 负责地图记录、可见性投影和候选地图事件校验，防止 DM / RA / LLM 读取隐藏地图事实或 raw 地图存储；设计边界见 [docs/mapcore-projection-guard.md](docs/mapcore-projection-guard.md)。
 - Phase 3 地图交付迁移已收口：普通地图请求优先走确定性 strict-grid / overview-topology renderer，legacy `generate_map_svg` 仅作为显式 fallback、风格实验或迁移兼容路径；交付节奏、旧存档兼容和本地路径隐藏策略见 [docs/delivery-cadence-legacy-svg-migration-prd.md](docs/delivery-cadence-legacy-svg-migration-prd.md)。显式可视化地图请求会被 code guard 要求至少尝试确定性 renderer，不能被 ASCII / 表格 / 文字地图静默替代；行为边界见 [docs/map-request-hard-routing.md](docs/map-request-hard-routing.md)。
+- Stage 4 控制权、系统托管和收回行为已按 Phase 3 地图/投影边界做前向审计；跨阶段验收见 [docs/stage-3-4-forward-scan.md](docs/stage-3-4-forward-scan.md)。
 
 ### 规则与裁定
 
@@ -330,6 +331,7 @@ GitHub Actions 会在 push 和 PR 上运行：
 - [docs/honcho-external-memory.md](docs/honcho-external-memory.md)
 - [docs/ambient-image-api.md](docs/ambient-image-api.md)
 - [docs/control-authority-hosting.md](docs/control-authority-hosting.md)
+- [docs/stage-3-4-forward-scan.md](docs/stage-3-4-forward-scan.md)
 - [docs/dm-outbound-cleanup.md](docs/dm-outbound-cleanup.md)
 - [docs/design.zh.md](docs/design.zh.md)
 - [docs/architecture_spec.md](docs/architecture_spec.md)
