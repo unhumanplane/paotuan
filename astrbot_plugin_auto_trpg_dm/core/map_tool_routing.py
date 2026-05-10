@@ -1,23 +1,53 @@
 from __future__ import annotations
 
 
-VISUAL_REQUEST_TERMS = (
+VISUAL_REQUEST_ACTION_TERMS = (
     "画",
     "绘制",
     "生成",
-    "生成地图",
-    "图",
-    "示意",
+    "渲染",
+    "显示",
+    "展示",
+    "打开",
+    "调出",
+    "可视化",
+    "标出来",
+    "附上",
+    "发一张",
+    "给我一张",
+    "来一张",
+    "show",
+    "display",
+    "render",
+    "generate",
+    "draw",
+)
+
+VISUAL_REQUEST_ARTIFACT_TERMS = (
     "地图",
+    "示意",
     "示意图",
     "站位图",
     "俯视",
     "布局",
-    "可视化",
-    "标出来",
+    "路线",
+    "路径",
     "svg",
     "map",
-    "draw",
+    "grid",
+    "route",
+    "path",
+)
+
+EXPLICIT_VISUAL_MAP_ARTIFACT_TERMS = (
+    "示意图",
+    "站位图",
+    "布局图",
+    "俯视图",
+    "路线图",
+    "格子图",
+    "grid map",
+    "battle map",
 )
 
 OVERVIEW_TOPOLOGY_REQUEST_TERMS = (
@@ -29,6 +59,8 @@ OVERVIEW_TOPOLOGY_REQUEST_TERMS = (
     "大地图",
     "路线",
     "路径",
+    "route",
+    "path",
     "关系",
     "区域",
     "地标",
@@ -91,12 +123,16 @@ def add_map_renderer_tools(names: list[str], message: str = "") -> list[str]:
 
 def looks_visual_map_request(message: str) -> bool:
     text = _normalized(message)
-    return bool(text and _contains_any(text, VISUAL_REQUEST_TERMS))
+    if not text:
+        return False
+    if _contains_any(text, EXPLICIT_VISUAL_MAP_ARTIFACT_TERMS):
+        return True
+    return _contains_any(text, VISUAL_REQUEST_ACTION_TERMS) and _contains_any(text, VISUAL_REQUEST_ARTIFACT_TERMS)
 
 
 def looks_overview_map_request(message: str) -> bool:
     text = _normalized(message)
-    if not text or not _contains_any(text, VISUAL_REQUEST_TERMS):
+    if not looks_visual_map_request(text):
         return False
     return _contains_any(text, OVERVIEW_TOPOLOGY_REQUEST_TERMS)
 
@@ -105,7 +141,7 @@ def looks_strict_grid_map_request(message: str) -> bool:
     text = _normalized(message)
     if not text or looks_overview_map_request(text):
         return False
-    if not _contains_any(text, VISUAL_REQUEST_TERMS):
+    if not looks_visual_map_request(text):
         return False
     return _contains_any(text, STRICT_GRID_REQUEST_TERMS)
 
@@ -114,7 +150,7 @@ def looks_legacy_svg_fallback_request(message: str) -> bool:
     text = _normalized(message)
     if not text or not _contains_any(text, LEGACY_SVG_FALLBACK_TERMS):
         return False
-    return _contains_any(text, VISUAL_REQUEST_TERMS) or "generate_map_svg" in text
+    return looks_visual_map_request(text) or "generate_map_svg" in text
 
 
 def _normalized(message: str) -> str:

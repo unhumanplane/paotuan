@@ -287,6 +287,20 @@ def test_tool_registry_exposes_overview_topology_renderer_for_overview_map_reque
     assert any(spec["name"] == "generate_map_svg" for spec in specs)
 
 
+def test_tool_registry_exposes_overview_topology_renderer_for_explicit_route_display_requests():
+    registry = _registry_with_ready_session()
+    _toolset, names, _executor, specs = registry.for_mode(
+        GameMode.NARRATIVE,
+        "group",
+        message="显示当前路线",
+    )
+
+    assert "render_overview_topology_svg" in names
+    assert "generate_map_svg" not in names
+    assert any(spec["name"] == "render_overview_topology_svg" for spec in specs)
+    assert not any(spec["name"] == "generate_map_svg" for spec in specs)
+
+
 def test_tool_registry_routes_strict_map_requests_to_strict_renderer():
     registry = _registry_with_ready_session()
     _toolset, names, _executor, specs = registry.for_mode(
@@ -313,6 +327,20 @@ def test_tool_registry_routes_layout_request_to_strict_renderer_with_svg_fallbac
     assert "generate_map_svg" in names
     assert any(spec["name"] == "render_strict_grid_svg" for spec in specs)
     assert any(spec["name"] == "generate_map_svg" for spec in specs)
+
+
+def test_tool_registry_does_not_expose_map_renderers_for_layout_information_inquiry():
+    registry = _registry_with_ready_session()
+    _toolset, names, _executor, specs = registry.for_mode(
+        GameMode.NARRATIVE,
+        "group",
+        message="四处看看，找人打听一下镇子的布局",
+    )
+
+    assert "render_strict_grid_svg" not in names
+    assert "render_overview_topology_svg" not in names
+    assert "generate_map_svg" not in names
+    assert not any(spec["name"] in {"render_strict_grid_svg", "render_overview_topology_svg"} for spec in specs)
 
 
 def test_tool_registry_hides_map_renderers_for_explicit_text_only_map_request():
