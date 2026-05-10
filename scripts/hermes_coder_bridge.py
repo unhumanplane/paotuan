@@ -68,13 +68,21 @@ def load_dotenv(path: Path) -> dict[str, str]:
 def command_env() -> dict[str, str]:
     env = os.environ.copy()
     env.update(load_dotenv(ROOT / "data" / ".env"))
+    path_entries = [
+        "/opt/hermes/.venv/bin",
+        str(ROOT / "install" / "hermes-agent" / "venv" / "bin"),
+        str(ROOT / "home" / ".local" / "bin"),
+        str(ROOT / "data" / "node" / "bin"),
+        env.get("PATH", ""),
+        "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+    ]
     env.update(
         {
             "HOME": str(ROOT / "home"),
             "HERMES_HOME": str(ROOT / "data"),
             "TMPDIR": str(ROOT / "tmp"),
             "HERMES_ACCEPT_HOOKS": "1",
-            "PATH": f"{ROOT}/install/hermes-agent/venv/bin:{ROOT}/home/.local/bin:{ROOT}/data/node/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+            "PATH": ":".join(item for item in path_entries if item),
         }
     )
     return env

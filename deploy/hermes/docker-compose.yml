@@ -1,0 +1,83 @@
+services:
+  gateway:
+    image: node:22-bookworm
+    container_name: hermes
+    user: "${HERMES_UID:-1026}:${HERMES_GID:-100}"
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      HERMES_ROOT: /volume1/docker/hermes
+      HERMES_HOME: /volume1/docker/hermes/data
+      HOME: /volume1/docker/hermes/home
+      TMPDIR: /volume1/docker/hermes/tmp
+      HERMES_ACCEPT_HOOKS: "1"
+      PATH: /volume1/docker/hermes/install/hermes-agent/venv/bin:/volume1/docker/hermes/home/.local/bin:/volume1/docker/hermes/data/node/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+    env_file:
+      - /volume1/docker/hermes/data/.env
+    volumes:
+      - /volume1/docker/hermes:/volume1/docker/hermes
+      - /volume1/docker/astrbot:/volume1/docker/astrbot
+    command: ["hermes", "gateway", "run", "--replace", "--accept-hooks"]
+
+  dashboard:
+    image: node:22-bookworm
+    container_name: hermes-dashboard
+    user: "${HERMES_UID:-1026}:${HERMES_GID:-100}"
+    restart: unless-stopped
+    network_mode: host
+    depends_on:
+      - gateway
+    environment:
+      HERMES_ROOT: /volume1/docker/hermes
+      HERMES_HOME: /volume1/docker/hermes/data
+      HOME: /volume1/docker/hermes/home
+      TMPDIR: /volume1/docker/hermes/tmp
+      PATH: /volume1/docker/hermes/install/hermes-agent/venv/bin:/volume1/docker/hermes/home/.local/bin:/volume1/docker/hermes/data/node/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+    env_file:
+      - /volume1/docker/hermes/data/.env
+    volumes:
+      - /volume1/docker/hermes:/volume1/docker/hermes
+    command: ["hermes", "dashboard", "--host", "0.0.0.0", "--port", "9119", "--no-open", "--insecure"]
+
+  webhook:
+    image: node:22-bookworm
+    container_name: paotuan-webhook
+    user: "${HERMES_UID:-1026}:${HERMES_GID:-100}"
+    restart: unless-stopped
+    network_mode: host
+    depends_on:
+      - gateway
+    environment:
+      HERMES_ROOT: /volume1/docker/hermes
+      HERMES_HOME: /volume1/docker/hermes/data
+      HOME: /volume1/docker/hermes/home
+      TMPDIR: /volume1/docker/hermes/tmp
+      PATH: /volume1/docker/hermes/install/hermes-agent/venv/bin:/volume1/docker/hermes/home/.local/bin:/volume1/docker/hermes/data/node/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+    env_file:
+      - /volume1/docker/hermes/data/.env
+    volumes:
+      - /volume1/docker/hermes:/volume1/docker/hermes
+      - /volume1/docker/astrbot:/volume1/docker/astrbot
+    command: ["python3", "/volume1/docker/hermes/paotuan/bin/paotuan_webhook.py"]
+
+  coder-bridge:
+    image: node:22-bookworm
+    container_name: hermes-coder-bridge
+    user: "${HERMES_UID:-1026}:${HERMES_GID:-100}"
+    restart: unless-stopped
+    network_mode: host
+    depends_on:
+      - gateway
+    environment:
+      HERMES_ROOT: /volume1/docker/hermes
+      HERMES_HOME: /volume1/docker/hermes/data
+      HOME: /volume1/docker/hermes/home
+      TMPDIR: /volume1/docker/hermes/tmp
+      PATH: /volume1/docker/hermes/install/hermes-agent/venv/bin:/volume1/docker/hermes/home/.local/bin:/volume1/docker/hermes/data/node/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+      HERMES_ASTRBOT_API_URL: http://127.0.0.1:6185/api/v1/im/message
+    env_file:
+      - /volume1/docker/hermes/data/.env
+    volumes:
+      - /volume1/docker/hermes:/volume1/docker/hermes
+      - /volume1/docker/astrbot:/volume1/docker/astrbot
+    command: ["python3", "/volume1/docker/hermes/paotuan/bin/hermes_coder_bridge.py", "--host", "0.0.0.0", "--port", "8767"]
