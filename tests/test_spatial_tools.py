@@ -3,7 +3,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from astrbot_plugin_auto_trpg_dm.core.map_core import DEFAULT_STRICT_LOCAL_MAP_ID, MAP_TYPE_STRICT_LOCAL, get_map_record
-from astrbot_plugin_auto_trpg_dm.core.models import GameMode, GameSession
+from astrbot_plugin_auto_trpg_dm.core.models import Character, GameMode, GameSession
 from astrbot_plugin_auto_trpg_dm.storage.json_repository import JsonGameRepository
 from astrbot_plugin_auto_trpg_dm.tools.spatial_tools import SpatialTools
 
@@ -226,3 +226,51 @@ def test_spatial_turn_guard_reads_map_store_owner_before_stale_battle_grid():
     assert result["ok"] is True
     session = repo.load_session("group")
     assert session.battle["grid"]["entities"]["pc"]["x"] == 2
+
+
+def test_delegated_controller_can_move_turn_actor_without_becoming_owner():
+    repo = _repo("spatial_delegated_controller")
+    session = _ready_session()
+    session.characters["pc"] = Character(id="pc", name="Delegated PC", player_id="owner")
+    session.player_character_map["owner"] = "pc"
+    repo.save_session(session)
+    tools = SpatialTools(repo, "group", actor={"player_id": "owner"})
+    asyncio.run(tools.create_grid(width=5, height=5))
+    asyncio.run(tools.place_entity("pc", "Delegated PC", 1, 1, faction="party"))
+    session = repo.load_session("group")
+    session.control_authority = {
+        "records": {
+            "pc": {
+                "character_id": "pc",
+                "owner_player_id": "owner",
+                "active_controller_id": "delegate",
+                "controller_type": "player_delegate",
+                "status": "delegated_to_player",
+                "authorized_by": "owner",
+            }
+        }
+    }
+    session.battle["turn"] = {
+        "active": True,
+        "round": 1,
+        "phase": "character_turn",
+        "turn_order": ["pc"],
+        "current_index": 0,
+        "current_entity_id": "pc",
+        "actions_this_round": {},
+    }
+    session.battle["turn_entity_id"] = "pc"
+    repo.save_session(session)
+
+    denied_owner = asyncio.run(
+        SpatialTools(repo, "group", actor={"player_id": "owner"}).move_entity("pc", 2, 1)
+    )
+    allowed_delegate = asyncio.run(
+        SpatialTools(repo, "group", actor={"player_id": "delegate"}).move_entity("pc", 2, 1)
+    )
+
+    assert denied_owner["ok"] is False
+    assert denied_owner["error_code"] == "character_control_denied"
+    assert denied_owner["owner_player_id"] == "owner"
+    assert denied_owner["active_controller_id"] == "delegate"
+    assert allowed_delegate["ok"] is True

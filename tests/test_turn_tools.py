@@ -224,3 +224,45 @@ def test_turn_owner_guard_reads_map_store_before_stale_battle_grid():
     assert denied["owner_player_id"] == "owner"
     assert allowed["ok"] is True
     assert allowed["turn"]["current_label"] == "MapStore Owner"
+
+
+def test_delegated_controller_can_record_turn_action_without_becoming_owner():
+    repo = _repo_with_player_turn()
+    session = repo.load_session("group")
+    session.control_authority = {
+        "records": {
+            "pc_owner": {
+                "character_id": "pc_owner",
+                "owner_player_id": "owner",
+                "active_controller_id": "delegate",
+                "controller_type": "player_delegate",
+                "status": "delegated_to_player",
+                "authorized_by": "owner",
+                "risk_ceiling": "low",
+                "duration_type": "until_revoked",
+            }
+        }
+    }
+    repo.save_session(session)
+
+    denied_owner = asyncio.run(
+        TurnTools(repo, "group", actor={"player_id": "owner"}).turn_control(
+            action="skip_current",
+            current_entity_id="pc_owner",
+            summary="owner 不再是当前 controller",
+        )
+    )
+    allowed = asyncio.run(
+        TurnTools(repo, "group", actor={"player_id": "delegate"}).turn_control(
+            action="record_action",
+            current_entity_id="pc_owner",
+            summary="代控角色采取防御姿态",
+            advance_after=False,
+        )
+    )
+
+    assert allowed["ok"] is True
+    assert denied_owner["ok"] is False
+    assert denied_owner["error"] == "character_control_denied"
+    assert denied_owner["owner_player_id"] == "owner"
+    assert denied_owner["active_controller_id"] == "delegate"
