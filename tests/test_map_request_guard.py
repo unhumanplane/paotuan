@@ -22,6 +22,41 @@ def test_visual_map_guard_requires_available_deterministic_renderer():
     assert guard.preferred_renderer_tools == ("render_strict_grid_svg",)
 
 
+def test_visual_map_guard_does_not_block_ordinary_layout_inquiries():
+    for message in (
+        "看看地图",
+        "看小镇地图",
+        "看看剧情",
+        "四处看看，找人打听一下镇子的布局",
+    ):
+        guard = build_map_request_guard(
+            message,
+            available_tool_names=DETERMINISTIC_MAP_RENDERER_TOOLS,
+        )
+
+        assert guard.visual_map_request is False
+        assert guard.renderer_attempt_required is False
+        assert guard.preferred_renderer_tools == ()
+
+
+def test_visual_map_guard_still_routes_explicit_artifact_requests():
+    for message in (
+        "显示现有地图",
+        "画一下布局吧",
+        "给我一张小镇示意图",
+        "render the town map",
+        "show my current route",
+    ):
+        guard = build_map_request_guard(
+            message,
+            available_tool_names=DETERMINISTIC_MAP_RENDERER_TOOLS,
+        )
+
+        assert guard.visual_map_request is True
+        assert guard.renderer_attempt_required is True
+        assert guard.preferred_renderer_tools
+
+
 def test_visual_map_guard_honors_explicit_text_only_override():
     guard = build_map_request_guard(
         "先用 ASCII 文字地图画一下战场格子，不要生成图片",

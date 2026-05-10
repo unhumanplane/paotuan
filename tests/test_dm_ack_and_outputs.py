@@ -393,6 +393,33 @@ def test_visual_map_requests_without_background_reach_tool_chain():
         assert not any(record.get("action") == "background_required" for record in repo.audits)
 
 
+def test_layout_information_inquiry_without_background_does_not_bootstrap_visual_map_request():
+    session = GameSession.new("group")
+    repo = FakeRepository(session)
+    plugin = AutoTrpgDmPlugin.__new__(AutoTrpgDmPlugin)
+    plugin.repository = repo
+    plugin.ambient_image_config = AmbientImageConfig(enabled=False)
+    plugin.plugin_logger = FakeLogger()
+    plugin.honcho_config = types.SimpleNamespace(
+        enabled=False,
+        read_enabled=False,
+        max_context_chars=0,
+    )
+
+    reply = asyncio.run(
+        plugin._local_fast_path(
+            FakeEvent(),
+            "group",
+            {"player_id": "player-a"},
+            "四处看看，找人打听一下镇子的布局",
+        )
+    )
+
+    assert reply != ""
+    assert repo.session.world_tags.get("background_source") != "visual_map_request_bootstrap"
+    assert not any(record.get("action") == "visual_map_background_bootstrap" for record in repo.audits)
+
+
 def test_empty_dm_greedystr_sentinel_uses_status_prompt():
     plugin = AutoTrpgDmPlugin.__new__(AutoTrpgDmPlugin)
 
