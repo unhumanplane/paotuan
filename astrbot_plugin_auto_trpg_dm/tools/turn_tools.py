@@ -6,6 +6,7 @@ from typing import Any, Dict, List, Optional
 from pydantic import BaseModel, Field
 
 from ..core.control_authority import owner_player_id_for_entity, resolve_control_authority
+from ..core.hosted_action_policy import evaluate_hosted_action_policy
 from ..core.map_core import load_active_strict_grid_entities
 from ..core.models import GameMode, GameSession, utc_now_iso
 from ..core.turn_labels import public_turn_entity_label, turn_actor_kind, turn_entity_owner_id
@@ -351,13 +352,33 @@ class TurnTools:
         elapsed = int((now - waiting_since).total_seconds()) if waiting_since else TURN_TIMEOUT_SECONDS
         label = self._entity_label(session, current_id)
         summary = self._timeout_auto_action_summary(session, current_id, max(TURN_TIMEOUT_SECONDS, elapsed))
+        hosted_policy = evaluate_hosted_action_policy(
+            session,
+            current_id,
+            actor={"player_id": "__system__"},
+            summary=summary,
+            reason="turn timeout auto action",
+            timeout=True,
+        )
+        if hosted_policy.get("hosted"):
+            if not hosted_policy.get("ok"):
+                summary = str(hosted_policy.get("fallback_summary") or self._default_auto_action(session, current_id, "defend_or_follow"))
+            source = "hosted_timeout"
+            reason = _hosted_policy_reason(
+                hosted_policy,
+                f"其他玩家推动流程；当前行动者已等待约 {max(TURN_TIMEOUT_SECONDS, elapsed)} 秒。",
+            )
+        else:
+            source = "auto_timeout"
+            reason = f"其他玩家推动流程；当前行动者已等待约 {max(TURN_TIMEOUT_SECONDS, elapsed)} 秒。"
         self._record_action(
             session,
             turn,
             current_id,
             summary,
-            "auto_timeout",
-            f"其他玩家推动流程；当前行动者已等待约 {max(TURN_TIMEOUT_SECONDS, elapsed)} 秒。",
+            source,
+            reason,
+            hosted_policy if hosted_policy.get("hosted") else None,
         )
         result = self._advance_turn(
             session,
@@ -373,6 +394,7 @@ class TurnTools:
                 "actor_player_id": actor_id,
                 "elapsed_seconds": max(TURN_TIMEOUT_SECONDS, elapsed),
                 "summary": summary,
+                "hosted_policy": _public_hosted_policy(hosted_policy) if hosted_policy.get("hosted") else {},
                 "advance_result": result,
             }
         ]
@@ -572,9 +594,38 @@ class TurnTools:
             load_active_strict_grid_entities(session.maps, session.battle),
         ) != "player":
             auto_summary = self._default_auto_action(session, entity_id, auto_policy)
-        self._record_action(session, turn, entity_id, auto_summary, "auto", reason or "玩家未响应，按保守策略自动行动")
+        hosted_policy = evaluate_hosted_action_policy(
+            session,
+            entity_id,
+            actor=self.actor,
+            summary=auto_summary,
+            reason=reason,
+            timeout=True,
+        )
+        source = "auto"
+        record_reason = reason or "玩家未响应，按保守策略自动行动"
+        if hosted_policy.get("hosted"):
+            if not hosted_policy.get("ok"):
+                auto_summary = str(hosted_policy.get("fallback_summary") or self._default_auto_action(session, entity_id, auto_policy))
+            source = "hosted_auto"
+            record_reason = _hosted_policy_reason(hosted_policy, record_reason)
+            auto_policy = str(hosted_policy.get("fallback_policy") or auto_policy)
+        self._record_action(
+            session,
+            turn,
+            entity_id,
+            auto_summary,
+            source,
+            record_reason,
+            hosted_policy if hosted_policy.get("hosted") else None,
+        )
         result = self._advance_turn(session, turn, output_limit_chars)
-        result["auto_action"] = {"entity_id": entity_id, "summary": auto_summary, "policy": auto_policy}
+        result["auto_action"] = {
+            "entity_id": entity_id,
+            "summary": auto_summary,
+            "policy": auto_policy,
+            "hosted_policy": _public_hosted_policy(hosted_policy) if hosted_policy.get("hosted") else {},
+        }
         return result
 
     def _validate_auto_action_request(
@@ -587,6 +638,14 @@ class TurnTools:
     ) -> Dict[str, Any] | None:
         owner_id = self._owner_player_id(session, entity_id)
         requester_id = str(self.actor.get("player_id", "") or "")
+        hosted_policy = evaluate_hosted_action_policy(
+            session,
+            entity_id,
+            actor=self.actor,
+            summary=summary,
+            reason=reason,
+            timeout=True,
+        )
         if not owner_id:
             return None
         if not requester_id:
@@ -599,6 +658,19 @@ class TurnTools:
             }
         text = f"{summary}\n{reason}"
         explicit = _looks_like_auto_request(text)
+        if hosted_policy.get("hosted"):
+            if hosted_policy.get("reason") == "actor_is_not_system_host":
+                return {
+                    "ok": False,
+                    "error": "hosted_action_requires_system_host",
+                    "message": "该角色处于系统托管中；只有系统/DM 托管路径可以执行托管行动。",
+                    "current_entity_id": entity_id,
+                    "owner_player_id": owner_id,
+                    "requester_player_id": requester_id,
+                    "active_controller_id": str(hosted_policy.get("active_controller_id") or ""),
+                }
+            if requester_id in {"__system__", "__heartbeat__", "__dm_host__"} or requester_id == str(hosted_policy.get("active_controller_id") or ""):
+                return None
         if owner_id == requester_id and explicit:
             return None
         if owner_id != requester_id and explicit:
@@ -737,15 +809,20 @@ class TurnTools:
         summary: str,
         source: str,
         reason: str = "",
+        hosted_policy: Dict[str, Any] | None = None,
     ) -> None:
+        hosted_view = _public_hosted_policy(hosted_policy or {})
         actions = dict(turn.get("actions_this_round") or {})
-        actions[entity_id] = {
+        record = {
             "source": source,
             "summary": summary,
             "reason": reason,
         }
+        if hosted_view:
+            record["hosted_policy"] = hosted_view
+        actions[entity_id] = record
         turn["actions_this_round"] = actions
-        self._append_turn_log(session, source, f"{self._entity_label(session, entity_id)}: {summary}", reason)
+        self._append_turn_log(session, source, f"{self._entity_label(session, entity_id)}: {summary}", reason, hosted_view)
 
     def _reset_turn_timer(self, turn: Dict[str, Any], reason: str) -> None:
         now = utc_now_iso()
@@ -762,19 +839,28 @@ class TurnTools:
         self._reset_turn_timer(turn, reason)
         return True
 
-    def _append_turn_log(self, session: GameSession, event_type: str, summary: str, reason: str = "") -> None:
+    def _append_turn_log(
+        self,
+        session: GameSession,
+        event_type: str,
+        summary: str,
+        reason: str = "",
+        hosted_policy: Dict[str, Any] | None = None,
+    ) -> None:
         turn = self._ensure_turn_state(session)
         log = list(turn.get("turn_log") or [])
-        log.append(
-            {
-                "at": utc_now_iso(),
-                "round": turn.get("round", 0),
-                "phase": turn.get("phase", ""),
-                "type": event_type,
-                "summary": summary[:240],
-                "reason": reason[:160],
-            }
-        )
+        entry = {
+            "at": utc_now_iso(),
+            "round": turn.get("round", 0),
+            "phase": turn.get("phase", ""),
+            "type": event_type,
+            "summary": summary[:240],
+            "reason": reason[:160],
+        }
+        hosted_view = _public_hosted_policy(hosted_policy or {})
+        if hosted_view:
+            entry["hosted_policy"] = hosted_view
+        log.append(entry)
         turn["turn_log"] = log[-24:]
 
     def _default_auto_action(self, session: GameSession, entity_id: str, auto_policy: str) -> str:
@@ -873,6 +959,31 @@ class TurnTools:
 def _has_any_status(tags: Dict[str, Any], values: set[str]) -> bool:
     status_text = " ".join(str(value).lower() for value in tags.values())
     return any(value.lower() in status_text for value in values)
+
+
+def _public_hosted_policy(policy: Dict[str, Any]) -> Dict[str, Any]:
+    if not policy or not policy.get("hosted"):
+        return {}
+    return {
+        "hosted": True,
+        "ok": bool(policy.get("ok")),
+        "reason": str(policy.get("reason") or ""),
+        "risk": str(policy.get("risk") or ""),
+        "risk_ceiling": str(policy.get("risk_ceiling") or ""),
+        "audit_ref": str(policy.get("audit_ref") or ""),
+        "fallback_policy": str(policy.get("fallback_policy") or ""),
+    }
+
+
+def _hosted_policy_reason(policy: Dict[str, Any], base_reason: str) -> str:
+    audit_ref = str(policy.get("audit_ref") or "")
+    risk = str(policy.get("risk") or "")
+    ceiling = str(policy.get("risk_ceiling") or "")
+    decision = str(policy.get("reason") or "")
+    suffix = f"hosted_policy={decision}; risk={risk}; ceiling={ceiling}"
+    if audit_ref:
+        suffix += f"; audit_ref={audit_ref}"
+    return f"{base_reason} {suffix}".strip()
 
 
 def _int_or_default(value: Any, default: int) -> int:
