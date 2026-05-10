@@ -5,6 +5,10 @@ from uuid import uuid4
 
 from astrbot_plugin_auto_trpg_dm.core.map_core import DEFAULT_STRICT_LOCAL_MAP_ID, save_active_strict_grid
 from astrbot_plugin_auto_trpg_dm.core.models import Character, GameMode, GameSession
+from astrbot_plugin_auto_trpg_dm.core.control_authority import (
+    CONTROL_STATUS_HOSTED_BY_SYSTEM,
+    CONTROLLER_TYPE_SYSTEM_HOST,
+)
 from astrbot_plugin_auto_trpg_dm.storage.json_repository import JsonGameRepository
 from astrbot_plugin_auto_trpg_dm.tools.turn_tools import TurnTools
 
@@ -101,8 +105,84 @@ def test_non_owner_push_after_timeout_auto_acts_conservatively():
     assert events[0]["type"] == "turn_timeout_auto_action"
     saved = repo.load_session("group")
     assert saved.battle["turn"]["actions_this_round"]["pc_owner"]["source"] == "auto_timeout"
+    assert "hosted_policy" not in saved.battle["turn"]["actions_this_round"]["pc_owner"]
     assert saved.battle["turn"]["current_entity_id"] == "pc_next"
     assert saved.battle["turn"]["deadline_at"]
+
+
+def test_system_host_timeout_action_records_hosted_policy_metadata():
+    repo = _repo_with_player_turn()
+    session = repo.load_session("group")
+    session.control_authority = {
+        "records": {
+            "pc_owner": {
+                "character_id": "pc_owner",
+                "owner_player_id": "owner",
+                "active_controller_id": "__system__",
+                "controller_type": CONTROLLER_TYPE_SYSTEM_HOST,
+                "status": CONTROL_STATUS_HOSTED_BY_SYSTEM,
+                "authorized_by": "owner",
+                "risk_ceiling": "low",
+                "audit_ref": "host-auth-1",
+            }
+        }
+    }
+    now = datetime.now(timezone.utc)
+    session.battle["turn"]["waiting_since_at"] = (now - timedelta(seconds=150)).isoformat()
+    session.battle["turn"]["deadline_at"] = (now - timedelta(seconds=30)).isoformat()
+    repo.save_session(session)
+
+    events = TurnTools(repo, "group", actor={"player_id": "intruder"}).apply_turn_timeout_policy(
+        repo.load_session("group"),
+        "继续推进",
+    )
+
+    action = repo.load_session("group").battle["turn"]["actions_this_round"]["pc_owner"]
+    assert events[0]["type"] == "turn_timeout_auto_action"
+    assert events[0]["hosted_policy"]["audit_ref"] == "host-auth-1"
+    assert action["source"] == "hosted_timeout"
+    assert action["hosted_policy"]["ok"] is True
+    assert action["hosted_policy"]["risk"] == "low"
+    assert action["hosted_policy"]["audit_ref"] == "host-auth-1"
+
+
+def test_system_host_auto_action_downgrades_high_risk_request_above_ceiling():
+    repo = _repo_with_player_turn()
+    session = repo.load_session("group")
+    session.control_authority = {
+        "records": {
+            "pc_owner": {
+                "character_id": "pc_owner",
+                "owner_player_id": "owner",
+                "active_controller_id": "__system__",
+                "controller_type": CONTROLLER_TYPE_SYSTEM_HOST,
+                "status": CONTROL_STATUS_HOSTED_BY_SYSTEM,
+                "authorized_by": "owner",
+                "risk_ceiling": "low",
+                "audit_ref": "host-auth-2",
+            }
+        }
+    }
+    repo.save_session(session)
+
+    result = asyncio.run(
+        TurnTools(repo, "group", actor={"player_id": "__system__"}).turn_control(
+            action="auto_act_current",
+            current_entity_id="pc_owner",
+            summary="消耗大招并签下不可逆契约",
+            reason="托管期间自动推进",
+            advance_after=False,
+        )
+    )
+
+    action = repo.load_session("group").battle["turn"]["actions_this_round"]["pc_owner"]
+    assert result["ok"] is True
+    assert result["auto_action"]["hosted_policy"]["ok"] is False
+    assert result["auto_action"]["hosted_policy"]["reason"] == "hosted_action_exceeds_risk_ceiling"
+    assert action["source"] == "hosted_auto"
+    assert action["hosted_policy"]["fallback_policy"] == "defend_or_follow"
+    assert "不可逆契约" not in action["summary"]
+    assert "不消耗稀缺资源" in action["summary"]
 
 
 def test_start_round_derives_order_from_map_store_not_stale_battle_grid():
