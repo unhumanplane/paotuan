@@ -32,6 +32,26 @@ CONTROL_RISK_MEDIUM = "medium"
 CONTROL_RISK_HIGH = "high"
 CONTROL_RISKS = {CONTROL_RISK_LOW, CONTROL_RISK_MEDIUM, CONTROL_RISK_HIGH}
 
+_CONTROL_EVENT_SAFE_FIELDS = (
+    "type",
+    "action",
+    "character_id",
+    "owner_player_id",
+    "requester_player_id",
+    "active_controller_id",
+    "controller_type",
+    "status",
+    "previous_active_controller_id",
+    "previous_controller_type",
+    "previous_status",
+    "risk_ceiling",
+    "duration_type",
+    "expires_at",
+    "effective_at",
+    "audit_ref",
+)
+_CONTROL_EVENT_FIELD_LIMIT = 160
+
 
 def resolve_control_authority(session: Any, character_id: str, actor: dict[str, Any] | None = None) -> dict[str, Any]:
     """Resolve whether actor is the active controller for a character/entity."""
@@ -212,6 +232,11 @@ def normalize_control_authority_store(value: Any) -> dict[str, Any]:
             safe_character_id = str(character_id or "").strip()
             if safe_character_id and isinstance(record, dict):
                 normalized["records"][safe_character_id] = _normalize_record(record, safe_character_id, "")
+    events = value.get("events", [])
+    if isinstance(events, list):
+        normalized_events = [_normalize_event(item) for item in events if isinstance(item, dict)]
+        if normalized_events:
+            normalized["events"] = normalized_events
     return normalized
 
 
@@ -265,6 +290,17 @@ def _safe_controller_type(value: Any) -> str:
 def _safe_risk(value: Any) -> str:
     text = str(value or "").strip()
     return text if text in CONTROL_RISKS else CONTROL_RISK_LOW
+
+
+def _normalize_event(event: dict[str, Any]) -> dict[str, Any]:
+    schema_version = event.get("schema_version", CONTROL_SCHEMA_VERSION)
+    normalized: dict[str, Any] = {
+        "schema_version": schema_version if isinstance(schema_version, int) else CONTROL_SCHEMA_VERSION,
+    }
+    for key in _CONTROL_EVENT_SAFE_FIELDS:
+        text = str(event.get(key) or "").strip().replace("\r", " ").replace("\n", " ")
+        normalized[key] = text[:_CONTROL_EVENT_FIELD_LIMIT]
+    return normalized
 
 
 def _success_reason(controller_type: str) -> str:
