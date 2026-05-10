@@ -14,6 +14,7 @@ from ..core.map_request_guard import looks_text_only_map_request
 from ..core.map_tool_routing import add_map_renderer_tools, looks_legacy_svg_fallback_request, looks_visual_map_request
 from ..rules.python_runtime import PythonRuleRuntime
 from ..storage.json_repository import JsonGameRepository
+from .control_tools import ControlAuthorityArgs, ControlTools
 from .cycle_tools import CycleControlArgs, CycleTools
 from .diagnostic_tools import DiagnosticTools, EstimateTokenUsageArgs
 from .external_memory_tools import ExternalMemoryTools, SearchExternalMemoryArgs
@@ -187,6 +188,7 @@ class ToolRegistry:
         strict_lifecycle_tools = StrictLifecycleTools(self.repository, session_id, actor=actor)
         turn_tools = TurnTools(self.repository, session_id, actor=actor)
         cycle_tools = CycleTools(self.repository, session_id, actor=actor)
+        control_tools = ControlTools(self.repository, session_id, actor=actor)
         external_memory_config = self.external_memory_config
         diagnostic_tools = DiagnosticTools(
             self.repository,
@@ -358,6 +360,16 @@ class ToolRegistry:
                 description='显式结束当前叙事周期。MVP 仅支持 action="end_cycle"；不要用完成文本或猜测来结束周期。',
                 model=CycleControlArgs,
                 handler=cycle_tools.cycle_control,
+            ),
+            "control_authority": make_tool(
+                name="control_authority",
+                description=(
+                    "临时控制权工具：仅在角色持有人明确确认后，用于 delegate_to_player、"
+                    "relinquish_to_system、reclaim 或 status。不能从沉默、离线、模糊离开、"
+                    "其他玩家转述或普通叙事中推断授权。"
+                ),
+                model=ControlAuthorityArgs,
+                handler=control_tools.control_authority,
             ),
             "generate_map_svg": make_tool(
                 name="generate_map_svg",
@@ -629,6 +641,8 @@ class ToolRegistry:
         text = (message or "").strip().lower()
         if text and _contains_any(text, EXTERNAL_MEMORY_TERMS):
             selected.append("search_external_memory")
+        if text and _contains_any(text, CONTROL_AUTHORITY_TERMS):
+            selected.append("control_authority")
         if message and _looks_text_only_request(message):
             return list(dict.fromkeys(selected))
         return add_map_renderer_tools(selected, message)
@@ -649,8 +663,11 @@ class ToolRegistry:
         opening_seed = _looks_like_delegated_opening_seed(message)
         visual_map_request = looks_visual_map_request(message)
         legacy_svg_fallback_request = looks_legacy_svg_fallback_request(message)
+        control_authority_request = _contains_any((message or "").strip().lower(), CONTROL_AUTHORITY_TERMS)
         for name in names:
             if name in {"update_world_tags", "query_core_rules", "session_control", "estimate_token_usage"} and name not in allowed:
+                allowed.append(name)
+            if control_authority_request and name == "control_authority" and name not in allowed:
                 allowed.append(name)
             if visual_map_request and name in {"render_strict_grid_svg", "render_overview_topology_svg"} and name not in allowed:
                 allowed.append(name)
@@ -700,6 +717,25 @@ EXTERNAL_MEMORY_TERMS = (
     "伏笔",
     "旧事",
     "过去",
+)
+CONTROL_AUTHORITY_TERMS = (
+    "控制权",
+    "临时交给",
+    "交给",
+    "代控",
+    "代管",
+    "托管",
+    "挂机",
+    "收回控制",
+    "收回角色",
+    "我收回",
+    "撤回授权",
+    "恢复控制",
+    "delegate",
+    "reclaim",
+    "relinquish",
+    "system host",
+    "hosted",
 )
 MAP_SETUP_TERMS = ("创建地图", "重置地图", "生成地图", "放置", "摆放", "开战棋", "布置地图", "设置地图")
 CHARACTER_PROFILE_TERMS = (
