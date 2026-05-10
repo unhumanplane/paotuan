@@ -78,6 +78,10 @@ def test_system_prompt_mentions_explicit_system_hosting_risk_bounds():
     assert "不能从沉默、离线、模糊离开话术或他人描述中推断" in prompt
     assert "low/medium/high 风险上限" in prompt
     assert "高风险行为必须已有显式预授权" in prompt
+    assert "才调用 control_authority" in prompt
+    assert "默认 until_revoked" in prompt
+    assert "delegate 不能再转委托" in prompt
+    assert "owner reclaim 只影响之后的行动" in prompt
 
 
 def test_prompt_projection_includes_compact_event_timeline_and_entity_facts():

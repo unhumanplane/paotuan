@@ -248,6 +248,15 @@ risk, fallback, and audit-ref metadata, but high-risk actions above the ceiling
 must be denied or downgraded to conservative behavior before any turn record is
 written.
 
+04.3 adds `core/control_transfer.py` and the `control_authority` tool for
+explicit owner-confirmed `delegate_to_player`, `relinquish_to_system`,
+`reclaim`, and read-only `status`. These changes still do not belong to MapCore:
+they mutate owner/control-owned records, then existing turn and spatial tools
+continue to call `resolve_control_authority()` before character-owned map or
+turn mutations. Default duration is `until_revoked`; delegates cannot
+re-delegate in v1; owner reclaim is forward-only and does not rewrite prior map
+effects, turn logs, or resolved facts.
+
 ## Strict Grid Renderer Consumer Boundary
 
 `render_strict_grid_svg` 是 `player_view` 的 code-owned consumer，不是新的
