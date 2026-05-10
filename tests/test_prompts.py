@@ -748,6 +748,46 @@ def test_prompt_snapshot_projection_uses_safe_dm_map_view():
     assert "example.invalid" not in rendered
 
 
+def test_prompt_snapshot_projection_uses_safe_control_authority_view():
+    session = GameSession.new("group")
+    session.characters["pc-1"] = Character(id="pc-1", name="Scout", player_id="owner")
+    session.player_character_map["owner"] = "pc-1"
+    session.control_authority = {
+        "records": {
+            "pc-1": {
+                "owner_player_id": "owner",
+                "active_controller_id": "delegate",
+                "controller_type": "player_delegate",
+                "status": "delegated_to_player",
+                "authorized_by": "owner",
+                "consent_reference": "private handoff text",
+                "audit_ref": "audit-private-1",
+                "effective_at": "2026-05-10T00:00:00+00:00",
+            }
+        }
+    }
+
+    projected_snapshot, _stats = prompt_snapshot_data(
+        session,
+        GameMode.NARRATIVE,
+        "继续描述当前局势",
+        actor={"player_id": "delegate"},
+        snapshot_projection_enabled=True,
+    )
+
+    record = projected_snapshot["control_authority"]["records"][0]
+    rendered = str(projected_snapshot["control_authority"])
+    assert record["owner_player_id"] == "owner"
+    assert record["active_controller_id"] == "delegate"
+    assert record["controller_type"] == "player_delegate"
+    assert record["status"] == "delegated_to_player"
+    assert "consent_reference" not in record
+    assert "audit_ref" not in record
+    assert "effective_at" not in record
+    assert "private handoff text" not in rendered
+    assert "audit-private-1" not in rendered
+
+
 def test_prompt_snapshot_projection_does_not_expose_raw_strict_grid():
     session = GameSession.new("group")
     session.battle = {

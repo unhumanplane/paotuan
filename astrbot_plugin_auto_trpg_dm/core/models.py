@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Any
 
+from .control_authority import normalize_control_authority_store
 from .map_core import default_map_store, load_active_strict_grid, normalize_map_store
 
 
@@ -178,6 +179,7 @@ class GameSession:
     rule_sets: dict[str, Any] = field(default_factory=dict)
     battle: dict[str, Any] = field(default_factory=dict)
     maps: dict[str, Any] = field(default_factory=default_map_store)
+    control_authority: dict[str, Any] = field(default_factory=dict)
     current_cycle_id: int = 0
     audit_buffer: AuditBuffer = field(default_factory=AuditBuffer)
     ra_cycle_input: RACycleInput = field(default_factory=RACycleInput)
@@ -231,6 +233,7 @@ class GameSession:
             rule_sets=_dict_or_empty(data.get("rule_sets", {})),
             battle=dict(data.get("battle", {"active": False})),
             maps=normalize_map_store(data.get("maps", {})),
+            control_authority=normalize_control_authority_store(data.get("control_authority", {})),
             current_cycle_id=_safe_int(data.get("current_cycle_id", 0)),
             audit_buffer=AuditBuffer.from_dict(_dict_or_empty(data.get("audit_buffer", {}))),
             ra_cycle_input=RACycleInput.from_dict(_dict_or_empty(data.get("ra_cycle_input", {}))),
@@ -277,6 +280,7 @@ class GameSession:
             "current_cycle_id": self.current_cycle_id,
             "environment_summaries": self.environment_summaries[-3:],
             "battle": self._compact_battle(),
+            "control_authority": self._compact_control_authority(),
         }
 
     def _compact_battle(self) -> dict[str, Any]:
@@ -349,6 +353,11 @@ class GameSession:
             if bound_id == character_id or bound_id == entity_id:
                 return player_id
         return ""
+
+    def _compact_control_authority(self) -> dict[str, Any]:
+        from .control_authority import project_control_authority
+
+        return project_control_authority(self, "dm_narration_view")
 
 
 def _safe_int(value: Any, default: int = 0) -> int:
