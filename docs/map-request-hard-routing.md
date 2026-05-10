@@ -1,12 +1,13 @@
 # Map Request Hard Routing
 
-This document records the runtime contract for explicit visual-map requests
-after deterministic strict-grid and overview-topology renderers became the
-normal map output path.
+This document records the runtime contract for explicit visual-map artifact
+requests after deterministic strict-grid and overview-topology renderers became
+the normal map output path.
 
 ## Goal
 
-When a player explicitly asks for a visual map, the DM flow must either:
+When a player explicitly asks for a visual map artifact, the DM flow must
+either:
 
 - call a deterministic renderer and deliver the resulting `svg_map` attachment;
 - or return a concise setup-needed response when structured player-view map
@@ -14,7 +15,9 @@ When a player explicitly asks for a visual map, the DM flow must either:
 
 The LLM must not replace that artifact with an ASCII table, emoji tile sketch,
 Markdown grid, or prose-only "map" unless the player explicitly asked for a
-text-only sketch.
+text-only sketch. Ordinary information requests such as "look at the map",
+"look at the town map", or asking NPCs about a town's layout are not artifact
+requests by themselves and should remain normal DM narration or investigation.
 
 ## Non-Goals
 
@@ -26,14 +29,15 @@ text-only sketch.
 
 ## Runtime Flow
 
-1. The tool registry exposes deterministic map renderers for normal visual map
-   requests. `generate_map_svg` remains hidden unless the player explicitly asks
-   for fallback, legacy, style experiment, or migration behavior.
+1. The tool registry exposes deterministic map renderers for explicit visual
+   artifact requests. `generate_map_svg` remains hidden unless the player
+   explicitly asks for fallback, legacy, style experiment, or migration
+   behavior.
 2. `IntentRouter` builds a code-owned guard context from the raw player message
    and the exposed tool names.
-3. For an explicit visual-map request with a deterministic renderer available,
-   the router requires at least one renderer attempt before accepting a final
-   text response.
+3. For an explicit visual-map artifact request with a deterministic renderer
+   available, the router requires at least one renderer attempt before accepting
+   a final text response.
 4. If the first LLM response skips the renderer, the router performs one bounded
    retry that asks for the deterministic renderer instead of an ASCII/table/text
    substitute.
@@ -50,14 +54,27 @@ for ASCII, text-only, text sketch, or no image/SVG/rendering. In that case the
 router does not require renderer use and the registry avoids adding map renderer
 tools only for that request.
 
-This override is intentionally narrow. A normal request such as "draw the battle
-map" or "show my current route" stays on the deterministic renderer path.
+This override is intentionally narrow. A normal artifact request such as "draw
+the battle map" or "show my current route" stays on the deterministic renderer
+path.
+
+## Layout And Map Information Inquiries
+
+Map, route, and layout terms are common in ordinary play. They can mean "tell me
+what my character knows" rather than "create a visual attachment". Requests such
+as "看看地图", "看小镇地图", or "四处看看，找人打听一下镇子的布局" must not be routed into the
+renderer-required guard only because they contain map or layout words.
+
+The renderer-required path is reserved for clearer artifact verbs or artifact
+nouns, such as drawing, generating, rendering, showing, displaying, attaching,
+SVG, diagram, battle map, route map, layout diagram, tactical/grid map, or
+similar explicit visual-output wording.
 
 ## Text-Map Guard
 
 The guard suppresses text-map-looking completions only when:
 
-- the player made an explicit visual-map request;
+- the player made an explicit visual-map artifact request;
 - the player did not request text-only output;
 - no deterministic renderer succeeded.
 
@@ -68,8 +85,9 @@ summary tables, player rosters, diagnostic output, and setup-needed responses.
 
 ## Missing Data Response
 
-When a visual map cannot be rendered because structured player-view map data is
-missing, the response should stay short and should not invent a text map:
+When a visual map artifact cannot be rendered because structured player-view map
+data is missing, the response should stay short and should not invent a text
+map:
 
 ```text
 现在还不能生成可靠的可视化地图：当前缺少可渲染的结构化地图数据。请先建立地图、放置关键实体或补齐区域拓扑后再请求生成地图。
@@ -106,7 +124,7 @@ The existing pending-output delivery bridge remains unchanged:
   acknowledgement and attachment path.
 
 Legacy `generate_map_svg` is still available as explicit fallback or style
-experiment behavior, but it cannot satisfy ordinary visual-map requests.
+experiment behavior, but it cannot satisfy ordinary visual artifact requests.
 
 ## Validation
 
@@ -119,4 +137,6 @@ Focused tests should cover:
 - generic renderer success completion replacement;
 - false-positive avoidance for non-map tables and ordinary narration;
 - registry exposure that hides deterministic renderers for explicit text-only
-  map requests and keeps `generate_map_svg` hidden for ordinary map requests.
+  map requests and keeps `generate_map_svg` hidden for ordinary map requests;
+- layout and town-map information inquiries that should not expose renderers or
+  trigger missing-structured-map-data responses.
