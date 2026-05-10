@@ -10,6 +10,7 @@ from astrbot.core.agent.tool import FunctionTool, ToolSet
 from astrbot.core.astr_agent_context import AstrAgentContext
 
 from ..core.models import GameMode
+from ..core.map_request_guard import looks_text_only_map_request
 from ..core.map_tool_routing import add_map_renderer_tools, looks_legacy_svg_fallback_request, looks_visual_map_request
 from ..rules.python_runtime import PythonRuleRuntime
 from ..storage.json_repository import JsonGameRepository
@@ -1209,6 +1210,8 @@ def _looks_text_only_request(message: str) -> bool:
     text = str(message or "").strip().lower()
     if not text:
         return False
+    if looks_text_only_map_request(text):
+        return True
     if looks_visual_map_request(text):
         return False
     return _contains_any(text, TEXT_ONLY_TERMS)
