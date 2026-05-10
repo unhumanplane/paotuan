@@ -8,6 +8,7 @@ MIN_FREE_KB="${HERMES_CONTAINER_MIN_FREE_KB:-5242880}"
 DOCKER="${DOCKER:-/usr/local/bin/docker}"
 export HERMES_UID="${HERMES_UID:-$(id -u)}"
 export HERMES_GID="${HERMES_GID:-$(id -g)}"
+export HERMES_USER="${HERMES_USER:-$(id -un 2>/dev/null || echo hermes)}"
 
 log() {
   printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S %z')" "$*"
@@ -39,6 +40,23 @@ for url in ("http://127.0.0.1:8767/health", "http://127.0.0.1:8766/health", "htt
 PY
 }
 
+prepare_identity_files() {
+  runtime_dir="$HERMES_ROOT/runtime"
+  mkdir -p "$runtime_dir"
+  "$DOCKER" run --rm node:22-bookworm cat /etc/passwd > "$runtime_dir/passwd.tmp"
+  "$DOCKER" run --rm node:22-bookworm cat /etc/group > "$runtime_dir/group.tmp"
+  if ! awk -F: -v uid="$HERMES_UID" '$3 == uid { found=1 } END { exit found ? 0 : 1 }' "$runtime_dir/passwd.tmp"; then
+    printf '%s:x:%s:%s::%s/home:/bin/sh\n' "$HERMES_USER" "$HERMES_UID" "$HERMES_GID" "$HERMES_ROOT" >> "$runtime_dir/passwd.tmp"
+  fi
+  if ! awk -F: -v gid="$HERMES_GID" '$3 == gid { found=1 } END { exit found ? 0 : 1 }' "$runtime_dir/group.tmp"; then
+    printf '%s:x:%s:\n' "${HERMES_GROUP:-users}" "$HERMES_GID" >> "$runtime_dir/group.tmp"
+  fi
+  mv "$runtime_dir/passwd.tmp" "$runtime_dir/passwd"
+  mv "$runtime_dir/group.tmp" "$runtime_dir/group"
+  chmod 0644 "$runtime_dir/passwd" "$runtime_dir/group"
+  log "prepared container identity files for ${HERMES_USER} (${HERMES_UID}:${HERMES_GID})"
+}
+
 preflight() {
   if [ ! -f "$COMPOSE" ]; then
     log "missing compose file: $COMPOSE"
@@ -58,6 +76,7 @@ preflight() {
     log "missing runtime image node:22-bookworm"
     return 1
   fi
+  prepare_identity_files
   compose_cmd config >/dev/null
   log "preflight ok"
 }

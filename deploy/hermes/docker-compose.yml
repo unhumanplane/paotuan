@@ -9,6 +9,8 @@ services:
       HERMES_ROOT: /volume1/docker/hermes
       HERMES_HOME: /volume1/docker/hermes/data
       HOME: /volume1/docker/hermes/home
+      USER: "${HERMES_USER:-hongxi}"
+      LOGNAME: "${HERMES_USER:-hongxi}"
       TMPDIR: /volume1/docker/hermes/tmp
       HERMES_ACCEPT_HOOKS: "1"
       PATH: /volume1/docker/hermes/install/hermes-agent/venv/bin:/volume1/docker/hermes/home/.local/bin:/volume1/docker/hermes/data/node/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
@@ -17,6 +19,8 @@ services:
     volumes:
       - /volume1/docker/hermes:/volume1/docker/hermes
       - /volume1/docker/astrbot:/volume1/docker/astrbot
+      - /volume1/docker/hermes/runtime/passwd:/etc/passwd:ro
+      - /volume1/docker/hermes/runtime/group:/etc/group:ro
     command: ["hermes", "gateway", "run", "--replace", "--accept-hooks"]
 
   dashboard:
@@ -31,12 +35,16 @@ services:
       HERMES_ROOT: /volume1/docker/hermes
       HERMES_HOME: /volume1/docker/hermes/data
       HOME: /volume1/docker/hermes/home
+      USER: "${HERMES_USER:-hongxi}"
+      LOGNAME: "${HERMES_USER:-hongxi}"
       TMPDIR: /volume1/docker/hermes/tmp
       PATH: /volume1/docker/hermes/install/hermes-agent/venv/bin:/volume1/docker/hermes/home/.local/bin:/volume1/docker/hermes/data/node/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
     env_file:
       - /volume1/docker/hermes/data/.env
     volumes:
       - /volume1/docker/hermes:/volume1/docker/hermes
+      - /volume1/docker/hermes/runtime/passwd:/etc/passwd:ro
+      - /volume1/docker/hermes/runtime/group:/etc/group:ro
     command: ["hermes", "dashboard", "--host", "0.0.0.0", "--port", "9119", "--no-open", "--insecure"]
 
   webhook:
@@ -51,6 +59,8 @@ services:
       HERMES_ROOT: /volume1/docker/hermes
       HERMES_HOME: /volume1/docker/hermes/data
       HOME: /volume1/docker/hermes/home
+      USER: "${HERMES_USER:-hongxi}"
+      LOGNAME: "${HERMES_USER:-hongxi}"
       TMPDIR: /volume1/docker/hermes/tmp
       PATH: /volume1/docker/hermes/install/hermes-agent/venv/bin:/volume1/docker/hermes/home/.local/bin:/volume1/docker/hermes/data/node/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
     env_file:
@@ -58,6 +68,8 @@ services:
     volumes:
       - /volume1/docker/hermes:/volume1/docker/hermes
       - /volume1/docker/astrbot:/volume1/docker/astrbot
+      - /volume1/docker/hermes/runtime/passwd:/etc/passwd:ro
+      - /volume1/docker/hermes/runtime/group:/etc/group:ro
     command: ["python3", "/volume1/docker/hermes/paotuan/bin/paotuan_webhook.py"]
 
   coder-bridge:
@@ -72,6 +84,8 @@ services:
       HERMES_ROOT: /volume1/docker/hermes
       HERMES_HOME: /volume1/docker/hermes/data
       HOME: /volume1/docker/hermes/home
+      USER: "${HERMES_USER:-hongxi}"
+      LOGNAME: "${HERMES_USER:-hongxi}"
       TMPDIR: /volume1/docker/hermes/tmp
       PATH: /volume1/docker/hermes/install/hermes-agent/venv/bin:/volume1/docker/hermes/home/.local/bin:/volume1/docker/hermes/data/node/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
       HERMES_ASTRBOT_API_URL: http://127.0.0.1:6185/api/v1/im/message
@@ -80,4 +94,6 @@ services:
     volumes:
       - /volume1/docker/hermes:/volume1/docker/hermes
       - /volume1/docker/astrbot:/volume1/docker/astrbot
+      - /volume1/docker/hermes/runtime/passwd:/etc/passwd:ro
+      - /volume1/docker/hermes/runtime/group:/etc/group:ro
     command: ["python3", "/volume1/docker/hermes/paotuan/bin/hermes_coder_bridge.py", "--host", "0.0.0.0", "--port", "8767"]
