@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from typing import Any, Awaitable, Callable
 
+from .control_authority import project_control_authority
 from .cycle_buffer import sanitize_ra_payload
 from .cycle_state_machine import CycleStateMachine
 from .map_core import MAP_VIEW_RA_AUTHORITY, project_map_store
@@ -110,6 +111,9 @@ def build_ra_authority_snapshot(session: GameSession) -> dict[str, Any]:
     map_view = project_map_store(session.maps, MAP_VIEW_RA_AUTHORITY)
     if map_view.get("records"):
         snapshot["maps"] = map_view
+    control_view = project_control_authority(session, "ra_authority_view")
+    if control_view.get("records"):
+        snapshot["control_authority"] = control_view
     sanitized = sanitize_ra_payload(snapshot)
     return sanitized if isinstance(sanitized, dict) else {}
 

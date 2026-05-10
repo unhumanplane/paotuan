@@ -137,6 +137,35 @@ def test_ra_authority_snapshot_does_not_expose_raw_strict_grid():
     assert '"x": 4' not in rendered
 
 
+def test_ra_authority_snapshot_uses_projected_control_authority_without_raw_consent():
+    session = GameSession.new("group")
+    session.characters["pc-1"] = Character(id="pc-1", name="Scout", player_id="owner")
+    session.control_authority = {
+        "records": {
+            "pc-1": {
+                "owner_player_id": "owner",
+                "active_controller_id": "delegate",
+                "controller_type": "player_delegate",
+                "status": "delegated_to_player",
+                "authorized_by": "owner",
+                "consent_reference": "private consent text",
+                "audit_ref": "audit-1",
+                "effective_at": "2026-05-10T00:00:00+00:00",
+            }
+        }
+    }
+
+    snapshot = build_ra_authority_snapshot(session)
+    record = snapshot["control_authority"]["records"][0]
+    rendered = json.dumps(snapshot["control_authority"], ensure_ascii=False)
+
+    assert record["active_controller_id"] == "delegate"
+    assert record["authorized_by"] == "owner"
+    assert record["audit_ref"] == "audit-1"
+    assert "consent_reference" not in record
+    assert "private consent text" not in rendered
+
+
 def test_recorder_agent_runs_once_and_accepts_code_fenced_json():
     fake_llm = FakeLlm(
         """```json
