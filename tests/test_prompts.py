@@ -64,6 +64,22 @@ def test_system_prompt_includes_event_timeline_contract():
     assert "未知项不能反推成否定事实" in prompt
 
 
+def test_system_prompt_mentions_explicit_system_hosting_risk_bounds():
+    session = GameSession.new("group")
+
+    prompt = build_system_prompt(
+        session,
+        GameMode.TACTICAL,
+        ["turn_control"],
+        actor={"player_id": "player-1"},
+    )
+
+    assert "明确 system_host 托管记录" in prompt
+    assert "不能从沉默、离线、模糊离开话术或他人描述中推断" in prompt
+    assert "low/medium/high 风险上限" in prompt
+    assert "高风险行为必须已有显式预授权" in prompt
+
+
 def test_prompt_projection_includes_compact_event_timeline_and_entity_facts():
     session = GameSession.new("group")
     session.scene["event_timeline"] = [

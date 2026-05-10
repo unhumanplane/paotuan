@@ -239,6 +239,15 @@ controller type, risk ceiling, and duration summary. It must not see
 RA authority may see structured audit refs when needed for state tracking, but
 still must not receive raw consent text.
 
+04.2 adds `core/hosted_action_policy.py` for system/DM-hosted actions. This is
+also outside MapCore: hosted policy consumes the control record and classifies
+the requested action risk before a turn action is recorded. A non-hosted
+120-second timeout remains a conservative local auto-action. An explicit
+`hosted_by_system` record can annotate timeout/auto actions with hosted policy,
+risk, fallback, and audit-ref metadata, but high-risk actions above the ceiling
+must be denied or downgraded to conservative behavior before any turn record is
+written.
+
 ## Strict Grid Renderer Consumer Boundary
 
 `render_strict_grid_svg` 是 `player_view` 的 code-owned consumer，不是新的
