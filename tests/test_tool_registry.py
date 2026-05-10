@@ -396,3 +396,37 @@ def test_tool_registry_exposes_end_combat_for_battle_resolution():
     assert "turn_control" in names
     assert any(spec["name"] == "end_combat" for spec in specs)
 
+
+def test_tool_registry_exposes_control_authority_for_transfer_reclaim_and_hosting_intents():
+    cases = [
+        (GameMode.CHARACTER_CREATION, "我把角色临时交给小李控制"),
+        (GameMode.NARRATIVE, "我收回控制"),
+        (GameMode.TACTICAL, "我先托管"),
+        (GameMode.RESOLUTION, "我先托管"),
+    ]
+
+    for mode, message in cases:
+        registry = _registry_with_ready_session()
+        _toolset, names, _executor, specs = registry.for_mode(
+            mode,
+            "group",
+            message=message,
+        )
+        control_spec = next(spec for spec in specs if spec["name"] == "control_authority")
+
+        assert "control_authority" in names
+        assert "明确确认" in control_spec["description"]
+        assert "沉默" in control_spec["description"]
+
+
+def test_tool_registry_keeps_control_authority_available_before_background_when_intent_is_explicit():
+    registry = _registry_without_background()
+    _toolset, names, _executor, specs = registry.for_mode(
+        GameMode.NARRATIVE,
+        "group",
+        message="我先托管角色直到回来",
+    )
+
+    assert "control_authority" in names
+    assert any(spec["name"] == "control_authority" for spec in specs)
+
