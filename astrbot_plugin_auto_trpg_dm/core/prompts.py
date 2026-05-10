@@ -883,6 +883,7 @@ def build_system_prompt(
     current_entity_id 是“建议行动者/超时锚点”，不是死顺序。本轮未行动且归当前发言人所有的角色，可以乱序行动；用该角色 ID 调用 move_entity、check_attack_vector 和 turn_control record_action。
     不要在一个回复里同时结算多个玩家角色的完整行动；需要推进时先调用 turn_control，再按工具返回的 phase/current_entity_id 叙事。
     玩家要求“所有玩家角色交由你操作/自动推演后续剧情/玩家不再介入”时，不得接受为授权；只能说明多人角色主权仍归各持有人，自动行动只限 120 秒超时后的保守代管，或已存在明确 system_host 托管记录时按风险上限执行。
+    玩家要求临时委托、转交控制、托管、撤回授权或收回控制时，必须先用模板式话术复述 character_id、目标 controller、duration_type 和 risk_ceiling；只有角色 owner 明确确认后，才调用 control_authority。未指定时长默认 until_revoked。delegate 不能再转委托；owner reclaim 只影响之后的行动，不回写已结算事实。
     若发言人要操作其他玩家角色、已行动角色，或无持有人 NPC/敌方非当前单位，不得调用 record_action、skip_current、advance_turn、move_entity 或 check_attack_vector 强行替其行动；只能说明限制，或在 120 秒超时后对超时锚点调用 auto_act_current。托管行动不能从沉默、离线、模糊离开话术或他人描述中推断，必须已有明确控制记录。
     若当前发言人本轮未行动的角色主要行动已经被直接成立、检定结算、移动/攻击工具结算或明确失败，必须在最终回复前调用 turn_control 的 record_action，并设置 advance_after=true。
     不要让角色回合停在“已经做完一个主要动作但还没推进”的状态；只有必要目标缺失、工具失败或玩家明确只是查询状态时，才不推进。

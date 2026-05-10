@@ -30,7 +30,7 @@
 - 创建、绑定和维护角色卡。
 - 用 Tag 型结构保存角色、装备、风格、默认战斗行为和世界设定。
 - 维护场景摘要、长期剧情钩子、最近事件、会话备份和恢复数据。
-- 支持多人团里的控制权约束，减少旁观者误操作。
+- 支持多人团里的控制权约束，减少旁观者误操作；临时委托、系统托管、风险上限和收回控制的边界见 [docs/control-authority-hosting.md](docs/control-authority-hosting.md)。
 
 ### 战棋与轮次
 
@@ -106,6 +106,8 @@ astrbot_plugin_auto_trpg_dm/
   core/
     router.py             # Intent Router，多步工具调用与模式切换
     models.py             # GameSession、角色、战斗和周期状态模型
+    control_authority.py  # owner / active_controller 解析与投影
+    control_transfer.py   # 临时委托、系统托管和收回控制状态变更
     map_core.py           # MapCore store、角色投影和候选地图事件校验
     prompts.py            # 系统提示与模式提示
     security.py           # 输入安全预检查
@@ -114,6 +116,7 @@ astrbot_plugin_auto_trpg_dm/
   tools/
     registry.py           # 按模式挂载工具
     memory_tools.py       # 角色、场景、世界设定和存档工具
+    control_tools.py      # 临时控制权工具
     spatial_tools.py      # 战棋空间工具
     turn_tools.py         # 轮次、超时和行动推进
     rule_tools.py         # 本地规则执行
@@ -242,12 +245,15 @@ astrbot_plugin_auto_trpg_dm/
   core/
     router.py              # Intent Router，多步工具调用与模式切换
     models.py              # GameSession、角色、战斗和周期状态模型
+    control_authority.py   # owner / active_controller 解析与投影
+    control_transfer.py    # 临时委托、系统托管和收回控制状态变更
     prompts.py             # 系统提示与模式提示
     external_memory.py     # Honcho 外置记忆适配
     ambient_image.py       # 氛围图片 provider、安全校验和物化逻辑
   tools/
     registry.py            # 按模式挂载工具
     memory_tools.py        # 角色、场景、世界设定和存档工具
+    control_tools.py       # 临时控制权工具
     spatial_tools.py       # 战棋空间工具
     turn_tools.py          # 轮次、超时和行动推进
     rule_tools.py          # 本地规则执行
@@ -302,6 +308,7 @@ GitHub Actions 会在 push 和 PR 上运行：
 - [CHANGELOG.md](CHANGELOG.md)
 - [docs/honcho-external-memory.md](docs/honcho-external-memory.md)
 - [docs/ambient-image-api.md](docs/ambient-image-api.md)
+- [docs/control-authority-hosting.md](docs/control-authority-hosting.md)
 - [docs/dm-outbound-cleanup.md](docs/dm-outbound-cleanup.md)
 - [docs/design.zh.md](docs/design.zh.md)
 - [docs/architecture_spec.md](docs/architecture_spec.md)
