@@ -5,6 +5,7 @@ from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
+from ..core.control_authority import owner_player_id_for_entity, resolve_control_authority
 from ..core.map_core import load_active_strict_grid_entities
 from ..core.models import GameMode, GameSession, utc_now_iso
 from ..core.turn_labels import public_turn_entity_label, turn_actor_kind, turn_entity_owner_id
@@ -672,16 +673,20 @@ class TurnTools:
                 "requested_entity_id": entity_id,
                 "phase": str(turn.get("phase", "")),
             }
-        owner_id = self._owner_player_id(session, entity_id)
+        authority = resolve_control_authority(session, entity_id, self.actor)
+        owner_id = str(authority.get("owner_player_id") or "")
         requester_id = str(self.actor.get("player_id", "") or "")
-        if owner_id and requester_id != owner_id:
+        if owner_id and not authority.get("ok"):
             return {
                 "ok": False,
                 "error": "character_control_denied",
                 "message": "当前行动角色属于其他玩家；非持有人不能替他记录行动、跳过或防御。若其超过 120 秒未响应，只能使用 auto_act_current 进行保守自动行动。",
                 "current_entity_id": entity_id,
                 "owner_player_id": owner_id,
+                "active_controller_id": str(authority.get("active_controller_id") or ""),
+                "controller_type": str(authority.get("controller_type") or ""),
                 "requester_player_id": requester_id,
+                "reason": str(authority.get("reason") or ""),
                 "deadline_at": str(turn.get("deadline_at", "")),
             }
         if not owner_id and current_id and entity_id != current_id:
@@ -705,9 +710,10 @@ class TurnTools:
         current_id = str(turn.get("current_entity_id", "") or session.battle.get("turn_entity_id", "")).strip()
         if not current_id:
             return None
-        owner_id = self._owner_player_id(session, current_id)
+        authority = resolve_control_authority(session, current_id, self.actor)
+        owner_id = str(authority.get("owner_player_id") or "")
         requester_id = str(self.actor.get("player_id", "") or "")
-        if owner_id and requester_id != owner_id:
+        if owner_id and not authority.get("ok"):
             return {
                 "ok": False,
                 "error": "turn_advance_requires_owner_or_timeout",
@@ -715,7 +721,10 @@ class TurnTools:
                 "next_tool_hint": "deadline_at 已过时调用 turn_control(action='auto_act_current', current_entity_id=当前角色ID, advance_after=True)；未超时时只说明正在等待该玩家。",
                 "current_entity_id": current_id,
                 "owner_player_id": owner_id,
+                "active_controller_id": str(authority.get("active_controller_id") or ""),
+                "controller_type": str(authority.get("controller_type") or ""),
                 "requester_player_id": requester_id,
+                "reason": str(authority.get("reason") or ""),
                 "deadline_at": str(turn.get("deadline_at", "")),
             }
         return None
@@ -852,11 +861,7 @@ class TurnTools:
         )
 
     def _owner_player_id(self, session: GameSession, entity_id: str) -> str:
-        return turn_entity_owner_id(
-            session,
-            entity_id,
-            load_active_strict_grid_entities(session.maps, session.battle),
-        )
+        return owner_player_id_for_entity(session, entity_id)
 
     def _audit(self, tool: str, input_payload: Dict[str, Any], result: Dict[str, Any]) -> None:
         self.repository.append_audit(

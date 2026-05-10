@@ -4,6 +4,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from pydantic import BaseModel, Field
 
+from ..core.control_authority import owner_player_id_for_entity, resolve_control_authority
 from ..core.map_core import (
     DEFAULT_STRICT_LOCAL_MAP_ID,
     MAP_AUTHORITY_SPATIAL,
@@ -263,9 +264,10 @@ class SpatialTools:
                     "requested_entity_id": entity_id,
                     "phase": phase,
                 }
-            owner_id = self._owner_player_id(session, entity_id)
+            authority = resolve_control_authority(session, entity_id, self.actor)
+            owner_id = str(authority.get("owner_player_id") or "")
             requester_id = str(self.actor.get("player_id", "") or "")
-            if owner_id and requester_id != owner_id:
+            if owner_id and not authority.get("ok"):
                 return {
                     "ok": False,
                     "error_code": "character_control_denied",
@@ -273,7 +275,10 @@ class SpatialTools:
                     "current_entity_id": current,
                     "requested_entity_id": entity_id,
                     "owner_player_id": owner_id,
+                    "active_controller_id": str(authority.get("active_controller_id") or ""),
+                    "controller_type": str(authority.get("controller_type") or ""),
                     "requester_player_id": requester_id,
+                    "reason": str(authority.get("reason") or ""),
                     "phase": phase,
                 }
             if not owner_id and current and entity_id != current:
@@ -289,22 +294,7 @@ class SpatialTools:
 
     @staticmethod
     def _owner_player_id(session: Any, entity_id: str) -> str:
-        entities = load_active_strict_grid_entities(
-            getattr(session, "maps", {}),
-            getattr(session, "battle", {}),
-        )
-        grid_entity = dict(entities.get(entity_id, {}))
-        tags = dict(grid_entity.get("tags", {}))
-        if tags.get("player_id"):
-            return str(tags["player_id"])
-        character_id = str(tags.get("character_id", "") or entity_id)
-        character = getattr(session, "characters", {}).get(character_id)
-        if character and getattr(character, "player_id", ""):
-            return str(character.player_id)
-        for player_id, bound_id in getattr(session, "player_character_map", {}).items():
-            if bound_id == character_id or bound_id == entity_id:
-                return str(player_id)
-        return ""
+        return owner_player_id_for_entity(session, entity_id)
 
     def _audit(self, tool: str, input_payload: Dict[str, Any], result: Dict[str, Any]) -> None:
         self.repository.append_audit(
