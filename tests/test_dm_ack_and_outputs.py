@@ -138,12 +138,20 @@ class FakeEvent:
     def __init__(self, message_id="msg-1", message_str=""):
         self.message_obj = type("MessageObj", (), {"message_id": message_id})()
         self.message_str = message_str
+        self.stopped = False
 
     def plain_result(self, text):
         return {"kind": "plain", "text": text}
 
     def chain_result(self, components):
         return {"kind": "chain", "components": components}
+
+    def stop_event(self):
+        self.stopped = True
+
+
+async def _collect_async_generator(generator):
+    return [item async for item in generator]
 
 
 def _component_text(result):
@@ -393,7 +401,7 @@ def test_visual_map_requests_without_background_reach_tool_chain():
         assert not any(record.get("action") == "background_required" for record in repo.audits)
 
 
-def test_empty_dm_greedystr_sentinel_uses_status_prompt():
+def test_empty_dm_greedystr_sentinel_is_not_routed_to_llm():
     plugin = AutoTrpgDmPlugin.__new__(AutoTrpgDmPlugin)
 
     class GreedyStrSentinel:
@@ -402,7 +410,7 @@ def test_empty_dm_greedystr_sentinel_uses_status_prompt():
 
     routed_message = plugin._routed_message_from_command_content(GreedyStrSentinel())
 
-    assert routed_message == "查看当前跑团状态；如果还没有开局，请询问玩家想跑什么类型的团。"
+    assert routed_message == ""
 
 
 def test_literal_greedystr_text_is_preserved():
@@ -413,7 +421,7 @@ def test_literal_greedystr_text_is_preserved():
     assert routed_message == "GreedyStr"
 
 
-def test_empty_dm_string_greedystr_sentinel_uses_status_prompt_from_event_message():
+def test_empty_dm_string_greedystr_sentinel_is_not_routed_to_llm():
     plugin = AutoTrpgDmPlugin.__new__(AutoTrpgDmPlugin)
 
     routed_message = plugin._routed_message_from_command_content(
@@ -421,7 +429,20 @@ def test_empty_dm_string_greedystr_sentinel_uses_status_prompt_from_event_messag
         event=FakeEvent(message_str="/dm"),
     )
 
-    assert routed_message == "查看当前跑团状态；如果还没有开局，请询问玩家想跑什么类型的团。"
+    assert routed_message == ""
+
+
+def test_empty_dm_command_returns_guidance_without_entering_router():
+    plugin = AutoTrpgDmPlugin.__new__(AutoTrpgDmPlugin)
+    plugin.plugin_logger = FakeLogger()
+    plugin.router = types.SimpleNamespace(handle_message=lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("router should not run")))
+
+    event = FakeEvent(message_str="/dm")
+    results = asyncio.run(_collect_async_generator(plugin._handle_dm_command_content(event, "GreedyStr")))
+
+    assert len(results) == 1
+    assert "请输入 `/dm` 后面的具体行动" in _component_text(results[0])
+    assert event.stopped is True
 
 
 def test_explicit_greedystr_argument_is_preserved_from_event_message():

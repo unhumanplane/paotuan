@@ -330,6 +330,14 @@ class AutoTrpgDmPlugin(Star):
 
     async def _handle_dm_command_content(self, event: AstrMessageEvent, content: GreedyStr):
         routed_message = self._routed_message_from_command_content(content, event=event)
+        if not routed_message:
+            self.plugin_logger.info(
+                "empty_dm_command_ignored session=%s",
+                IntentRouter.session_id_for_event(event),
+            )
+            yield self._quoted_result(event, "请输入 `/dm` 后面的具体行动、问题或开局需求。")
+            event.stop_event()
+            return
         async for result in self._handle_dm_event(event, routed_message):
             yield result
 
@@ -345,7 +353,7 @@ class AutoTrpgDmPlugin(Star):
         if routed_message == "GreedyStr" and _event_has_empty_dm_command(event):
             routed_message = ""
         if not routed_message:
-            return "查看当前跑团状态；如果还没有开局，请询问玩家想跑什么类型的团。"
+            return ""
         return routed_message
 
     @filter.event_message_type(filter.EventMessageType.ALL)
