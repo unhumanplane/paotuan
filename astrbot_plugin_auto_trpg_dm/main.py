@@ -350,8 +350,12 @@ class AutoTrpgDmPlugin(Star):
             routed_message = str(content or "").strip()
             if routed_message == "GreedyStr":
                 routed_message = ""
-        if routed_message == "GreedyStr" and _event_has_empty_dm_command(event):
-            routed_message = ""
+        if routed_message == "GreedyStr":
+            event_argument = _dm_command_argument_from_event(event)
+            if event_argument is not None:
+                routed_message = event_argument
+            elif event is not None:
+                routed_message = ""
         if not routed_message:
             return ""
         return routed_message
@@ -4005,11 +4009,18 @@ def _looks_like_player_roster_request(text: str) -> bool:
 
 
 def _event_has_empty_dm_command(event: AstrMessageEvent | None) -> bool:
+    return _dm_command_argument_from_event(event) == ""
+
+
+def _dm_command_argument_from_event(event: AstrMessageEvent | None) -> str | None:
     message = str(getattr(event, "message_str", "") or "").strip()
     if not message:
-        return False
+        return None
     normalized = message.replace("\u3000", " ")
-    return bool(re.fullmatch(r"/[dD][mM]\s*", normalized))
+    match = re.fullmatch(r"/[dD][mM](?:\s+(?P<argument>.*))?", normalized, flags=re.DOTALL)
+    if not match:
+        return None
+    return str(match.group("argument") or "").strip()
 
 
 def _is_legacy_generic_character_id(character_id: str) -> bool:

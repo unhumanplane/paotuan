@@ -432,6 +432,17 @@ def test_empty_dm_string_greedystr_sentinel_is_not_routed_to_llm():
     assert routed_message == ""
 
 
+def test_greedystr_command_sentinel_without_raw_command_is_not_routed_to_llm():
+    plugin = AutoTrpgDmPlugin.__new__(AutoTrpgDmPlugin)
+
+    routed_message = plugin._routed_message_from_command_content(
+        "GreedyStr",
+        event=FakeEvent(message_str=""),
+    )
+
+    assert routed_message == ""
+
+
 def test_empty_dm_command_returns_guidance_without_entering_router():
     plugin = AutoTrpgDmPlugin.__new__(AutoTrpgDmPlugin)
     plugin.plugin_logger = FakeLogger()
