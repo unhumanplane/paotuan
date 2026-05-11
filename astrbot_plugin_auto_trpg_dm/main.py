@@ -868,6 +868,35 @@ class AutoTrpgDmPlugin(Star):
             )
             return "流程已恢复。下一句 `/dm` 会按当前存档继续裁定。"
 
+        if _looks_like_restart_latest_backup_story_request(text):
+            result = await MemoryTools(self.repository, session_id, actor=actor, message=text).session_control(
+                "restart_latest_backup_story",
+                reason=text,
+            )
+            self.repository.append_audit(
+                session_id,
+                {"type": "local_fast_path", "action": "restart_backup_story", "actor": actor, "result": result},
+            )
+            self.plugin_logger.info(
+                "dm_restart_backup_story session=%s sender=%s ok=%s error=%s",
+                session_id,
+                actor.get("player_id", ""),
+                result.get("ok"),
+                result.get("error", ""),
+            )
+            return str(result.get("message") or "重开旧故事请求已处理。")
+
+        if _looks_like_backup_preview_request(text):
+            result = await MemoryTools(self.repository, session_id, actor=actor, message=text).session_control(
+                "preview_latest_backup",
+                reason=text,
+            )
+            self.repository.append_audit(
+                session_id,
+                {"type": "local_fast_path", "action": "backup_preview", "actor": actor, "result": result},
+            )
+            return str(result.get("message") or "备份预览请求已处理。")
+
         if _looks_like_backup_list_request(text):
             result = await MemoryTools(self.repository, session_id, actor=actor, message=text).session_control(
                 "list_backups",
@@ -4273,9 +4302,75 @@ def _looks_like_restore_latest_backup_request(text: str) -> bool:
     lowered = str(text or "").strip().lower()
     if not lowered:
         return False
-    restore_terms = ("恢复", "还原", "找回", "restore")
+    if _looks_like_restart_latest_backup_story_request(text):
+        return False
+    restore_terms = (
+        "恢复",
+        "还原",
+        "找回",
+        "重新开",
+        "重新打开",
+        "继续开",
+        "打开",
+        "载入",
+        "读取",
+        "加载",
+        "restore",
+        "load",
+    )
     backup_terms = ("上一个存档", "之前的跑团", "之前的存档", "上一份存档", "上个存档", "上一个备份", "最新备份", "backup")
     return any(term in lowered for term in restore_terms) and any(term in lowered for term in backup_terms)
+
+
+def _looks_like_restart_latest_backup_story_request(text: str) -> bool:
+    lowered = str(text or "").strip().lower()
+    if not lowered:
+        return False
+    restart_terms = (
+        "重新开",
+        "重新开始",
+        "重开",
+        "重置成",
+        "重置到",
+        "从头开",
+        "从开头",
+        "开头",
+        "开场",
+        "restart",
+        "start over",
+    )
+    source_terms = (
+        "上一个存档",
+        "之前的存档",
+        "上一份存档",
+        "上个存档",
+        "上一个备份",
+        "最新备份",
+        "上一个故事",
+        "上个故事",
+        "之前的故事",
+        "旧故事",
+        "旧团",
+        "backup",
+    )
+    story_scope_terms = ("故事", "开头", "开场", "背景", "不包括角色卡", "不要角色卡", "无角色卡", "不带角色", "只要故事")
+    return (
+        any(term in lowered for term in restart_terms)
+        and any(term in lowered for term in source_terms)
+        and (any(term in lowered for term in story_scope_terms) or "重新开" in lowered or "重开" in lowered)
+    )
+
+
+def _looks_like_backup_preview_request(text: str) -> bool:
+    lowered = str(text or "").strip().lower()
+    if not lowered:
+        return False
+    list_terms = ("备份列表", "有哪些备份", "最近备份", "backup list", "list backups")
+    if any(term in lowered for term in list_terms):
+        return False
+    view_terms = ("查看", "看看", "看一下", "预览", "显示", "读一下", "讲讲", "回顾", "view", "preview", "show")
+    backup_terms = ("上一个存档", "之前的跑团", "之前的存档", "上一份存档", "上个存档", "上一个备份", "最新备份", "backup")
+    return any(term in lowered for term in view_terms) and any(term in lowered for term in backup_terms)
 
 
 def _looks_like_backup_list_request(text: str) -> bool:

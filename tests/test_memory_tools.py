@@ -202,6 +202,128 @@ def test_scene_tracking_status_projection_hides_dm_only_records():
     assert "镜中实体" not in status
 
 
+def test_preview_latest_backup_returns_story_summary_without_restoring(tmp_path):
+    repository = JsonGameRepository(tmp_path / "data")
+    backup_session = GameSession.new("group")
+    backup_session.title = "旧剧院失踪案"
+    backup_session.world_tags.update(
+        {
+            "_background_ready": True,
+            "genre": "urban_occult",
+            "tone": "调查悬疑",
+            "starting_premise": "失踪案把队伍带到旧城区。",
+        }
+    )
+    backup_session.scene.update(
+        {
+            "_game_started": True,
+            "summary": "雨夜，队伍站在废弃剧院门前。",
+            "current_objective": "确认失踪者是否进入旧剧院。",
+            "clues": [
+                {"id": "ticket", "text": "半张午夜场票根夹在门缝里。", "visibility": "player"},
+                {"id": "truth", "text": "馆长已经献祭了失踪者。", "visibility": "dm"},
+            ],
+        }
+    )
+    backup_session.characters["pc_lan"] = Character(
+        id="pc_lan",
+        name="岚",
+        player_id="p1",
+        summary="跟踪失踪案的私家侦探。",
+    )
+    repository.save_session(backup_session)
+    repository.backup_session("group", reason="confirmed_reset:旧团")
+
+    current = GameSession.new("group")
+    repository.save_session(current)
+
+    tools = MemoryTools(repository, "group", actor={"player_id": "p1"}, message="/dm 查看上一个存档的故事")
+    result = asyncio.run(tools.session_control("preview_latest_backup", reason="查看上一个存档的故事"))
+
+    assert result["ok"] is True
+    assert "旧剧院失踪案" in result["message"]
+    assert "半张午夜场票根" in result["message"]
+    assert "岚" in result["message"]
+    assert "献祭" not in result["message"]
+    assert repository.load_session("group").title == "未命名团"
+
+
+def test_restart_latest_backup_story_keeps_story_start_without_character_cards(tmp_path):
+    repository = JsonGameRepository(tmp_path / "data")
+    backup_session = GameSession.new("group")
+    backup_session.title = "旧剧院失踪案"
+    backup_session.world_tags.update(
+        {
+            "_background_ready": True,
+            "_plot_locked": True,
+            "genre": "urban_occult",
+            "tone": "调查悬疑",
+            "starting_premise": "失踪案把队伍带到旧城区。",
+            "campaign_outline": {"acts": ["抵达旧剧院", "午夜场异常升级", "在镜厅做出抉择"]},
+        }
+    )
+    backup_session.scene.update(
+        {
+            "_game_started": True,
+            "_plot_locked": True,
+            "_opening_intro": "雨夜，队伍站在废弃剧院门前，午夜场的灯箱自己亮了起来。",
+            "_player_guidance": "可以调查票房、绕到侧门或寻找目击者。",
+            "_initial_hook": "售票亭里还亮着一盏小灯。",
+            "summary": "队伍已经深入地下放映室，发现镜中实体正在复苏。",
+            "current_objective": "确认失踪者是否进入旧剧院。",
+            "open_hooks": [{"id": "booth", "text": "售票亭里还亮着一盏小灯。", "visibility": "player"}],
+            "clues": [
+                {"id": "ticket", "text": "半张午夜场票根夹在门缝里。", "visibility": "player"},
+                {"id": "truth", "text": "馆长已经献祭了失踪者。", "visibility": "dm"},
+            ],
+            "hidden_truth": "镜中实体真正寄宿在放映机里。",
+        }
+    )
+    backup_session.characters["pc_lan"] = Character(
+        id="pc_lan",
+        name="岚",
+        player_id="p1",
+        summary="跟踪失踪案的私家侦探。",
+    )
+    backup_session.participants["p1"] = {"display_name": "gali"}
+    backup_session.player_character_map["p1"] = "pc_lan"
+    backup_session.active_character_id = "pc_lan"
+    backup_session.battle = {"active": True, "turn": {"active": True}}
+    repository.save_session(backup_session)
+    repository.backup_session("group", reason="confirmed_reset:旧团")
+
+    current = GameSession.new("group")
+    current.title = "当前临时团"
+    current.world_tags["_background_ready"] = True
+    current.characters["pc_current"] = Character(id="pc_current", name="当前角色", player_id="p2")
+    repository.save_session(current)
+
+    tools = MemoryTools(repository, "group", actor={"player_id": "p1"}, message="/dm 重新开上一个存档的故事")
+    result = asyncio.run(
+        tools.session_control("restart_latest_backup_story", reason="重新开上一个存档的故事，不包括角色卡")
+    )
+
+    assert result["ok"] is True
+    saved = repository.load_session("group")
+    assert saved.title == "旧剧院失踪案"
+    assert saved.world_tags["genre"] == "urban_occult"
+    assert saved.world_tags["_background_ready"] is True
+    assert saved.scene["_game_started"] is True
+    assert saved.scene["_restarted_story_start"] is True
+    assert "午夜场的灯箱" in saved.scene["_opening_intro"]
+    assert "地下放映室" not in saved.scene["summary"]
+    assert "售票亭" in saved.scene["current_objective"]
+    assert "半张午夜场票根" not in str(saved.scene)
+    assert "献祭" not in str(saved.to_dict())
+    assert saved.characters == {}
+    assert saved.participants == {}
+    assert saved.player_character_map == {}
+    assert saved.active_character_id == ""
+    assert saved.battle == {"active": False}
+    assert saved.maps["records"] == {}
+    assert result["pre_restart_backup_path"]
+
+
 def test_blocks_post_start_permanent_mutation_power_tags():
     allowed, blocked = filter_runtime_character_tags_after_start(
         [

@@ -131,7 +131,12 @@ _install_fake_astrbot_modules()
 
 from astrbot_plugin_auto_trpg_dm.core.ambient_image import AmbientImageConfig
 from astrbot_plugin_auto_trpg_dm.core.models import CycleState, GameSession
-from astrbot_plugin_auto_trpg_dm.main import AutoTrpgDmPlugin
+from astrbot_plugin_auto_trpg_dm.main import (
+    AutoTrpgDmPlugin,
+    _looks_like_backup_preview_request,
+    _looks_like_restore_latest_backup_request,
+    _looks_like_restart_latest_backup_story_request,
+)
 
 
 class FakeEvent:
@@ -369,6 +374,15 @@ def test_scene_tracking_status_fast_path_returns_visible_hooks_without_advancing
     assert "幕后黑手就是馆长" not in reply
     assert repo.session.cycle_state == CycleState.CYCLE_ACTIVE
     assert repo.audits[-1]["action"] == "scene_tracking_status"
+
+
+def test_backup_story_commands_are_classified_before_background_fallback():
+    assert _looks_like_restart_latest_backup_story_request("重新开上一个存档的故事") is True
+    assert _looks_like_restore_latest_backup_request("重新开上一个存档的故事") is False
+
+    assert _looks_like_backup_preview_request("查看上一个存档的故事") is True
+    assert _looks_like_restart_latest_backup_story_request("查看上一个存档的故事") is False
+    assert _looks_like_backup_preview_request("查看备份") is False
 
 
 def test_visual_map_requests_without_background_reach_tool_chain():

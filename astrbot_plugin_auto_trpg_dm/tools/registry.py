@@ -283,7 +283,12 @@ class ToolRegistry:
             ),
             "session_control": make_tool(
                 name="session_control",
-                description="会话控制工具：查询状态、备份存档、列出备份、在当前档为空时恢复上一个非空备份、重开当前会话、压缩记忆、查看最近调试记录。重开/清空存档必须先获取确认码，再用 confirm_reset 和 confirm_token 二次确认。",
+                description=(
+                    "会话控制工具：查询状态、备份存档、列出备份、只读预览上一个非空备份、"
+                    "在当前档为空时完整恢复上一个非空备份、把当前档重置成上一个故事的开头但不复制角色卡、"
+                    "重开当前会话、压缩记忆、查看最近调试记录。"
+                    "重开/清空存档必须先获取确认码，再用 confirm_reset 和 confirm_token 二次确认。"
+                ),
                 model=SessionControlArgs,
                 handler=memory_tools.session_control,
             ),

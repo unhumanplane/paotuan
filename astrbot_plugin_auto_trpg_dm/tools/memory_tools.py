@@ -9,7 +9,7 @@ from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
-from ..core.map_core import load_active_strict_grid, load_active_strict_grid_entities
+from ..core.map_core import default_map_store, load_active_strict_grid, load_active_strict_grid_entities
 from ..core.memory import MemoryCompressor
 from ..core.models import (
     Character,
@@ -24,8 +24,10 @@ from ..core.models import (
     utc_now_iso,
 )
 from ..core.scene_hooks import (
+    format_scene_tracking_status,
     normalize_scene_tracking_patch,
     opening_has_initial_hook,
+    project_visible_scene_value,
 )
 from ..storage.json_repository import JsonGameRepository
 
@@ -102,7 +104,13 @@ class StartGameArgs(BaseModel):
 
 
 class SessionControlArgs(BaseModel):
-    action: str = Field(..., description="会话控制动作：status, reset, restore_latest_backup, list_backups, create_backup, compress_memory, debug_last")
+    action: str = Field(
+        ...,
+        description=(
+            "会话控制动作：status, reset, restore_latest_backup, preview_latest_backup, "
+            "restart_latest_backup_story, list_backups, create_backup, compress_memory, debug_last"
+        ),
+    )
     reason: str = Field(default="", description="执行该动作的自然语言原因")
     confirm_token: str = Field(default="", description="重开/清空存档的二次确认 token；没有 token 时只会发起确认，不会删除存档")
 
@@ -736,6 +744,16 @@ class MemoryTools:
             result = self._create_manual_backup(reason=reason)
         elif normalized in {"list_backups", "backup_list", "backups", "备份列表", "查看备份"}:
             result = self._list_backups()
+        elif normalized in {"preview_latest_backup", "preview_backup", "view_latest_backup", "查看上一个存档", "预览上一个存档"}:
+            result = self._preview_latest_backup(reason=reason)
+        elif normalized in {
+            "restart_latest_backup_story",
+            "restart_story_start",
+            "reset_to_latest_story_start",
+            "重新开上一个存档的故事",
+            "重置到上一个故事开头",
+        }:
+            result = self._restart_latest_backup_story(reason=reason)
         elif normalized in {"restore_latest_backup", "restore_backup", "restore", "恢复上一个存档", "恢复存档", "恢复之前的跑团"}:
             result = self._restore_latest_backup(reason=reason)
         elif normalized in {"compress_memory", "compress", "压缩记忆", "记忆压缩"}:
@@ -771,6 +789,8 @@ class MemoryTools:
                     "confirm_reset",
                     "create_backup",
                     "list_backups",
+                    "preview_latest_backup",
+                    "restart_latest_backup_story",
                     "restore_latest_backup",
                     "compress_memory",
                     "debug_last",
@@ -815,6 +835,100 @@ class MemoryTools:
                 for item in backups
             ],
             "message": "已列出最近备份。" if backups else "当前还没有自动备份。",
+        }
+
+    def _preview_latest_backup(self, reason: str = "") -> Dict[str, Any]:
+        backups = self.repository.list_session_backups(self.session_id, limit=20)
+        usable = [item for item in backups if _backup_item_looks_useful(item)]
+        if not usable:
+            return {
+                "ok": False,
+                "action": "preview_latest_backup",
+                "error": "no_usable_backup",
+                "message": "没有找到可查看的非空备份；当前存档未改动。",
+                "backups_seen": len(backups),
+            }
+        selected = usable[0]
+        try:
+            backup_session = _load_backup_session(selected)
+        except Exception as exc:
+            return {
+                "ok": False,
+                "action": "preview_latest_backup",
+                "error": "backup_preview_load_failed",
+                "message": "找到了备份，但读取预览失败；当前存档未改动。",
+                "detail": str(exc)[:160],
+            }
+        preview = _build_backup_story_preview(backup_session, selected)
+        return {
+            "ok": True,
+            "action": "preview_latest_backup",
+            "selected_backup": {
+                "name": selected.get("name", ""),
+                "size": selected.get("size", 0),
+                "mtime": selected.get("mtime", ""),
+                "reason": selected.get("reason", ""),
+            },
+            "preview": preview,
+            "message": _format_backup_story_preview(preview),
+        }
+
+    def _restart_latest_backup_story(self, reason: str = "") -> Dict[str, Any]:
+        backups = self.repository.list_session_backups(self.session_id, limit=20)
+        usable = [item for item in backups if _backup_item_looks_useful(item)]
+        if not usable:
+            return {
+                "ok": False,
+                "action": "restart_latest_backup_story",
+                "error": "no_usable_backup",
+                "message": "没有找到可重开的非空备份；当前存档未改动。",
+                "backups_seen": len(backups),
+            }
+        selected = usable[0]
+        try:
+            backup_session = _load_backup_session(selected)
+            story_start = _build_story_start_session_from_backup(self.session_id, backup_session, selected)
+        except Exception as exc:
+            return {
+                "ok": False,
+                "action": "restart_latest_backup_story",
+                "error": "backup_story_start_build_failed",
+                "message": "找到了备份，但无法整理成故事开头；当前存档未改动。",
+                "detail": str(exc)[:160],
+            }
+        if story_start is None:
+            return {
+                "ok": False,
+                "action": "restart_latest_backup_story",
+                "error": "backup_story_start_not_found",
+                "message": "找到了备份，但里面没有足够的背景或开场信息；当前存档未改动。",
+            }
+        before_restart = self.repository.backup_session(
+            self.session_id,
+            reason=f"before_restart_latest_story:{_short_reset_text(reason or self.message, 160)}",
+        )
+        self.repository.save_session(story_start)
+        return {
+            "ok": True,
+            "action": "restart_latest_backup_story",
+            "selected_backup": {
+                "name": selected.get("name", ""),
+                "size": selected.get("size", 0),
+                "mtime": selected.get("mtime", ""),
+                "reason": selected.get("reason", ""),
+            },
+            "pre_restart_backup_path": str(before_restart) if before_restart else "",
+            "message": (
+                "已重置到上一个故事的开头；当前档已先备份，旧角色卡、玩家绑定、战斗、地图和进度都没有带入。"
+                "可以重新建卡/绑定角色后从这个开场继续。"
+            ),
+            "current": {
+                "title": story_start.title,
+                "characters": len(story_start.characters),
+                "participants": len(story_start.participants),
+                "battle_active": bool((story_start.battle or {}).get("active")),
+                "game_started": bool((story_start.scene or {}).get("_game_started")),
+            },
         }
 
     def _restore_latest_backup(self, reason: str = "") -> Dict[str, Any]:
@@ -1171,6 +1285,261 @@ def _short_reset_text(value: Any, limit: int) -> str:
     if len(text) <= limit:
         return text
     return text[: max(1, limit - 3)] + "..."
+
+
+def _load_backup_session(item: Dict[str, Any]) -> GameSession:
+    path = Path(str(item.get("path") or ""))
+    data = json.loads(path.read_text(encoding="utf-8"))
+    return GameSession.from_dict(data)
+
+
+def _build_backup_story_preview(session: GameSession, item: Dict[str, Any]) -> Dict[str, Any]:
+    scene = dict(session.scene or {})
+    world_tags = dict(session.world_tags or {})
+    background: List[str] = []
+    for label, key in (
+        ("类型", "genre"),
+        ("调性", "tone"),
+        ("地点", "location"),
+        ("规则", "ruleset"),
+        ("开场方向", "starting_premise"),
+        ("背景", "campaign_background"),
+    ):
+        text = _preview_value_text(world_tags.get(key), 240)
+        if not text and key == "location":
+            text = _preview_value_text(scene.get("location"), 160)
+        if text:
+            background.append(f"{label}：{text}")
+
+    tracking_status = format_scene_tracking_status(scene)
+    if tracking_status.startswith("当前还没有记录可见目标"):
+        tracking_status = ""
+
+    characters: List[str] = []
+    for character in session.characters.values():
+        name = character.name or character.id
+        summary = _preview_value_text(character.summary, 90)
+        characters.append(f"{name}（{summary}）" if summary else name)
+        if len(characters) >= 6:
+            break
+
+    scene_summary = _preview_value_text(scene.get("summary"), 360)
+    current_conflict = _preview_value_text(scene.get("current_conflict"), 220)
+    return {
+        "title": session.title,
+        "mode": session.mode.value,
+        "updated_at": session.updated_at,
+        "backup_mtime": str(item.get("mtime", "")),
+        "backup_reason": str(item.get("reason", "")),
+        "background": background[:6],
+        "scene_summary": scene_summary,
+        "current_conflict": current_conflict,
+        "tracking_status": tracking_status,
+        "characters": characters,
+        "character_count": len(session.characters),
+        "participant_count": len(session.participants),
+        "battle_active": bool((session.battle or {}).get("active")),
+        "game_started": bool(scene.get("_game_started") or scene.get("_legacy_live_campaign")),
+    }
+
+
+def _build_story_start_session_from_backup(
+    session_id: str,
+    backup_session: GameSession,
+    item: Dict[str, Any],
+) -> GameSession | None:
+    world_tags = _story_start_world_tags(backup_session.world_tags or {})
+    scene = _story_start_scene(backup_session.scene or {})
+    if not world_tags and not scene:
+        return None
+
+    story_start = GameSession.new(session_id)
+    story_start.title = backup_session.title or "未命名团"
+    story_start.mode = GameMode.NARRATIVE
+    story_start.world_tags.update(world_tags)
+    story_start.world_tags["_background_ready"] = True
+    story_start.world_tags["_plot_locked"] = True
+    story_start.world_tags["_late_join_allowed"] = True
+    story_start.world_tags["_restarted_from_backup"] = {
+        "name": item.get("name", ""),
+        "mtime": item.get("mtime", ""),
+        "reason": item.get("reason", ""),
+        "source_title": backup_session.title,
+        "without_character_cards": True,
+    }
+    story_start.scene.clear()
+    story_start.scene.update(scene)
+    _ensure_story_start_scene_defaults(story_start)
+    story_start.scene["_game_started"] = True
+    story_start.scene["_game_started_at"] = utc_now_iso()
+    story_start.scene["_plot_locked"] = True
+    story_start.scene["_allow_late_join"] = True
+    story_start.scene["_restarted_story_start"] = True
+    story_start.scene["_restart_policy"] = "从上一个备份提取故事开头；不复制旧角色卡、绑定、战斗、地图或进度。"
+    story_start.characters = {}
+    story_start.participants = {}
+    story_start.player_character_map = {}
+    story_start.active_character_id = ""
+    story_start.rules = dict(backup_session.rules or {})
+    story_start.rule_sets = dict(backup_session.rule_sets or {})
+    story_start.memory_summary = ""
+    story_start.battle = {"active": False}
+    story_start.maps = default_map_store()
+    story_start.environment_summaries = []
+    return story_start
+
+
+def _story_start_world_tags(world_tags: Dict[str, Any]) -> Dict[str, Any]:
+    allowed = {
+        "background",
+        "campaign_background",
+        "campaign_contract",
+        "campaign_outline",
+        "central_conflict",
+        "conflict",
+        "era",
+        "factions",
+        "genre",
+        "location",
+        "premise",
+        "ruleset",
+        "setting",
+        "starting_premise",
+        "theme",
+        "title",
+        "tone",
+        "world",
+        "world_premise",
+        "背景",
+        "世界观",
+        "时代",
+        "地点",
+        "势力",
+        "主题",
+        "开场前提",
+    }
+    result: Dict[str, Any] = {}
+    for key, value in dict(world_tags or {}).items():
+        key_text = str(key)
+        key_lower = key_text.lower()
+        if key_lower.startswith("_"):
+            continue
+        if key_lower not in allowed and key_text not in allowed:
+            continue
+        projected = project_visible_scene_value(value, key=key_text, depth=4, text_limit=800, item_limit=12)
+        if projected not in ({}, [], "", None):
+            result[key_text] = projected
+    return result
+
+
+def _story_start_scene(scene: Dict[str, Any]) -> Dict[str, Any]:
+    source = dict(scene or {})
+    has_opening_metadata = bool(source.get("_opening_intro") or source.get("_initial_hook"))
+    if has_opening_metadata:
+        allowed = {
+            "_opening_intro",
+            "_player_guidance",
+            "_initial_hook",
+            "initial_hook",
+            "location",
+            "title",
+        }
+    else:
+        allowed = {
+            "summary",
+            "current_conflict",
+            "location",
+            "npcs",
+            "current_objective",
+            "open_hooks",
+            "clues",
+            "mysteries",
+            "stakes",
+            "pressure_clock",
+            "initial_hook",
+            "title",
+        }
+    result: Dict[str, Any] = {}
+    for key in allowed:
+        if key not in source:
+            continue
+        value = source.get(key)
+        if key.startswith("_"):
+            if key in {"_opening_intro", "_player_guidance", "_initial_hook"}:
+                text = _preview_value_text(value, 700 if key == "_opening_intro" else 360)
+                if text:
+                    result[key] = text
+            continue
+        projected = project_visible_scene_value(value, key=key, depth=4, text_limit=700, item_limit=12)
+        if projected not in ({}, [], "", None):
+            result[key] = projected
+    if has_opening_metadata and result.get("_opening_intro"):
+        result["summary"] = result["_opening_intro"]
+    if has_opening_metadata and result.get("_initial_hook"):
+        result["current_objective"] = result["_initial_hook"]
+    result = normalize_scene_tracking_patch(result, fill_opening=True)
+    return result
+
+
+def _ensure_story_start_scene_defaults(session: GameSession) -> None:
+    scene = session.scene
+    opening_intro = str(scene.get("_opening_intro") or scene.get("summary") or "").strip()
+    initial_hook = str(scene.get("_initial_hook") or scene.get("initial_hook") or scene.get("current_objective") or "").strip()
+    if not opening_intro:
+        opening_intro = _preview_value_text((session.world_tags or {}).get("starting_premise"), 420)
+    if not opening_intro:
+        opening_intro = "故事重新回到最初的开场；旧档角色卡没有带入，新的角色可以从这里进入。"
+    scene["_opening_intro"] = _short_tag_value(opening_intro, 700)
+    scene["summary"] = _short_tag_value(opening_intro, 700)
+    if not initial_hook:
+        initial_hook = _preview_value_text(scene.get("pressure_clock"), 240) or _preview_value_text(scene.get("open_hooks"), 240)
+    if initial_hook:
+        scene["_initial_hook"] = _short_tag_value(initial_hook, 360)
+        scene.setdefault("current_objective", _short_tag_value(initial_hook, 220))
+    scene.setdefault("_player_guidance", "请重新建卡或绑定新角色；旧角色卡没有带入这个重开开头。")
+    scene.setdefault("summary", opening_intro)
+    scene.setdefault("current_conflict", scene.get("current_objective") or initial_hook or opening_intro)
+
+
+def _format_backup_story_preview(preview: Dict[str, Any]) -> str:
+    lines = ["上一个存档预览（只读，当前存档未改动）："]
+    title = str(preview.get("title") or "未命名团")
+    backup_mtime = str(preview.get("backup_mtime") or "未知时间")
+    started = "已开场" if preview.get("game_started") else "未正式开场"
+    lines.append(f"团名：{title}；状态：{started}；备份时间：{backup_mtime}。")
+    background = list(preview.get("background") or [])
+    if background:
+        lines.append("背景：" + "；".join(str(item) for item in background[:4]))
+    if preview.get("scene_summary"):
+        lines.append(f"场景：{preview['scene_summary']}")
+    if preview.get("current_conflict"):
+        lines.append(f"当前冲突：{preview['current_conflict']}")
+    if preview.get("tracking_status"):
+        lines.append(str(preview["tracking_status"]))
+    characters = list(preview.get("characters") or [])
+    if characters:
+        extra = int(preview.get("character_count") or 0) - len(characters)
+        suffix = f"；另有 {extra} 名角色" if extra > 0 else ""
+        lines.append("角色：" + "；".join(str(item) for item in characters) + suffix)
+    else:
+        lines.append("角色：暂无角色记录。")
+    if preview.get("battle_active"):
+        lines.append("战斗：备份中有进行中的战斗状态。")
+    lines.append("若要恢复这个备份，请在当前档为空或刚清空后发送 `/dm 恢复上一个存档`。")
+    return "\n".join(lines)
+
+
+def _preview_value_text(value: Any, limit: int) -> str:
+    projected = project_visible_scene_value(value, depth=3, text_limit=limit, item_limit=6)
+    if projected in (None, "", [], {}):
+        return ""
+    if isinstance(projected, str):
+        text = projected
+    elif isinstance(projected, list):
+        text = "、".join(_short_reset_text(item, 80) for item in projected if str(item).strip())
+    else:
+        text = json.dumps(projected, ensure_ascii=False, separators=(",", ":"), default=str)
+    return _short_reset_text(text, limit)
 
 
 def _looks_like_rollback_not_reset(text: Any) -> bool:

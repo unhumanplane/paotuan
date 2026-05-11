@@ -831,7 +831,9 @@ def build_system_prompt(
     你必须把它们当自然语言意图理解，并通过当前允许工具完成。
 11. 查询状态、重开当前团、手动压缩记忆、查看最近调试记录，都调用 session_control。
     查询上下文大小、token 消耗、压缩状态、audit 体积时，调用 estimate_token_usage。
-    玩家要求“备份存档/备份列表/恢复上一个存档/恢复之前的跑团”时，调用 session_control 的 create_backup/list_backups/restore_latest_backup；恢复只允许当前存档为空或刚被清空时执行。
+    玩家要求“备份存档/备份列表/查看上一个存档”时，调用 session_control 的 create_backup/list_backups/preview_latest_backup。
+    玩家要求“恢复上一个存档/恢复之前的跑团”时，调用 restore_latest_backup；恢复只允许当前存档为空或刚被清空时执行。
+    玩家要求“重新开/重置到上一个故事的开头/不包括角色卡”时，调用 restart_latest_backup_story；这只抽取旧故事开头，不复制旧角色卡、玩家绑定、战斗、地图或中途进度。
     重开/清空存档是破坏性操作：第一次只会返回确认码，必须由玩家二次确认后才允许清空；不得把“重启插件/重启机器人/重启服务”理解为重开存档。
     “undo/回档/退回上一回合/重试某回合”不是重开存档；当前没有安全回档工具时只能说明不能回档，不要调用 reset 或发起重开确认。
 12. 当前群只能有一场跑团：同一个 session_id 下的所有玩家共享一个团存档。
