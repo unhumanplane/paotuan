@@ -123,6 +123,7 @@ class MapRendererResultSummary:
     succeeded: bool = False
     missing_data: bool = False
     legacy_attempted: bool = False
+    legacy_succeeded: bool = False
     attempted_tools: tuple[str, ...] = ()
     successful_tools: tuple[str, ...] = ()
     missing_errors: tuple[str, ...] = ()
@@ -160,17 +161,21 @@ def classify_map_renderer_results(tool_results: list[dict[str, Any]] | tuple[dic
     successful_tools: list[str] = []
     missing_errors: list[str] = []
     legacy_attempted = False
+    legacy_succeeded = False
     for item in tool_results or []:
         if not isinstance(item, dict):
             continue
         tool_name = str(item.get("tool") or "")
+        result = item.get("result")
         if tool_name in LEGACY_MAP_RENDERER_TOOLS:
             legacy_attempted = True
+            if isinstance(result, dict) and result.get("ok", True):
+                legacy_succeeded = True
+                successful_tools.append(tool_name)
             continue
         if tool_name not in DETERMINISTIC_MAP_RENDERER_TOOLS:
             continue
         attempted_tools.append(tool_name)
-        result = item.get("result")
         if not isinstance(result, dict):
             continue
         if result.get("ok", True):
@@ -184,6 +189,7 @@ def classify_map_renderer_results(tool_results: list[dict[str, Any]] | tuple[dic
         succeeded=bool(successful_tools),
         missing_data=bool(missing_errors),
         legacy_attempted=legacy_attempted,
+        legacy_succeeded=legacy_succeeded,
         attempted_tools=tuple(dict.fromkeys(attempted_tools)),
         successful_tools=tuple(dict.fromkeys(successful_tools)),
         missing_errors=tuple(dict.fromkeys(missing_errors)),
@@ -195,13 +201,29 @@ def build_renderer_required_retry_prompt(guard: MapRequestGuardContext) -> str:
     return (
         "玩家明确请求可视化地图。本轮不能用 ASCII、Markdown 表格、emoji tile、"
         "空格排版或文字示意图冒充地图。请至少调用一次可用的确定性地图渲染工具："
-        f"{tool_list}。如果工具返回缺少结构化地图数据，请基于工具返回向玩家说明需要先建立地图、"
-        "放置关键实体或补齐区域拓扑。"
+        f"{tool_list}。如果工具返回缺少结构化地图数据，请改用 generate_map_svg 生成一张 visual-only SVG 草图；"
+        "草图只能表达当前叙事理解，不能写回或声明新的权威坐标、移动、视线、距离或 map facts。"
     )
 
 
 def build_missing_map_data_response() -> str:
     return MISSING_MAP_DATA_RESPONSE
+
+
+def build_legacy_map_fallback_prompt(
+    raw_player_message: str,
+    renderer_summary: MapRendererResultSummary,
+) -> str:
+    errors = "、".join(renderer_summary.missing_errors) or "structured_map_data_missing"
+    original = _short_text(raw_player_message or "生成地图", 800)
+    return (
+        "确定性地图渲染器返回缺少结构化地图数据，错误码："
+        f"{errors}。现在请调用 generate_map_svg 生成一张 visual-only SVG 地图草图来满足玩家请求。"
+        "要求：prompt 里概括玩家的原始需求和当前叙事情境；如果没有可靠坐标，不要伪造精确格子坐标，"
+        "用“示意”“当前态势”“玩家位置未登记”等措辞；生成结果只作视觉参考，不能改变 MapStore、"
+        "物理网格、角色坐标、移动、视线、距离或规则事实。玩家原始请求："
+        f"{original}"
+    )
 
 
 def build_map_delivery_ack() -> str:
@@ -284,6 +306,8 @@ def build_guard_audit_record(
         "renderer_attempted": summary.attempted,
         "renderer_succeeded": summary.succeeded,
         "renderer_missing_data": summary.missing_data,
+        "legacy_renderer_attempted": summary.legacy_attempted,
+        "legacy_renderer_succeeded": summary.legacy_succeeded,
         "attempted_tools": list(summary.attempted_tools),
         "successful_tools": list(summary.successful_tools),
         "missing_errors": list(summary.missing_errors),
@@ -342,6 +366,13 @@ def _looks_like_compact_cell_row(line: str) -> bool:
 
 def _normalized(message: str) -> str:
     return str(message or "").strip().lower()
+
+
+def _short_text(value: str, limit: int) -> str:
+    text = " ".join(str(value or "").split())
+    if len(text) <= limit:
+        return text
+    return text[: max(0, limit - 3)] + "..."
 
 
 def _contains_any(text: str, terms: tuple[str, ...]) -> bool:

@@ -428,32 +428,53 @@ def test_router_allows_explicit_text_only_map_sketch():
     assert not any(item.get("type") == "visual_map_request_guard" for item in records)
 
 
-def test_router_replaces_renderer_missing_data_text_map_with_setup_response():
+def test_router_uses_legacy_svg_fallback_after_renderer_missing_data():
     class FakeToolCallResponse:
-        completion_text = ""
-        tools_call_name = ["render_strict_grid_svg"]
-        tools_call_args = [{}]
-        tool_calls = []
+        def __init__(self, name, args=None):
+            self.completion_text = ""
+            self.tools_call_name = [name]
+            self.tools_call_args = [args or {}]
+            self.tool_calls = []
 
     class FakeLoopLlm:
         def __init__(self):
             self.calls = 0
+            self.prompts = []
 
         async def __call__(self, **kwargs):
             self.calls += 1
+            self.prompts.append(kwargs["prompt"])
             if self.calls == 1:
-                return FakeToolCallResponse()
-            return FakeLlmResponse("战场示意图：\n+---+---+\n| P | ? |\n+---+---+")
+                return FakeToolCallResponse("render_strict_grid_svg")
+            if self.calls == 2:
+                return FakeToolCallResponse(
+                    "generate_map_svg",
+                    {
+                        "title": "当前战场草图",
+                        "prompt": "根据当前叙事生成 visual-only 地图草图。",
+                    },
+                )
+            return FakeLlmResponse("好的。")
 
     class MissingDataExecutor:
+        def __init__(self):
+            self.calls = []
+
         async def execute(self, tool_name, args):
-            return {"ok": False, "error": "strict_grid_not_found", "message": "missing"}
+            self.calls.append((tool_name, args))
+            if tool_name == "render_strict_grid_svg":
+                return {"ok": False, "error": "strict_grid_not_found", "message": "missing"}
+            if tool_name == "generate_map_svg":
+                return {"ok": True, "render_type": "legacy_llm_svg", "file_name": "fallback.svg"}
+            raise AssertionError(f"unexpected tool: {tool_name}")
 
     async def run_case():
         repository = InMemoryRepository()
         router = IntentRouter.__new__(IntentRouter)
-        router.max_steps = 2
-        router._llm_generate = FakeLoopLlm()
+        llm = FakeLoopLlm()
+        executor = MissingDataExecutor()
+        router.max_steps = 3
+        router._llm_generate = llm
         router.repository = repository
 
         result = await router._run_llm_tool_loop(
@@ -461,20 +482,25 @@ def test_router_replaces_renderer_missing_data_text_map_with_setup_response():
             system_prompt="system",
             initial_prompt="玩家行动",
             toolset=object(),
-            tool_executor=MissingDataExecutor(),
+            tool_executor=executor,
             session_id="group-1",
             raw_player_message="画一张当前战场站位图",
-            available_tool_names=["render_strict_grid_svg"],
+            available_tool_names=["render_strict_grid_svg", "generate_map_svg"],
         )
-        return result, repository.last_audit_records("group-1", limit=20)
+        return result, llm, executor, repository.last_audit_records("group-1", limit=20)
 
-    result, records = asyncio.run(run_case())
+    result, llm, executor, records = asyncio.run(run_case())
     guard_records = [item for item in records if item.get("type") == "visual_map_request_guard"]
 
-    assert "结构化地图数据" in result.completion_text
-    assert "? |" not in result.completion_text
-    assert guard_records[-1]["reason"] == "renderer_missing_data"
-    assert guard_records[-1]["missing_errors"] == ["strict_grid_not_found"]
+    assert result.completion_text == "地图已生成，已附上。"
+    assert [name for name, _args in executor.calls] == ["render_strict_grid_svg", "generate_map_svg"]
+    assert "generate_map_svg" in llm.prompts[1]
+    assert "visual-only SVG 地图草图" in llm.prompts[1]
+    assert guard_records[-2]["action"] == "legacy_fallback_requested"
+    assert guard_records[-2]["reason"] == "renderer_missing_data"
+    assert guard_records[-2]["missing_errors"] == ["strict_grid_not_found"]
+    assert guard_records[-1]["action"] == "delivery_ack_replaced"
+    assert guard_records[-1]["legacy_renderer_succeeded"] is True
 
 
 def test_router_replaces_generic_renderer_success_completion_with_delivery_ack():

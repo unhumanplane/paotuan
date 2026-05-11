@@ -110,10 +110,10 @@ def test_tool_registry_exposes_strict_lifecycle_tools_for_map_setup():
     assert "start_combat_on_map" in names
     assert "create_grid" in names
     assert "render_strict_grid_svg" in names
-    assert "generate_map_svg" not in names
+    assert "generate_map_svg" in names
     assert any(spec["name"] == "create_strict_map" for spec in specs)
     assert any(spec["name"] == "render_strict_grid_svg" for spec in specs)
-    assert not any(spec["name"] == "generate_map_svg" for spec in specs)
+    assert any(spec["name"] == "generate_map_svg" for spec in specs)
 
 
 def test_tool_registry_exposes_overview_topology_renderer_for_overview_map_requests():
@@ -125,9 +125,9 @@ def test_tool_registry_exposes_overview_topology_renderer_for_overview_map_reque
     )
 
     assert "render_overview_topology_svg" in names
-    assert "generate_map_svg" not in names
+    assert "generate_map_svg" in names
     assert any(spec["name"] == "render_overview_topology_svg" for spec in specs)
-    assert not any(spec["name"] == "generate_map_svg" for spec in specs)
+    assert any(spec["name"] == "generate_map_svg" for spec in specs)
 
 
 def test_tool_registry_routes_strict_map_requests_to_strict_renderer():
@@ -140,7 +140,7 @@ def test_tool_registry_routes_strict_map_requests_to_strict_renderer():
 
     assert "render_strict_grid_svg" in names
     assert "render_overview_topology_svg" not in names
-    assert "generate_map_svg" not in names
+    assert "generate_map_svg" in names
     assert any(spec["name"] == "render_strict_grid_svg" for spec in specs)
 
 
@@ -153,9 +153,9 @@ def test_tool_registry_routes_layout_request_to_strict_renderer_with_svg_fallbac
     )
 
     assert "render_strict_grid_svg" in names
-    assert "generate_map_svg" not in names
+    assert "generate_map_svg" in names
     assert any(spec["name"] == "render_strict_grid_svg" for spec in specs)
-    assert not any(spec["name"] == "generate_map_svg" for spec in specs)
+    assert any(spec["name"] == "generate_map_svg" for spec in specs)
 
 
 def test_tool_registry_hides_map_renderers_for_explicit_text_only_map_request():
@@ -181,9 +181,9 @@ def test_tool_registry_keeps_visual_map_fallback_without_background():
     )
 
     assert "render_strict_grid_svg" in names
-    assert "generate_map_svg" not in names
+    assert "generate_map_svg" in names
     assert any(spec["name"] == "render_strict_grid_svg" for spec in specs)
-    assert not any(spec["name"] == "generate_map_svg" for spec in specs)
+    assert any(spec["name"] == "generate_map_svg" for spec in specs)
 
 
 def test_tool_registry_keeps_legacy_svg_hidden_until_explicit_fallback_request():

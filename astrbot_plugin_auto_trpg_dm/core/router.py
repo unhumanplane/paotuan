@@ -17,6 +17,7 @@ from .external_memory import (
 )
 from .map_request_guard import (
     build_guard_audit_record,
+    build_legacy_map_fallback_prompt,
     build_map_delivery_ack,
     build_map_request_guard,
     build_missing_map_data_response,
@@ -1432,6 +1433,7 @@ class IntentRouter:
         all_tool_results: list[dict[str, Any]] = []
         map_guard = build_map_request_guard(raw_player_message, available_tool_names)
         renderer_retry_requested = False
+        legacy_map_fallback_requested = False
 
         async def append_map_guard_audit(
             action: str,
@@ -1479,7 +1481,7 @@ class IntentRouter:
                     return build_map_delivery_ack()
                 return completion_text
             text_map_signals = detect_text_map_signals(completion_text)
-            if renderer_summary.missing_data:
+            if renderer_summary.missing_data and not renderer_summary.legacy_attempted:
                 await append_map_guard_audit(
                     "missing_data_response",
                     "renderer_missing_data",
@@ -1513,6 +1515,36 @@ class IntentRouter:
                 completion_text = self._sanitize_completion_text(completion_text)
                 renderer_summary = classify_map_renderer_results(all_tool_results)
                 text_map_signals = detect_text_map_signals(completion_text)
+                if (
+                    map_guard.visual_map_request
+                    and not map_guard.text_only_map_request
+                    and renderer_summary.missing_data
+                    and not renderer_summary.legacy_attempted
+                    and "generate_map_svg" in set(available_tool_names or ())
+                    and not legacy_map_fallback_requested
+                    and step + 1 < self.max_steps
+                ):
+                    contexts.append(
+                        {
+                            "role": "user",
+                            "content": prompt,
+                        }
+                    )
+                    contexts.append(
+                        {
+                            "role": "assistant",
+                            "content": completion_text,
+                        }
+                    )
+                    await append_map_guard_audit(
+                        "legacy_fallback_requested",
+                        "renderer_missing_data",
+                        completion=completion_text,
+                        text_map_signals=text_map_signals,
+                    )
+                    prompt = build_legacy_map_fallback_prompt(raw_player_message, renderer_summary)
+                    legacy_map_fallback_requested = True
+                    continue
                 if map_guard.renderer_attempt_required and not renderer_summary.attempted:
                     if not renderer_retry_requested and step + 1 < self.max_steps:
                         contexts.append(
@@ -1629,8 +1661,27 @@ class IntentRouter:
                     + json.dumps(project_tool_results_for_dm_prompt(tool_results), ensure_ascii=False, indent=2),
                 }
             )
+            renderer_summary_after_tools = classify_map_renderer_results(all_tool_results)
             if repeated_error_count >= 2:
                 prompt = "同一个工具连续失败。请不要继续重复调用它，基于失败原因向玩家说明无法完成、给出可选行动，或提出一个必要的澄清问题。"
+            elif (
+                map_guard.visual_map_request
+                and not map_guard.text_only_map_request
+                and renderer_summary_after_tools.missing_data
+                and not renderer_summary_after_tools.legacy_attempted
+                and "generate_map_svg" in set(available_tool_names or ())
+                and not legacy_map_fallback_requested
+                and step + 1 < self.max_steps
+            ):
+                await append_map_guard_audit(
+                    "legacy_fallback_requested",
+                    "renderer_missing_data",
+                )
+                prompt = build_legacy_map_fallback_prompt(
+                    raw_player_message,
+                    renderer_summary_after_tools,
+                )
+                legacy_map_fallback_requested = True
             else:
                 prompt = "请基于工具返回继续。若还需要客观验证，可以继续调用允许的工具；若事实已经足够，请输出给玩家的最终叙事。"
 

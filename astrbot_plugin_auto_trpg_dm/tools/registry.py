@@ -366,7 +366,12 @@ class ToolRegistry:
             ),
             "generate_map_svg": make_tool(
                 name="generate_map_svg",
-                description="仅当玩家明确要求 legacy/LLM SVG fallback、风格实验或迁移用视觉草图时使用；用独立 LLM 子上下文生成 visual_only SVG 并保存为文件。不能改变物理网格、坐标、移动、视线或 map facts。",
+                description=(
+                    "当玩家请求可视化地图但确定性 strict/overview 渲染器缺少结构化地图数据时，"
+                    "用独立 LLM 子上下文生成 visual_only SVG 草图并保存为文件。"
+                    "也可用于玩家明确要求 legacy/LLM SVG fallback、风格实验或迁移用视觉草图。"
+                    "不能改变物理网格、坐标、移动、视线或 map facts；没有可靠坐标时不要伪造权威站位。"
+                ),
                 model=GenerateMapSvgArgs,
                 handler=map_tools.generate_map_svg,
             ),
@@ -659,7 +664,7 @@ class ToolRegistry:
                 allowed.append(name)
             if visual_map_request and name in {"render_strict_grid_svg", "render_overview_topology_svg"} and name not in allowed:
                 allowed.append(name)
-            if legacy_svg_fallback_request and name == "generate_map_svg" and name not in allowed:
+            if (visual_map_request or legacy_svg_fallback_request) and name == "generate_map_svg" and name not in allowed:
                 allowed.append(name)
             if opening_seed and name in {"create_character", "bind_player_character", "start_game"} and name not in allowed:
                 allowed.append(name)

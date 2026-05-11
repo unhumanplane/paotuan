@@ -84,7 +84,7 @@ def add_map_renderer_tools(names: list[str], message: str = "") -> list[str]:
         selected.append("render_overview_topology_svg")
     elif looks_strict_grid_map_request(message):
         selected.append("render_strict_grid_svg")
-    if looks_legacy_svg_fallback_request(message):
+    if looks_visual_map_request(message) or looks_legacy_svg_fallback_request(message):
         selected.append("generate_map_svg")
     return list(dict.fromkeys(selected))
 
