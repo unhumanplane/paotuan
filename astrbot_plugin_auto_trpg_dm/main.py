@@ -3830,6 +3830,8 @@ def _looks_like_plot_rewrite_request(text: str) -> bool:
         token in normalized for token in ("剧情", "剧本", "背景", "主线", "世界观")
     ):
         return False
+    if _looks_like_in_character_clue_request(normalized):
+        return False
     plot_terms = ("剧情", "剧本", "背景", "世界观", "题材", "类型", "风格", "主线", "设定", "幕后黑手", "真相", "结局")
     rewrite_terms = ("改成", "换成", "变成", "调整", "修改", "重写", "换一个", "改一下", "不能", "可不可以", "能不能")
     direct_rewrite = any(term in normalized for term in plot_terms) and any(term in normalized for term in rewrite_terms)
@@ -3837,6 +3839,33 @@ def _looks_like_plot_rewrite_request(text: str) -> bool:
         term in normalized for term in plot_terms
     )
     return direct_rewrite or fact_injection
+
+
+def _looks_like_in_character_clue_request(text: str) -> bool:
+    speech_terms = (
+        "我这样",
+        "我对",
+        "我跟",
+        "我和",
+        "我向",
+        "说“",
+        "说：",
+        "问“",
+        "问：",
+        "请您",
+        "劳烦",
+        "帮我",
+        "找出",
+        "调查",
+        "线索",
+        "脚印",
+        "预言",
+    )
+    investigation_terms = ("幕后黑手", "真凶", "凶手", "嫌疑人", "线索", "脚印", "投毒", "找出")
+    rewrite_terms = ("改成", "换成", "变成", "调整", "修改", "重写", "换一个", "改一下", "剧情", "剧本", "世界观", "主线")
+    if any(term in text for term in speech_terms) and any(term in text for term in investigation_terms):
+        return not any(term in text for term in rewrite_terms)
+    return False
 
 
 def _looks_like_dm_autopilot_takeover(text: str) -> bool:
