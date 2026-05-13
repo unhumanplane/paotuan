@@ -2,6 +2,18 @@
 
 所有已经合入 `main` 的用户可见变更都记录在这里。日期使用香港时区对应的开发日期。
 
+## [0.1.94] - 2026-05-13
+
+### Fixed
+
+- `turn_control start_round/start_scene_resolution` 在没有战棋地图实体、也没有显式 `turn_order` 时不再默认把全团已绑定角色拉进战斗轮次，避免异地或已睡觉玩家被战斗心跳超时卡住全局时间。
+- 战斗状态查询会把仍在进行的 `battle.turn.active` 视为 active，避免底层回合心跳仍在跑时对玩家回答“没有战斗”；已暂停或结束的回合不再强制进入战术模式。
+
+### Verified
+
+- `python -m pytest tests/test_turn_tools.py tests/test_spatial_tools.py tests/test_modes.py -q`
+- `python -m pytest -q`
+
 ## [0.1.93] - 2026-05-13
 
 ### Fixed

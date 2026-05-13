@@ -10,7 +10,9 @@ def combat_lifecycle_active(session: Any) -> bool:
     if not isinstance(battle, dict):
         battle = {}
     turn = battle.get("turn") if isinstance(battle.get("turn"), dict) else {}
-    if battle.get("active") or turn.get("active"):
+    if battle.get("active"):
+        return True
+    if turn.get("active") and str(turn.get("phase") or "") not in {"suspended", "ended", "idle"}:
         return True
     map_id = str(battle.get("map_id") or "").strip()
     maps = getattr(session, "maps", {}) or {}

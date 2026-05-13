@@ -11,6 +11,39 @@ def test_battle_state_forces_tactical_mode():
 
     assert mode == GameMode.TACTICAL
 
+def test_active_turn_forces_tactical_mode_even_when_battle_flag_is_false():
+    session = GameSession.new("s")
+    session.battle = {
+        "active": False,
+        "turn": {
+            "active": True,
+            "phase": "character_turn",
+            "turn_order": ["pc"],
+            "current_entity_id": "pc",
+        },
+    }
+
+    mode = GameModeStateMachine().detect(session, "status")
+
+    assert mode == GameMode.TACTICAL
+
+
+def test_suspended_turn_does_not_force_tactical_mode():
+    session = GameSession.new("s")
+    session.battle = {
+        "active": False,
+        "turn": {
+            "active": True,
+            "phase": "suspended",
+            "turn_order": ["pc"],
+            "current_entity_id": "",
+        },
+    }
+
+    mode = GameModeStateMachine().detect(session, "old memory")
+
+    assert mode == GameMode.NARRATIVE
+
 
 def test_active_strict_exploration_map_does_not_force_tactical_mode():
     session = GameSession.new("s")

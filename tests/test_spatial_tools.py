@@ -201,6 +201,56 @@ def test_get_battle_snapshot_returns_safe_tactical_summary_not_raw_grid():
     assert result["compatibility"]["legacy_mirror_authoritative"] is False
 
 
+def test_get_battle_snapshot_marks_active_turn_as_active_combat_status():
+    repo = _repo("battle_snapshot_active_turn")
+    session = GameSession.new("group")
+    session.battle = {
+        "active": False,
+        "turn_entity_id": "pc",
+        "turn": {
+            "active": True,
+            "round": 1,
+            "phase": "character_turn",
+            "turn_order": ["pc"],
+            "current_index": 0,
+            "current_entity_id": "pc",
+        },
+    }
+    repo.save_session(session)
+
+    result = asyncio.run(SpatialTools(repo, "group").get_battle_snapshot())
+
+    assert result["ok"] is True
+    assert result["battle_status"]["active"] is True
+    assert result["battle_status"]["turn"]["active"] is True
+    assert result["battle_status"]["turn"]["phase"] == "character_turn"
+
+
+def test_get_battle_snapshot_does_not_mark_suspended_turn_active():
+    repo = _repo("battle_snapshot_suspended_turn")
+    session = GameSession.new("group")
+    session.battle = {
+        "active": False,
+        "turn_entity_id": "",
+        "turn": {
+            "active": True,
+            "round": 1,
+            "phase": "suspended",
+            "turn_order": ["pc"],
+            "current_index": -1,
+            "current_entity_id": "",
+        },
+    }
+    repo.save_session(session)
+
+    result = asyncio.run(SpatialTools(repo, "group").get_battle_snapshot())
+
+    assert result["ok"] is True
+    assert result["battle_status"]["active"] is False
+    assert result["battle_status"]["turn"]["active"] is True
+    assert result["battle_status"]["turn"]["phase"] == "suspended"
+
+
 def test_spatial_turn_guard_reads_map_store_owner_before_stale_battle_grid():
     repo = _repo("spatial_turn_guard_map_store")
     repo.save_session(_ready_session())

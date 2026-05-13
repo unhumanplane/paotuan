@@ -329,12 +329,17 @@ def _clean_order(order: List[str]) -> List[str]:
 
 
 def _safe_battle_status(battle: Dict[str, Any]) -> Dict[str, Any]:
+    turn = battle.get("turn")
+    turn_active = bool(
+        isinstance(turn, dict)
+        and turn.get("active", False)
+        and str(turn.get("phase", "") or "") not in {"suspended", "ended", "idle"}
+    )
     status = {
-        "active": bool(battle.get("active", False)),
+        "active": bool(battle.get("active", False) or turn_active),
         "map_id": str(battle.get("map_id", "") or ""),
         "turn_entity_id": str(battle.get("turn_entity_id", "") or ""),
     }
-    turn = battle.get("turn")
     if isinstance(turn, dict):
         status["turn"] = {
             "active": bool(turn.get("active", False)),

@@ -65,9 +65,17 @@ class TurnTools:
         if normalized in {"status", "状态"}:
             result = self._status(session)
         elif normalized in {"start_round", "start", "开始轮次", "开始回合"}:
-            order = self._clean_order(turn_order or []) or self._derive_turn_order(session)
+            order = self._clean_order(turn_order or []) or self._derive_turn_order(
+                session,
+                include_bound_characters=False,
+            )
             if not order:
-                result = {"ok": False, "error": "empty_turn_order", "message": "没有可行动角色或实体。"}
+                result = {
+                    "ok": False,
+                    "error": "empty_turn_order",
+                    "message": "没有明确参战者或战棋实体；请传入 turn_order，或先创建/链接战斗地图。",
+                    "requires_explicit_turn_order": True,
+                }
             else:
                 turn.update(
                     {
@@ -103,18 +111,32 @@ class TurnTools:
                 self.repository.save_session(session)
                 result = self._status(session)
         elif normalized in {"start_scene_resolution", "scene_resolution", "场面结算"}:
-            turn["active"] = True
-            turn["phase"] = "scene_resolution"
-            turn["current_entity_id"] = ""
-            turn["current_index"] = -1
-            turn["output_limit_chars"] = output_limit_chars
-            turn["scene_resolution_done"] = False
-            session.mode = GameMode.TACTICAL
-            session.battle["turn_entity_id"] = ""
-            if summary:
-                self._append_turn_log(session, "scene_resolution_start", summary, reason)
-            self.repository.save_session(session)
-            result = self._status(session)
+            order = (
+                self._clean_order(turn_order or [])
+                or self._clean_order(list(turn.get("turn_order") or []))
+                or self._derive_turn_order(session, include_bound_characters=False)
+            )
+            if not order:
+                result = {
+                    "ok": False,
+                    "error": "empty_turn_order",
+                    "message": "场面结算需要明确本场参战者；请传入 turn_order，不能默认把全团角色拉入战斗。",
+                    "requires_explicit_turn_order": True,
+                }
+            else:
+                turn["turn_order"] = order
+                turn["active"] = True
+                turn["phase"] = "scene_resolution"
+                turn["current_entity_id"] = ""
+                turn["current_index"] = -1
+                turn["output_limit_chars"] = output_limit_chars
+                turn["scene_resolution_done"] = False
+                session.mode = GameMode.TACTICAL
+                session.battle["turn_entity_id"] = ""
+                if summary:
+                    self._append_turn_log(session, "scene_resolution_start", summary, reason)
+                self.repository.save_session(session)
+                result = self._status(session)
         elif normalized in {"finish_scene_resolution", "end_scene_resolution", "场面结算完成"}:
             result = self._start_next_character_turn(session, turn, output_limit_chars)
         elif normalized in {"start_character_turn", "character_turn", "角色回合"}:
@@ -349,7 +371,7 @@ class TurnTools:
             }
         ]
 
-    def _derive_turn_order(self, session: GameSession) -> List[str]:
+    def _derive_turn_order(self, session: GameSession, *, include_bound_characters: bool = True) -> List[str]:
         entities = load_active_strict_grid_entities(session.maps, session.battle)
         if entities:
             def sort_key(item: tuple[str, Dict[str, Any]]) -> tuple[int, str]:
@@ -359,6 +381,8 @@ class TurnTools:
                 return priority, str(entity.get("name") or entity_id)
 
             return [entity_id for entity_id, _ in sorted(entities.items(), key=sort_key)]
+        if not include_bound_characters:
+            return []
         bound = [cid for cid in session.player_character_map.values() if cid in session.characters]
         if bound:
             return list(dict.fromkeys(bound))
@@ -381,7 +405,10 @@ class TurnTools:
         turn: Dict[str, Any],
         output_limit_chars: int,
     ) -> Dict[str, Any]:
-        order = self._clean_order(list(turn.get("turn_order") or [])) or self._derive_turn_order(session)
+        order = self._clean_order(list(turn.get("turn_order") or [])) or self._derive_turn_order(
+            session,
+            include_bound_characters=False,
+        )
         if not order:
             return {"ok": False, "error": "empty_turn_order"}
         turn["turn_order"] = order
@@ -402,7 +429,10 @@ class TurnTools:
         current_entity_id: str,
         output_limit_chars: int,
     ) -> Dict[str, Any]:
-        order = self._clean_order(list(turn.get("turn_order") or [])) or self._derive_turn_order(session)
+        order = self._clean_order(list(turn.get("turn_order") or [])) or self._derive_turn_order(
+            session,
+            include_bound_characters=False,
+        )
         entity_id = current_entity_id.strip()
         if not entity_id:
             entity_id = str(turn.get("current_entity_id", "") or (order[0] if order else ""))
@@ -444,7 +474,10 @@ class TurnTools:
     ) -> Dict[str, Any]:
         if turn.get("phase") == "scene_resolution":
             return self._start_next_character_turn(session, turn, output_limit_chars)
-        order = self._clean_order(list(turn.get("turn_order") or [])) or self._derive_turn_order(session)
+        order = self._clean_order(list(turn.get("turn_order") or [])) or self._derive_turn_order(
+            session,
+            include_bound_characters=False,
+        )
         if not order:
             return {"ok": False, "error": "empty_turn_order"}
         turn["turn_order"] = order
@@ -497,7 +530,10 @@ class TurnTools:
         actor_id = str(actor_id or "").strip()
         if not actor_id:
             return ""
-        order = self._clean_order(list(turn.get("turn_order") or [])) or self._derive_turn_order(session)
+        order = self._clean_order(list(turn.get("turn_order") or [])) or self._derive_turn_order(
+            session,
+            include_bound_characters=False,
+        )
         actions = dict(turn.get("actions_this_round") or {})
         for entity_id in order:
             if entity_id in actions:
@@ -610,7 +646,10 @@ class TurnTools:
                 "requested_entity_id": entity_id,
                 "phase": str(turn.get("phase", "")),
             }
-        order = self._clean_order(list(turn.get("turn_order") or [])) or self._derive_turn_order(session)
+        order = self._clean_order(list(turn.get("turn_order") or [])) or self._derive_turn_order(
+            session,
+            include_bound_characters=False,
+        )
         if order and entity_id not in order:
             return {
                 "ok": False,

@@ -143,6 +143,74 @@ def test_start_round_derives_order_from_map_store_not_stale_battle_grid():
     assert "stale_enemy" not in result["turn"]["turn_order"]
 
 
+def test_start_round_without_map_requires_explicit_turn_order():
+    repo = _runtime_repo("turn_order_requires_context")
+    session = GameSession.new("group")
+    session.world_tags["_background_ready"] = True
+    session.characters["pc_home"] = Character(id="pc_home", name="Offscreen sleeper", player_id="home")
+    session.characters["pc_scene"] = Character(id="pc_scene", name="Scene actor", player_id="scene")
+    session.player_character_map["home"] = "pc_home"
+    session.player_character_map["scene"] = "pc_scene"
+    repo.save_session(session)
+
+    result = asyncio.run(TurnTools(repo, "group").turn_control(action="start_round"))
+
+    assert result["ok"] is False
+    assert result["error"] == "empty_turn_order"
+    assert result["requires_explicit_turn_order"] is True
+    saved = repo.load_session("group")
+    assert not (saved.battle.get("turn") or {}).get("active")
+
+
+def test_start_scene_resolution_without_map_requires_explicit_turn_order():
+    repo = _runtime_repo("scene_resolution_requires_context")
+    session = GameSession.new("group")
+    session.world_tags["_background_ready"] = True
+    session.characters["pc_home"] = Character(id="pc_home", name="Offscreen sleeper", player_id="home")
+    session.characters["pc_scene"] = Character(id="pc_scene", name="Scene actor", player_id="scene")
+    session.player_character_map["home"] = "pc_home"
+    session.player_character_map["scene"] = "pc_scene"
+    repo.save_session(session)
+
+    result = asyncio.run(
+        TurnTools(repo, "group").turn_control(
+            action="start_scene_resolution",
+            summary="Only the scene actor is present, but no explicit order was supplied.",
+        )
+    )
+
+    assert result["ok"] is False
+    assert result["error"] == "empty_turn_order"
+    assert result["requires_explicit_turn_order"] is True
+    saved = repo.load_session("group")
+    assert not (saved.battle.get("turn") or {}).get("active")
+    assert (saved.battle.get("turn") or {}).get("turn_order", []) == []
+
+
+def test_start_scene_resolution_accepts_explicit_turn_order_without_map():
+    repo = _runtime_repo("scene_resolution_explicit_context")
+    session = GameSession.new("group")
+    session.world_tags["_background_ready"] = True
+    session.characters["pc_home"] = Character(id="pc_home", name="Offscreen sleeper", player_id="home")
+    session.characters["pc_scene"] = Character(id="pc_scene", name="Scene actor", player_id="scene")
+    session.player_character_map["home"] = "pc_home"
+    session.player_character_map["scene"] = "pc_scene"
+    repo.save_session(session)
+
+    result = asyncio.run(
+        TurnTools(repo, "group").turn_control(
+            action="start_scene_resolution",
+            turn_order=["pc_scene"],
+            summary="Scene actor resolves the quarry skirmish.",
+        )
+    )
+
+    assert result["ok"] is True
+    assert result["turn"]["active"] is True
+    assert result["turn"]["phase"] == "scene_resolution"
+    assert result["turn"]["turn_order"] == ["pc_scene"]
+
+
 def test_turn_owner_guard_reads_map_store_before_stale_battle_grid():
     repo = _runtime_repo("turn_owner_map_store")
     session = GameSession.new("group")
