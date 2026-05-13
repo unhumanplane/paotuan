@@ -17,6 +17,7 @@ from astrbot_plugin_auto_trpg_dm.core.prompts import (
     build_ra_system_prompt,
     build_system_prompt,
     build_user_prompt,
+    looks_like_fact_check_request,
     prompt_component_chars,
     prompt_snapshot_data,
     prompt_snapshot_projection_stats,
@@ -247,6 +248,38 @@ def test_system_prompt_minifies_snapshot_and_avoids_duplicate_memory_summary():
     assert '"session_id":"group"' in prompt
     assert '"player_id":"player-1"' in prompt
     assert '"memory_summary"' not in prompt
+
+
+def test_fact_check_prompt_requires_audit_lookup_before_denial():
+    session = GameSession.new("group")
+
+    prompt = build_system_prompt(
+        session,
+        GameMode.NARRATIVE,
+        ["session_control", "update_character_tags"],
+        actor={"player_id": "player-1"},
+        message="DM漏算了，我上午猎到的山羊去哪了？请检索前文修正剧情",
+    )
+    projected_snapshot, stats = prompt_snapshot_data(
+        session,
+        GameMode.NARRATIVE,
+        "DM漏算了，我上午猎到的山羊去哪了？请检索前文修正剧情",
+        actor={"player_id": "player-1"},
+        snapshot_projection_enabled=True,
+    )
+
+    assert "事实核查模式" in prompt
+    assert 'session_control(action="debug_last")' in prompt
+    assert "不要把未经核实的" in prompt
+    assert stats["profile"] == "state_query"
+    assert projected_snapshot["session_id"] == "group"
+
+
+def test_fact_check_detector_covers_log_correction_terms():
+    assert looks_like_fact_check_request("查日志，DM记错了，修正剧情") is True
+    assert looks_like_fact_check_request("不是，DM前面记错了") is True
+    assert looks_like_fact_check_request("我不是这个角色") is False
+    assert looks_like_fact_check_request("看一下日志和token消耗") is False
 
 
 def test_diagnostic_system_prompt_is_lightweight_and_keeps_safety_boundary():

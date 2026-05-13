@@ -2,6 +2,20 @@
 
 所有已经合入 `main` 的用户可见变更都记录在这里。日期使用香港时区对应的开发日期。
 
+## [0.1.93] - 2026-05-13
+
+### Fixed
+
+- 角色状态摘要在同层标签过多时优先保留最近写入的 status/relations/notes，避免旧待办或旧失败记录挤掉新近猎获、鱼获、物资和赠与事实。
+- 更新已有角色 Tag 时会刷新其最近顺序，使修正后的事实进入下一轮 prompt 的可见摘要。
+- `session_control(debug_last)` 背后的审计读取会跨当前 `.jsonl` 和轮转备份 `.jsonl.1/.2/.3` 取最近记录，玩家要求核对前文时不再只看到当前小尾巴。
+- 玩家指出“记错、漏算、去哪了、还我、检索/核对/修正剧情”时进入事实核查提示，要求先查审计/记忆工具，再否认物品、猎获、鱼获、线索或赠与；包含“日志”的事实修正请求不再被误路由成只读诊断。
+
+### Verified
+
+- `python -m pytest tests/test_models.py tests/test_json_repository.py tests/test_prompts.py tests/test_router_usage.py::test_diagnostic_request_excludes_fact_check_corrections -q`
+- `python -m pytest -q`
+
 ## [0.1.91] - 2026-05-09
 
 ### Added

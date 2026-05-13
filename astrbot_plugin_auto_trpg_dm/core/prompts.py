@@ -198,6 +198,8 @@ def _snapshot_projection_stats(
 
 def _snapshot_projection_profile(session: GameSession, mode: GameMode, message: str) -> str:
     text = str(message or "").strip().lower()
+    if _looks_like_fact_check_request(text):
+        return "state_query"
     if _contains_any(text, SNAPSHOT_DIAGNOSTIC_TERMS):
         return "diagnostic"
     if combat_lifecycle_active(session):
@@ -224,6 +226,22 @@ def _looks_like_snapshot_state_query(text: str) -> bool:
         text,
         SNAPSHOT_STATE_QUERY_TERMS,
     )
+
+
+def _looks_like_fact_check_request(message: str) -> bool:
+    text = str(message or "").strip().lower()
+    if not text:
+        return False
+    if _contains_any(text, FACT_CHECK_STRONG_REQUEST_TERMS):
+        return True
+    return _contains_any(text, FACT_CHECK_WEAK_REQUEST_TERMS) and _contains_any(
+        text,
+        FACT_CHECK_CONTEXT_TERMS,
+    )
+
+
+def looks_like_fact_check_request(message: str) -> bool:
+    return _looks_like_fact_check_request(message)
 
 
 def _project_snapshot_for_profile(
@@ -702,6 +720,50 @@ def _contains_any(text: str, terms: tuple[str, ...]) -> bool:
     return any(term and term in text for term in terms)
 
 
+FACT_CHECK_STRONG_REQUEST_TERMS = (
+    "检索",
+    "搜索前文",
+    "查前文",
+    "查日志",
+    "重新核对",
+    "核对记录",
+    "修正剧情",
+    "修正现剧情",
+    "记错",
+    "漏算",
+    "没算",
+    "漏了",
+    "还我",
+    "去哪了",
+    "不见了",
+    "fact check",
+    "forgot",
+    "misremember",
+    "where did",
+)
+
+FACT_CHECK_WEAK_REQUEST_TERMS = (
+    "不是",
+    "不对",
+    "错了",
+)
+
+FACT_CHECK_CONTEXT_TERMS = (
+    "dm",
+    "你",
+    "前文",
+    "记录",
+    "剧情",
+    "记得",
+    "算",
+    "刚才",
+    "之前",
+    "上次",
+    "前面",
+    "这段",
+)
+
+
 SNAPSHOT_DIAGNOSTIC_TERMS = (
     "token",
     "tokens",
@@ -830,6 +892,15 @@ BASE_RULES = """共享基础规则：
 - RA 输出的状态字段只是补丁候选；框架只应用 allowlisted、tool-backed、validator 通过的权威字段。"""
 
 
+FACT_CHECK_CONTINUITY_PROMPT = """
+事实核查模式：
+- 当前玩家消息在指出前文事实被漏算、记错、丢失，或要求检索/核对/修正记录。
+- 在否认物品、猎获、鱼获、线索、赠与、状态或已发生事件前，必须优先调用 session_control(action="debug_last")，或使用本轮可用的记忆/审计查询工具核对。
+- 工具结果、审计记录和较新的权威状态优先于旧摘要、旧待办标签和模型回忆。
+- 如果记录冲突或不足，只说明记录仍需核对；不要把未经核实的“从未存在/从未持有/没有这回事”写入 scene 或角色标签。
+"""
+
+
 def build_system_prompt(
     session: GameSession,
     mode: GameMode,
@@ -874,9 +945,11 @@ def build_system_prompt(
         if external_memory_context.strip()
         else ""
     )
+    fact_check_section = FACT_CHECK_CONTINUITY_PROMPT if _looks_like_fact_check_request(message) else ""
     return f"""你是 AstrBot 内的全自动 TRPG DM 智能体。你必须以自然语言理解玩家输入，并用工具推进确定性状态。
 
 {BASE_RULES}
+{fact_check_section}
 
 硬性规则：
 0. DM 行为准则：

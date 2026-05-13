@@ -130,6 +130,62 @@ def test_relationship_tag_layer_inference_and_public_compaction():
     assert "玩家救过巡逻兵" in str(layers)
 
 
+def test_compact_tag_layers_keeps_recent_status_facts_when_layer_is_crowded():
+    character = Character(
+        id="pc_hunter",
+        name="Hunter",
+        tags=[
+            TagValue(key=f"old_status_{index}", value=f"old value {index}", layer="status")
+            for index in range(9)
+        ]
+        + [
+            TagValue(key="最新收获", value="猎到山羊一头，皮和角完整，已带回酒馆后院", layer="status"),
+            TagValue(key="最新猎获", value="山羊1只，肉质中等，部分损耗", layer="status"),
+        ],
+    )
+
+    layers = GameSession(session_id="group", characters={"pc_hunter": character}).compact_snapshot()["characters"][0][
+        "tag_layers"
+    ]
+    status_keys = [item["key"] for item in layers["status"]]
+
+    assert status_keys[:2] == ["最新猎获", "最新收获"]
+    assert "old_status_0" not in status_keys
+    assert "old_status_1" not in status_keys
+
+
+def test_character_upsert_tags_moves_updated_status_to_recent_end():
+    character = Character(
+        id="pc_hunter",
+        name="Hunter",
+        tags=[
+            TagValue(key="最新收获", value="旧猎获", layer="status"),
+            *[
+                TagValue(key=f"old_status_{index}", value=f"old value {index}", layer="status")
+                for index in range(8)
+            ],
+        ],
+    )
+
+    character.upsert_tags(
+        [
+            {
+                "key": "最新收获",
+                "value": "猎到山羊一头，皮和角完整，已带回酒馆后院",
+                "layer": "status",
+            }
+        ]
+    )
+    layers = GameSession(session_id="group", characters={"pc_hunter": character}).compact_snapshot()["characters"][0][
+        "tag_layers"
+    ]
+    status = layers["status"]
+
+    assert status[0]["key"] == "最新收获"
+    assert status[0]["value"] == "猎到山羊一头，皮和角完整，已带回酒馆后院"
+    assert "old_status_0" not in [item["key"] for item in status]
+
+
 def test_old_save_with_plain_relation_fields_still_loads():
     session = GameSession.from_dict(
         {

@@ -76,7 +76,10 @@ class Character:
             tag = TagValue.from_dict(item)
             if not tag.key:
                 continue
-            by_key[(tag.layer or infer_tag_layer(tag.key), tag.key)] = tag
+            key = (tag.layer or infer_tag_layer(tag.key), tag.key)
+            if key in by_key:
+                by_key.pop(key)
+            by_key[key] = tag
         self.tags = list(by_key.values())
 
 
@@ -751,8 +754,6 @@ def compact_tag_layers(tags: list[TagValue], max_layers: int = 6, max_tags_per_l
     for tag in tags:
         layer = TAG_LAYER_ALIASES.get(str(tag.layer or "").lower(), "") or infer_tag_layer(tag.key)
         items = layered.setdefault(layer, [])
-        if len(items) >= max_tags_per_layer:
-            continue
         value = project_public_relation_state(tag.value) if layer == "relations" else tag.value
         if layer == "relations" and value in ({}, [], "", None):
             continue
@@ -766,10 +767,23 @@ def compact_tag_layers(tags: list[TagValue], max_layers: int = 6, max_tags_per_l
     ordered: dict[str, Any] = {}
     for layer in ("identity", "abilities", "equipment", "combat", "status", "relations", "notes"):
         if layer in layered:
-            ordered[layer] = layered[layer]
+            ordered[layer] = _compact_tag_layer_items(layered[layer], layer, max_tags_per_layer)
         if len(ordered) >= max_layers:
             break
     return ordered
+
+
+def _compact_tag_layer_items(
+    items: list[dict[str, Any]],
+    layer: str,
+    max_tags_per_layer: int,
+) -> list[dict[str, Any]]:
+    limit = max(1, max_tags_per_layer)
+    if len(items) <= limit:
+        return items
+    if layer in {"status", "relations", "notes"}:
+        return list(reversed(items[-limit:]))
+    return items[:limit]
 
 
 def compact_rules(rules: dict[str, RuleRef], detail_limit: int = 10, name_limit: int = 48) -> dict[str, Any]:

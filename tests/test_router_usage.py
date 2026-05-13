@@ -55,6 +55,7 @@ from astrbot_plugin_auto_trpg_dm.core.router import (
     IntentRouter,
     _adjudication_completeness_guard,
     _extract_llm_usage_summary,
+    _is_diagnostic_request,
 )
 
 
@@ -94,6 +95,11 @@ def test_extract_llm_usage_summary_reads_object_usage():
     assert summary["completion_tokens"] == 40
     assert summary["cached_tokens"] == 120
     assert summary["cache_hit_ratio_pct"] == 75.0
+
+
+def test_diagnostic_request_excludes_fact_check_corrections():
+    assert _is_diagnostic_request("查日志，DM记错了，修正剧情") is False
+    assert _is_diagnostic_request("看一下日志和token消耗") is True
 
 
 def test_extract_llm_usage_summary_reads_anthropic_cache_fields():

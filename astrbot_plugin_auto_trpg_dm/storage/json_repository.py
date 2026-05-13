@@ -137,10 +137,19 @@ class JsonGameRepository:
         return self._session_path(session_id)
 
     def last_audit_records(self, session_id: str, limit: int = 20) -> list[dict[str, Any]]:
-        path = self.audit_path(session_id)
-        if not path.exists():
-            return []
-        lines = path.read_text(encoding="utf-8").splitlines()[-max(1, limit) :]
+        remaining = max(1, limit)
+        lines: list[str] = []
+        for path in self._audit_paths_newest_first(session_id):
+            if remaining <= 0:
+                break
+            if not path.exists():
+                continue
+            path_lines = path.read_text(encoding="utf-8").splitlines()
+            if not path_lines:
+                continue
+            selected = path_lines[-remaining:]
+            lines = selected + lines
+            remaining -= len(selected)
         records: list[dict[str, Any]] = []
         for line in lines:
             try:
@@ -148,6 +157,15 @@ class JsonGameRepository:
             except json.JSONDecodeError:
                 continue
         return records
+
+    def _audit_paths_newest_first(self, session_id: str) -> list[Path]:
+        path = self.audit_path(session_id)
+        paths = [path]
+        paths.extend(
+            path.with_name(f"{path.name}.{index}")
+            for index in range(1, max(0, self.max_audit_backups) + 1)
+        )
+        return paths
 
     def _session_path(self, session_id: str) -> Path:
         return self.saves_dir / f"{self._safe_name(session_id)}.json"

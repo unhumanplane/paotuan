@@ -42,6 +42,7 @@ from .prompts import (
     build_diagnostic_system_prompt,
     build_system_prompt,
     build_user_prompt,
+    looks_like_fact_check_request,
     prompt_snapshot_projection_stats,
     prompt_component_chars,
 )
@@ -4021,7 +4022,8 @@ DIAGNOSTIC_REQUEST_TERMS = (
 
 
 def _is_diagnostic_request(message: str) -> bool:
-    return _contains_any_term(str(message or "").strip().lower(), DIAGNOSTIC_REQUEST_TERMS)
+    text = str(message or "").strip().lower()
+    return _contains_any_term(text, DIAGNOSTIC_REQUEST_TERMS) and not looks_like_fact_check_request(text)
 
 
 def _turn_entity_label(session: Any, entity_id: str) -> str:
