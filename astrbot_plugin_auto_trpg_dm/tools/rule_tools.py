@@ -290,8 +290,8 @@ def _compact_rule_schema(value: Any, *, depth: int = 0) -> Any:
 
 def _normalize_execute_rule_args(rule_name: str, args: Dict[str, Any]) -> Dict[str, Any]:
     normalized = dict(args or {})
-    if "threshold" not in normalized:
-        for key in ("dc", "target_dc", "difficulty", "target_number", "target"):
+    if "threshold" not in normalized and not any(key in normalized for key in ("dc", "target_dc", "difficulty", "target_number")):
+        for key in ("target",):
             value = _number_or_none(normalized.get(key))
             if value is not None:
                 normalized["threshold"] = int(value) if float(value).is_integer() else value

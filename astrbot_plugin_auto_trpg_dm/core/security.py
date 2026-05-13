@@ -195,6 +195,27 @@ _OTHER_PLAYER_AGENCY_WORDS = (
     "玩家不再介入",
 )
 
+_OTHER_PLAYER_CONSENT_BYPASS_WORDS = (
+    "没拒绝就是同意",
+    "没有拒绝就是同意",
+    "默认同意",
+    "默认允许",
+    "不反对就是同意",
+    "不同意也",
+    "偷偷摸",
+    "偷摸",
+    "摸尾巴",
+    "摸她尾巴",
+    "摸他尾巴",
+    "摸龙娘",
+    "强吻",
+    "强抱",
+    "扑倒队友",
+    "抱住队友",
+    "摸队友",
+    "摸其他玩家",
+)
+
 _EXTERNAL_EXEC_WORDS = (
     "swe-bench",
     "下载",
@@ -346,6 +367,15 @@ def security_precheck(message: str) -> SecurityVerdict:
         categories.append("other_player_agency_claim")
         notes.append(
             "本地安全层标记：玩家可能在强制其他玩家角色的意志、同意或行动；没有持有人明确同意或客观规则结果时默认不成立。"
+        )
+
+    if _contains_any(normalized, _OTHER_PLAYER_CONSENT_BYPASS_WORDS):
+        if "other_player_agency_claim" not in categories:
+            categories.append("other_player_agency_claim")
+        if "consent_boundary_attempt" not in categories:
+            categories.append("consent_boundary_attempt")
+        notes.append(
+            "本地安全层标记：玩家可能在用检定或话术绕过其他玩家角色的身体/互动同意；没有持有人明确同意时，不得调用骰子把接触、骚扰或强制互动判成成功。"
         )
 
     if _looks_like_npc_social_control_claim(normalized):

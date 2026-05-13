@@ -178,6 +178,90 @@ def test_update_scene_normalizes_clue_status_records(tmp_path):
     assert saved.scene["pressure_clock"]["status"] == "active"
 
 
+def test_update_scene_isolates_parallel_character_threads(tmp_path):
+    repository = JsonGameRepository(tmp_path / "data")
+    session = GameSession.new("group")
+    session.world_tags["_background_ready"] = True
+    session.characters["pc_lan"] = Character(id="pc_lan", name="岚", player_id="p1")
+    session.characters["pc_ming"] = Character(id="pc_ming", name="明", player_id="p2")
+    session.player_character_map["p1"] = "pc_lan"
+    session.player_character_map["p2"] = "pc_ming"
+    repository.save_session(session)
+
+    p1_tools = MemoryTools(repository, "group", actor={"player_id": "p1"}, message="我留在酒馆观察")
+    tavern = asyncio.run(
+        p1_tools.update_scene(
+            {
+                "location": "Tavern",
+                "summary": "兰在酒馆柜台旁观察客人。",
+                "scene_time_label": "第 1 天傍晚",
+                "stakes": "quiet lead",
+            }
+        )
+    )
+    assert tavern["ok"] is True
+
+    p2_tools = MemoryTools(repository, "group", actor={"player_id": "p2"}, message="我去别墅检查门厅")
+    villa = asyncio.run(
+        p2_tools.update_scene(
+            {
+                "location": "Villa",
+                "summary": "明在别墅门厅听见楼上传来脚步。",
+                "pressure_clock": "guards closing",
+            }
+        )
+    )
+    assert villa["ok"] is True
+
+    saved = repository.load_session("group")
+    tavern_thread = saved.scene["scene_threads"][tavern["scene_thread_id"]]
+    villa_thread = saved.scene["scene_threads"][villa["scene_thread_id"]]
+
+    assert tavern["scene_thread_id"] != villa["scene_thread_id"]
+    assert tavern_thread["location"] == "Tavern"
+    assert tavern_thread["scene_time_label"] == "第 1 天傍晚"
+    assert tavern_thread["scene_time_of_day"] == "傍晚"
+    assert tavern_thread["stakes"] == "quiet lead"
+    assert tavern_thread["active_character_id"] == "pc_lan"
+    assert villa_thread["location"] == "Villa"
+    assert villa_thread["pressure_clock"]["status"] == "active"
+    assert villa_thread["active_character_id"] == "pc_ming"
+    assert saved.scene["active_scene_thread_id"] == villa["scene_thread_id"]
+    assert saved.scene["location"] == "Villa"
+    assert saved.scene["pressure_clock"]["status"] == "active"
+    assert "stakes" not in saved.scene
+
+
+def test_update_scene_rejects_implicit_thread_timeline_advance(tmp_path):
+    repository = JsonGameRepository(tmp_path / "data")
+    session = GameSession.new("group")
+    session.world_tags["_background_ready"] = True
+    session.world_tags["_plot_locked"] = True
+    session.scene["_game_started"] = True
+    session.participants = {"p1": {}, "p2": {}}
+    session.characters["pc_lan"] = Character(id="pc_lan", name="岚", player_id="p1")
+    session.characters["pc_ming"] = Character(id="pc_ming", name="明", player_id="p2")
+    session.player_character_map["p1"] = "pc_lan"
+    session.player_character_map["p2"] = "pc_ming"
+    repository.save_session(session)
+
+    tools = MemoryTools(repository, "group", actor={"player_id": "p1"}, message="我睡到天亮")
+    result = asyncio.run(
+        tools.update_scene(
+            {
+                "location": "Tavern",
+                "summary": "兰睡到第二天清晨，酒馆已经开门。",
+            }
+        )
+    )
+
+    saved = repository.load_session("group")
+    assert result["ok"] is False
+    assert result["error"] == "timeline_patch_required"
+    assert saved.timeline["day"] == 1
+    assert saved.scene.get("scene_threads") in (None, {})
+
+
 def test_scene_tracking_status_projection_hides_dm_only_records():
     scene = {
         "current_objective": "确认旧剧院里失踪者的去向。",

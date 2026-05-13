@@ -262,6 +262,7 @@ class TestEndToEndWithoutRa:
         assert session.current_cycle_id == 1
         assert session.audit_buffer.actions == []
         assert session.ra_cycle_input.actions == []
+        assert session.timeline["day"] == 1
 
     def test_preserves_character_binding(self, fake_repo):
         session = GameSession.new("bind_test")
@@ -339,6 +340,7 @@ class TestEndToEndWithRa:
                 "character_status": [],
                 "enemy_status": [],
                 "world_changes": [],
+                "relationship_changes": [],
                 "rules_triggered": ["attack"],
                 "dm_narrative_aligned": True,
                 "discrepancies": [],
@@ -357,6 +359,7 @@ class TestEndToEndWithRa:
         assert session.cycle_state == CycleState.CYCLE_ACTIVE
         assert session.current_cycle_id == 1
         assert session.environment_summaries[-1]["summary"] == "击退兽人。"
+        assert completion["timeline_result"]["timeline_advanced"] is False
 
     def test_ra_retries_without_max_tokens_when_provider_rejects_it(self):
         session = GameSession.new("ra_max_tokens_fallback")
@@ -367,6 +370,7 @@ class TestEndToEndWithRa:
             "character_status": [],
             "enemy_status": [],
             "world_changes": [],
+            "relationship_changes": [],
             "rules_triggered": [],
             "dm_narrative_aligned": True,
             "discrepancies": [],
@@ -418,6 +422,7 @@ class TestEndToEndWithRa:
             "character_status": [{"character_id": "pc-1", "tags": [{"key": "伤势", "value": "恢复"}]}],
             "enemy_status": [],
             "world_changes": [{"scene_patch": {"summary": "改写场景"}}],
+            "relationship_changes": [],
             "rules_triggered": [],
             "dm_narrative_aligned": True,
             "discrepancies": [],

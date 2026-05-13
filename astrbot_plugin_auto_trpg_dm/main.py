@@ -28,6 +28,7 @@ from .core.plugin_log import configure_plugin_logging
 from .core.router import IntentRouter
 from .core.security import security_precheck
 from .core.models import CycleState, GameMode
+from .core.timeline import timeline_status_text
 from .rules.python_runtime import PythonRuleRuntime
 from .storage.json_repository import JsonGameRepository
 from .tools.ambient_image_tools import (
@@ -42,7 +43,7 @@ from .tools.registry import ToolRegistry
 from .tools.turn_tools import TurnTools
 
 
-PLUGIN_VERSION = "0.1.91"
+PLUGIN_VERSION = "0.1.92"
 
 DEFAULT_REASSURANCE_PHRASES = (
     "正在翻找合适的骰子。",
@@ -1404,6 +1405,7 @@ class AutoTrpgDmPlugin(Star):
             turn_text = "当前没有启用轮次。"
         return (
             f"团名：{session.title}；模式：{session.mode.value}；流程：{paused}；开场：{_game_started_text(session)}。\n"
+            f"时间线：{timeline_status_text(session.timeline)}。\n"
             f"玩家 {len(session.participants)}，角色 {len(session.characters)}，规则 {len(session.rules)}。\n"
             f"{turn_text}"
         )

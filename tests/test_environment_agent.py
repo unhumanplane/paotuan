@@ -205,6 +205,7 @@ def test_complete_cycle_with_ra_records_summary_applies_only_validated_small_pat
         ],
         "enemy_status": [],
         "world_changes": [{"scene_patch": {"summary": "北门暂时安全。", "plot": "不可写入"}}],
+        "relationship_changes": [],
         "rules_triggered": [],
         "dm_narrative_aligned": True,
         "discrepancies": [],
@@ -218,11 +219,79 @@ def test_complete_cycle_with_ra_records_summary_applies_only_validated_small_pat
     assert session.audit_buffer.actions == []
     assert session.ra_cycle_input.actions == []
     assert session.environment_summaries[-1]["summary"] == "队伍守住北门。"
+    assert session.environment_summaries[-1]["timeline_result"]["timeline_advanced"] is False
     assert session.scene["summary"] == "北门暂时安全。"
     assert "plot" not in session.scene
     layers = {(tag.layer, tag.key, tag.value) for tag in session.characters["pc-1"].tags}
     assert ("status", "伤势", "已止血") in layers
     assert not any(tag.key == "职业" for tag in session.characters["pc-1"].tags)
+
+
+def test_complete_cycle_with_ra_advances_global_timeline_from_summary():
+    session = GameSession.new("group")
+    session.cycle_state = CycleState.CYCLE_RESOLVING
+    append_cycle_action(
+        session,
+        actor={"player_id": "player-1"},
+        player_message="我守夜",
+        completion="守夜平稳结束。",
+        tool_results=[],
+    )
+    summary = {
+        "cycle_id": 0,
+        "summary": "队伍休整到第二天清晨。",
+        "timeline": {"day": 2, "time_of_day": "morning", "label": "第 2 天清晨"},
+        "character_status": [],
+        "enemy_status": [],
+        "world_changes": [],
+        "relationship_changes": [],
+        "rules_triggered": [],
+        "dm_narrative_aligned": True,
+        "discrepancies": [],
+    }
+
+    result = complete_cycle_with_ra(session, summary)
+
+    assert result["timeline_result"]["timeline_advanced"] is True
+    assert session.timeline["day"] == 2
+    assert session.timeline["time_of_day"] == "morning"
+
+
+def test_complete_cycle_with_ra_refuses_unsynced_timeline_summary():
+    session = GameSession.new("group")
+    session.participants = {"player-1": {}, "player-2": {}}
+    session.player_character_map = {"player-1": "pc-1", "player-2": "pc-2"}
+    session.cycle_state = CycleState.CYCLE_RESOLVING
+    append_cycle_action(
+        session,
+        actor={"player_id": "player-1"},
+        player_message="我守夜",
+        completion="守夜平稳结束。",
+        tool_results=[],
+    )
+    summary = {
+        "cycle_id": 0,
+        "summary": "队伍休整到第二天清晨。",
+        "timeline": {"day": 2, "time_of_day": "morning"},
+        "character_status": [],
+        "enemy_status": [],
+        "world_changes": [],
+        "relationship_changes": [],
+        "rules_triggered": [],
+        "dm_narrative_aligned": True,
+        "discrepancies": [],
+    }
+
+    result = complete_cycle_with_ra(session, summary)
+
+    assert result["timeline_result"]["ok"] is False
+    assert result["timeline_result"]["error"] == "timeline_sync_required"
+    assert result["timeline_result"]["missing_player_ids"] == ["player-2"]
+    assert result["cycle_completed"] is False
+    assert session.cycle_state == CycleState.CYCLE_ACTIVE
+    assert session.current_cycle_id == 0
+    assert session.audit_buffer.actions
+    assert session.timeline["day"] == 1
 
 
 def test_unbacked_ra_patch_candidate_is_rejected():
@@ -233,6 +302,7 @@ def test_unbacked_ra_patch_candidate_is_rejected():
         "character_status": [{"character_id": "pc-1", "tags": [{"key": "伤势", "value": "恢复"}]}],
         "enemy_status": [],
         "world_changes": [{"scene_patch": {"summary": "改写场景"}}],
+        "relationship_changes": [],
         "rules_triggered": [],
         "dm_narrative_aligned": True,
         "discrepancies": [],

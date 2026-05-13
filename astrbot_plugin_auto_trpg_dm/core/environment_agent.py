@@ -8,6 +8,7 @@ from .cycle_state_machine import CycleStateMachine
 from .map_core import MAP_VIEW_RA_AUTHORITY, project_map_store
 from .models import AuditBuffer, CycleState, GameSession, RACycleInput, normalize_relationship_collections, utc_now_iso
 from .prompts import build_cycle_start_prompt, build_ra_cycle_prompt, build_ra_system_prompt
+from .timeline import cycle_timeline_completion, infer_timeline_patch_from_summary, timeline_view
 
 
 LlmGenerate = Callable[..., Awaitable[Any]]
@@ -98,6 +99,7 @@ def build_ra_authority_snapshot(session: GameSession) -> dict[str, Any]:
         "cycle_id": session.current_cycle_id,
         "mode": session.mode.value,
         "title": session.title,
+        "timeline": timeline_view(session.timeline),
         "characters": [_character_authority_view(character) for character in session.characters.values()],
         "scene": _compact_json_value(session.scene, depth=3),
         "world_tags": _compact_json_value(session.world_tags, depth=3),
@@ -117,8 +119,29 @@ def complete_cycle_with_ra(session: GameSession, summary: dict[str, Any]) -> dic
         raise ValueError(f"invalid_cycle_completion_state:{session.cycle_state.value}")
 
     validation = validate_ra_patch_candidates(session, summary)
+    timeline_patch = (
+        {}
+        if int((session.timeline or {}).get("last_advanced_cycle_id", -1)) == session.current_cycle_id
+        else infer_timeline_patch_from_summary(summary, session.timeline)
+    )
+    timeline_result = cycle_timeline_completion(
+        session,
+        explicit_patch=timeline_patch,
+        reason=str(summary.get("summary") or ""),
+        require_sync=True,
+    )
+    if timeline_result.get("ok") is False:
+        CycleStateMachine().activate(session)
+        return {
+            "cycle_id": session.current_cycle_id,
+            "next_cycle_id": session.current_cycle_id,
+            "patch_validation": validation,
+            "timeline_result": timeline_result,
+            "cycle_completed": False,
+        }
     record = dict(summary)
     record["patch_validation"] = validation
+    record["timeline_result"] = timeline_result
     record["created_at"] = utc_now_iso()
     session.environment_summaries.append(record)
 
@@ -133,6 +156,7 @@ def complete_cycle_with_ra(session: GameSession, summary: dict[str, Any]) -> dic
         "cycle_id": completed_cycle_id,
         "next_cycle_id": session.current_cycle_id,
         "patch_validation": validation,
+        "timeline_result": timeline_result,
     }
 
 
@@ -163,6 +187,7 @@ def validate_ra_patch_candidates(session: GameSession, summary: dict[str, Any]) 
         "world_changes": {"update_scene", "update_world_tags", "start_game"},
         "relationship_changes": {"update_scene", "update_character_tags"},
         "rule_sets": {"register_rule", "execute_rule"},
+        "timeline": {"cycle_control", "update_scene", "start_game"},
     }
     for category, backing_tools in categories.items():
         items = summary.get(category, [])

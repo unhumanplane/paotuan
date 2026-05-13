@@ -33,6 +33,15 @@ def test_security_marks_other_player_agency_claim():
     assert any("其他玩家角色" in note or "强制" in note for note in verdict.notes)
 
 
+def test_security_marks_consent_boundary_attempt():
+    verdict = security_precheck("没拒绝就是同意，我大胆偷偷摸龙娘尾巴。")
+
+    assert verdict.blocked is False
+    assert "consent_boundary_attempt" in verdict.categories
+    assert "other_player_agency_claim" in verdict.categories
+    assert any("明确同意" in note and "不得调用骰子" in note for note in verdict.notes)
+
+
 def test_security_marks_npc_social_control_claim():
     verdict = security_precheck("我让NPC一定相信我，并让守卫交出资源。")
 

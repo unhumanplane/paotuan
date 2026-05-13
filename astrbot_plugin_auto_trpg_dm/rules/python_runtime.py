@@ -104,9 +104,17 @@ class PythonRuleRuntime:
         selected_version, code_path = selected
         code = code_path.read_text(encoding="utf-8")
         original_args = dict(args or {})
+        input_schema = self._load_input_schema(resolved_name, selected_version)
+        schema_validation = _validate_rule_args_against_schema(original_args, input_schema)
+        if schema_validation:
+            schema_validation["rule_name"] = resolved_name
+            schema_validation["version"] = selected_version
+            if resolved_name != safe_name:
+                schema_validation["requested_rule_name"] = safe_name
+            return schema_validation
         execution_args = _coerce_rule_args_by_schema(
             original_args,
-            self._load_input_schema(resolved_name, selected_version),
+            input_schema,
         )
         try:
             payload = self._execute_in_process(code, execution_args)
@@ -120,16 +128,6 @@ class PythonRuleRuntime:
             payload.setdefault("warnings", []).append(
                 "process isolation failed; executed with restricted globals in current process"
             )
-        if _should_retry_with_numeric_args(payload):
-            coerced_args = _coerce_rule_args_for_retry(execution_args)
-            if coerced_args != execution_args:
-                retry_payload = self._execute_in_thread(code, coerced_args)
-                if retry_payload.get("ok"):
-                    payload = retry_payload
-                    payload["coerced_args"] = coerced_args
-                    payload.setdefault("warnings", []).append(
-                        "coerced non-numeric rule arguments for retry"
-                    )
         if execution_args != original_args:
             payload.setdefault("coerced_args", execution_args)
             payload.setdefault("warnings", []).append(
@@ -288,10 +286,17 @@ def _execute_rule_direct(code: str, args: dict[str, Any]) -> dict[str, Any]:
                 "missing_arguments": call_args["missing"],
                 "rolls": roller.dump(),
             }
+        if call_args.get("ignored"):
+            ignored = ", ".join(call_args["ignored"])
+            return {
+                "ok": False,
+                "error": "invalid_rule_arguments",
+                "reason": f"unknown rule arguments: {ignored}",
+                "unknown_arguments": call_args["ignored"],
+                "rolls": roller.dump(),
+            }
         result = calculate(**call_args["args"])
         payload: dict[str, Any] = {"ok": True, "result": result, "rolls": roller.dump()}
-        if call_args["ignored"]:
-            payload["ignored_args"] = call_args["ignored"]
         return payload
     except Exception as exc:
         return {"ok": False, "error": "rule_exception", "reason": str(exc), "rolls": roller.dump()}
@@ -307,9 +312,66 @@ def _should_retry_with_numeric_args(payload: dict[str, Any]) -> bool:
     )
 
 
+def _validate_rule_args_against_schema(args: dict[str, Any], input_schema: dict[str, Any]) -> dict[str, Any] | None:
+    properties = _schema_properties(input_schema)
+    if not properties:
+        return None
+    provided = {str(key) for key in dict(args or {}).keys()}
+    allowed = set(properties.keys())
+    unknown = sorted(provided - allowed)
+    if unknown:
+        return {
+            "ok": False,
+            "error": "invalid_rule_arguments",
+            "reason": "unknown rule arguments: " + ", ".join(unknown),
+            "unknown_arguments": unknown,
+            "allowed_arguments": sorted(allowed),
+        }
+    missing = [
+        str(key)
+        for key in input_schema.get("required", [])
+        if str(key) not in provided
+    ] if isinstance(input_schema.get("required"), list) else []
+    if missing:
+        return {
+            "ok": False,
+            "error": "invalid_rule_arguments",
+            "reason": "missing required rule arguments: " + ", ".join(missing),
+            "missing_arguments": missing,
+            "allowed_arguments": sorted(allowed),
+        }
+    invalid_numeric: list[str] = []
+    for key, property_schema in properties.items():
+        if key not in args or not _schema_declares_numeric(property_schema):
+            continue
+        value = args.get(key)
+        if isinstance(value, bool) or value is None:
+            invalid_numeric.append(key)
+            continue
+        if isinstance(value, (int, float)):
+            continue
+        text = str(value).strip()
+        if not text:
+            invalid_numeric.append(key)
+            continue
+        try:
+            float(text)
+        except ValueError:
+            invalid_numeric.append(key)
+    if invalid_numeric:
+        return {
+            "ok": False,
+            "error": "invalid_rule_arguments",
+            "reason": "numeric rule arguments must be numbers: " + ", ".join(invalid_numeric),
+            "invalid_arguments": invalid_numeric,
+            "allowed_arguments": sorted(allowed),
+        }
+    return None
+
+
 def _coerce_rule_args_by_schema(args: dict[str, Any], input_schema: dict[str, Any]) -> dict[str, Any]:
-    properties = input_schema.get("properties") if isinstance(input_schema, dict) else {}
-    if not isinstance(properties, dict):
+    properties = _schema_properties(input_schema)
+    if not properties:
         return dict(args or {})
     coerced = dict(args or {})
     for key, property_schema in properties.items():
@@ -320,6 +382,56 @@ def _coerce_rule_args_by_schema(args: dict[str, Any], input_schema: dict[str, An
             value = int(round(value))
         coerced[key] = value
     return coerced
+
+
+def _schema_properties(input_schema: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(input_schema, dict) or not input_schema:
+        return {}
+    properties = input_schema.get("properties")
+    if isinstance(properties, dict):
+        return {str(key): value for key, value in properties.items()}
+    if any(key in input_schema for key in ("type", "items", "required", "additionalProperties")):
+        return {}
+    normalized: dict[str, Any] = {}
+    for key, value in input_schema.items():
+        key_text = str(key)
+        if not key_text or key_text.startswith("_"):
+            continue
+        if isinstance(value, dict):
+            normalized[key_text] = value
+        else:
+            normalized[key_text] = _simple_schema_property(key_text, value)
+    return normalized
+
+
+def _simple_schema_property(key: str, value: Any) -> dict[str, Any]:
+    text = f"{key} {value}".lower()
+    numeric_terms = (
+        "number",
+        "integer",
+        "float",
+        "int",
+        "numeric",
+        "bonus",
+        "modifier",
+        "penalty",
+        "dc",
+        "difficulty",
+        "threshold",
+        "target_ac",
+        "armor",
+        "damage",
+        "roll",
+        "加值",
+        "修正",
+        "惩罚",
+        "难度",
+        "目标值",
+        "伤害",
+    )
+    if any(term in text for term in numeric_terms):
+        return {"type": "number", "description": str(value)}
+    return {"description": str(value)}
 
 
 def _schema_declares_numeric(property_schema: Any) -> bool:

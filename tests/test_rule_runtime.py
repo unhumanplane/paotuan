@@ -26,6 +26,52 @@ def calculate(skill, difficulty):
     assert executed["rolls"][0]["expression"] == "1d20"
 
 
+def test_rejects_non_numeric_schema_arguments(tmp_path: Path):
+    runtime = PythonRuleRuntime(tmp_path, timeout_seconds=3)
+    code = """
+def calculate(skill, difficulty):
+    return {"total": skill, "success": skill >= difficulty}
+""".strip()
+    registered = runtime.register_rule(
+        rule_name="skill_check",
+        description="basic skill check",
+        code_string=code,
+        input_schema={"skill": "number", "difficulty": "number"},
+    )
+    assert registered["ok"] is True
+
+    executed = runtime.execute_rule("skill_check", {"skill": 3, "difficulty": "中等"})
+
+    assert executed["ok"] is False
+    assert executed["error"] == "invalid_rule_arguments"
+    assert executed["invalid_arguments"] == ["difficulty"]
+
+
+def test_rejects_unknown_schema_arguments(tmp_path: Path):
+    runtime = PythonRuleRuntime(tmp_path, timeout_seconds=3)
+    code = """
+def calculate(skill, difficulty):
+    return {"total": skill, "success": skill >= difficulty}
+""".strip()
+    registered = runtime.register_rule(
+        rule_name="skill_check",
+        description="basic skill check",
+        code_string=code,
+        input_schema={"skill": "number", "difficulty": "number"},
+    )
+    assert registered["ok"] is True
+
+    executed = runtime.execute_rule(
+        "skill_check",
+        {"skill": 3, "difficulty": 10, "target": "door"},
+    )
+
+    assert executed["ok"] is False
+    assert executed["error"] == "invalid_rule_arguments"
+    assert executed["unknown_arguments"] == ["target"]
+    assert executed["allowed_arguments"] == ["difficulty", "skill"]
+
+
 def test_rejects_import(tmp_path: Path):
     runtime = PythonRuleRuntime(tmp_path)
     result = runtime.register_rule(

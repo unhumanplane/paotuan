@@ -7,6 +7,7 @@ from enum import Enum
 from typing import Any
 
 from .map_core import default_map_store, load_active_strict_grid, normalize_map_store
+from .timeline import default_timeline, normalize_timeline, timeline_view
 
 
 def utc_now_iso() -> str:
@@ -178,6 +179,7 @@ class GameSession:
     rule_sets: dict[str, Any] = field(default_factory=dict)
     battle: dict[str, Any] = field(default_factory=dict)
     maps: dict[str, Any] = field(default_factory=default_map_store)
+    timeline: dict[str, Any] = field(default_factory=default_timeline)
     current_cycle_id: int = 0
     audit_buffer: AuditBuffer = field(default_factory=AuditBuffer)
     ra_cycle_input: RACycleInput = field(default_factory=RACycleInput)
@@ -231,6 +233,7 @@ class GameSession:
             rule_sets=_dict_or_empty(data.get("rule_sets", {})),
             battle=dict(data.get("battle", {"active": False})),
             maps=normalize_map_store(data.get("maps", {})),
+            timeline=normalize_timeline(data.get("timeline", {})),
             current_cycle_id=_safe_int(data.get("current_cycle_id", 0)),
             audit_buffer=AuditBuffer.from_dict(_dict_or_empty(data.get("audit_buffer", {}))),
             ra_cycle_input=RACycleInput.from_dict(_dict_or_empty(data.get("ra_cycle_input", {}))),
@@ -273,6 +276,7 @@ class GameSession:
             "memory_summary": self.memory_summary,
             "rules": compact_rules(self.rules),
             "rule_sets": self.rule_sets,
+            "timeline": timeline_view(self.timeline),
             "cycle_state": self.cycle_state.value,
             "current_cycle_id": self.current_cycle_id,
             "environment_summaries": self.environment_summaries[-3:],

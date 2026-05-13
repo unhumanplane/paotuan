@@ -51,7 +51,11 @@ _install_fake_astrbot_modules()
 from astrbot_plugin_auto_trpg_dm.core.ambient_image import AmbientImageConfig
 from astrbot_plugin_auto_trpg_dm.core.map_core import DEFAULT_STRICT_LOCAL_MAP_ID, save_active_strict_grid
 from astrbot_plugin_auto_trpg_dm.core.models import GameMode, GameSession
-from astrbot_plugin_auto_trpg_dm.core.router import IntentRouter, _extract_llm_usage_summary
+from astrbot_plugin_auto_trpg_dm.core.router import (
+    IntentRouter,
+    _adjudication_completeness_guard,
+    _extract_llm_usage_summary,
+)
 
 
 def test_extract_llm_usage_summary_reads_openai_cached_tokens():
@@ -549,6 +553,415 @@ def test_router_replaces_generic_renderer_success_completion_with_delivery_ack()
     assert result.completion_text == "地图已生成，已附上。"
     assert guard_records[-1]["action"] == "delivery_ack_replaced"
     assert guard_records[-1]["reason"] == "renderer_success_generic_completion"
+
+
+def test_router_blocks_update_scene_for_risky_action_before_rule_support():
+    class FakeToolCallResponse:
+        completion_text = ""
+        tools_call_name = ["update_scene"]
+        tools_call_args = [{"patch": {"summary": "火焰吞没了暗门，暗门显露出来。"}}]
+        tool_calls = []
+
+    class FakeLoopLlm:
+        def __init__(self):
+            self.calls = 0
+            self.prompts = []
+
+        async def __call__(self, **kwargs):
+            self.calls += 1
+            self.prompts.append(kwargs["prompt"])
+            if self.calls == 1:
+                return FakeToolCallResponse()
+            return FakeLlmResponse("这步还没结算，先确认点火方式并做检定。")
+
+    class RecordingExecutor:
+        def __init__(self):
+            self.calls = []
+
+        async def execute(self, tool_name, args):
+            self.calls.append((tool_name, args))
+            return {"ok": True}
+
+    async def run_case():
+        repository = InMemoryRepository()
+        session = GameSession.new("group-1")
+        session.world_tags["_plot_locked"] = True
+        session.scene["_game_started"] = True
+        repository.save_session(session)
+        router = IntentRouter.__new__(IntentRouter)
+        llm = FakeLoopLlm()
+        executor = RecordingExecutor()
+        router.max_steps = 2
+        router._llm_generate = llm
+        router.repository = repository
+
+        result = await router._run_llm_tool_loop(
+            chat_provider_id="fake-provider",
+            system_prompt="system",
+            initial_prompt="玩家行动",
+            toolset=object(),
+            tool_executor=executor,
+            session_id="group-1",
+            raw_player_message="我点燃油布烧开暗门并搜索里面",
+            available_tool_names=["update_scene", "execute_rule"],
+        )
+        return result, llm, executor, repository.last_audit_records("group-1", limit=20)
+
+    result, llm, executor, records = asyncio.run(run_case())
+    tool_results = records[-1]["tool_results"]
+
+    assert executor.calls == []
+    assert result.completion_text == "这步还没结算，先确认点火方式并做检定。"
+    assert tool_results[0]["tool"] == "update_scene"
+    assert tool_results[0]["result"]["error"] == "adjudication_guard_blocked_state_write"
+    assert tool_results[0]["result"]["reason"] == "missing_execute_rule_for_risky_state_write"
+    assert "状态写入已被守卫拒绝" in llm.prompts[1]
+
+
+def test_router_allows_update_scene_after_successful_execute_rule_support():
+    class FakeToolCallResponse:
+        completion_text = ""
+        tools_call_name = ["execute_rule", "update_scene"]
+        tools_call_args = [
+            {"rule_name": "fire_check", "args": {"skill": 12, "difficulty": 10}},
+            {"patch": {"summary": "火势逼开门缝，暗门边缘露出焦痕。"}},
+        ]
+        tool_calls = []
+
+    class FakeLoopLlm:
+        def __init__(self):
+            self.calls = 0
+
+        async def __call__(self, **kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                return FakeToolCallResponse()
+            return FakeLlmResponse("火势逼开门缝，暗门边缘露出焦痕。")
+
+    class RecordingExecutor:
+        def __init__(self):
+            self.calls = []
+
+        async def execute(self, tool_name, args):
+            self.calls.append((tool_name, args))
+            if tool_name == "execute_rule":
+                return {"ok": True, "result": {"success": True}}
+            if tool_name == "update_scene":
+                return {"ok": True, "scene": {"summary": args["patch"]["summary"]}}
+            raise AssertionError(f"unexpected tool: {tool_name}")
+
+    async def run_case():
+        repository = InMemoryRepository()
+        session = GameSession.new("group-1")
+        session.world_tags["_plot_locked"] = True
+        session.scene["_game_started"] = True
+        repository.save_session(session)
+        router = IntentRouter.__new__(IntentRouter)
+        executor = RecordingExecutor()
+        router.max_steps = 2
+        router._llm_generate = FakeLoopLlm()
+        router.repository = repository
+
+        result = await router._run_llm_tool_loop(
+            chat_provider_id="fake-provider",
+            system_prompt="system",
+            initial_prompt="玩家行动",
+            toolset=object(),
+            tool_executor=executor,
+            session_id="group-1",
+            raw_player_message="我点燃油布烧开暗门并搜索里面",
+            available_tool_names=["execute_rule", "update_scene"],
+        )
+        return result, executor, repository.last_audit_records("group-1", limit=20)
+
+    result, executor, records = asyncio.run(run_case())
+
+    assert [name for name, _args in executor.calls] == ["execute_rule", "update_scene"]
+    assert result.completion_text == "火势逼开门缝，暗门边缘露出焦痕。"
+    assert records[-1]["tool_results"][1]["result"]["ok"] is True
+
+
+def test_router_blocks_update_scene_after_invalid_rule_arguments():
+    class FakeToolCallResponse:
+        completion_text = ""
+        tools_call_name = ["execute_rule", "update_scene"]
+        tools_call_args = [
+            {"rule_name": "search_check", "args": {"skill": 3, "difficulty": "中等"}},
+            {"patch": {"summary": "玩家成功发现暗门。"}},
+        ]
+        tool_calls = []
+
+    class FakeLoopLlm:
+        def __init__(self):
+            self.calls = 0
+
+        async def __call__(self, **kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                return FakeToolCallResponse()
+            return FakeLlmResponse("检定参数不对，这步还没有写入成功。")
+
+    class RecordingExecutor:
+        def __init__(self):
+            self.calls = []
+
+        async def execute(self, tool_name, args):
+            self.calls.append((tool_name, args))
+            if tool_name == "execute_rule":
+                return {
+                    "ok": False,
+                    "error": "invalid_rule_arguments",
+                    "invalid_arguments": ["difficulty"],
+                    "reason": "numeric rule arguments must be numbers: difficulty",
+                }
+            if tool_name == "update_scene":
+                raise AssertionError("guard should block update_scene")
+            raise AssertionError(f"unexpected tool: {tool_name}")
+
+    async def run_case():
+        repository = InMemoryRepository()
+        session = GameSession.new("group-1")
+        session.world_tags["_plot_locked"] = True
+        session.scene["_game_started"] = True
+        repository.save_session(session)
+        router = IntentRouter.__new__(IntentRouter)
+        executor = RecordingExecutor()
+        router.max_steps = 2
+        router._llm_generate = FakeLoopLlm()
+        router.repository = repository
+
+        result = await router._run_llm_tool_loop(
+            chat_provider_id="fake-provider",
+            system_prompt="system",
+            initial_prompt="玩家行动",
+            toolset=object(),
+            tool_executor=executor,
+            session_id="group-1",
+            raw_player_message="我搜索暗门",
+            available_tool_names=["execute_rule", "update_scene"],
+        )
+        return result, executor, repository.last_audit_records("group-1", limit=20)
+
+    result, executor, records = asyncio.run(run_case())
+    tool_results = records[-1]["tool_results"]
+
+    assert [name for name, _args in executor.calls] == ["execute_rule"]
+    assert result.completion_text == "检定参数不对，这步还没有写入成功。"
+    assert tool_results[1]["tool"] == "update_scene"
+    assert tool_results[1]["result"]["error"] == "adjudication_guard_blocked_state_write"
+    assert tool_results[1]["result"]["reason"] == "invalid_rule_arguments_block_state_write"
+    assert tool_results[1]["result"]["invalid_rule_arguments"]["invalid_arguments"] == ["difficulty"]
+
+
+def test_router_requires_state_write_for_major_outcome_claim():
+    repository = InMemoryRepository()
+    session = GameSession.new("group-1")
+    session.world_tags["_plot_locked"] = True
+    session.scene["_game_started"] = True
+    repository.save_session(session)
+
+    completion_guard = _adjudication_completeness_guard(
+        session,
+        actor={"player_id": "p1"},
+        player_message="我用锋锐长剑把门踹开",
+        completion="剑锋和肩撞一起压上，门已破，你们可以冲进别墅。",
+        tool_results=[
+            {
+                "tool": "execute_rule",
+                "args": {"rule_name": "break_door", "args": {"modifier": 4}},
+                "result": {"ok": True, "result": {"success": True}},
+            }
+        ],
+    )
+
+    assert completion_guard["reason"] == "state_change_not_written"
+
+
+def test_router_blocks_consent_bypass_execute_rule():
+    class FakeToolCallResponse:
+        completion_text = ""
+        tools_call_name = ["execute_rule"]
+        tools_call_args = [
+            {"rule_name": "sleight_of_hand", "args": {"modifier": 5}, "reason": "偷偷摸龙娘尾巴"}
+        ]
+        tool_calls = []
+
+    class FakeLoopLlm:
+        def __init__(self):
+            self.calls = 0
+            self.prompts = []
+
+        async def __call__(self, **kwargs):
+            self.calls += 1
+            self.prompts.append(kwargs["prompt"])
+            if self.calls == 1:
+                return FakeToolCallResponse()
+            return FakeLlmResponse("没有被影响玩家明确同意，这个接触不能用检定判成成功。")
+
+    class RecordingExecutor:
+        def __init__(self):
+            self.calls = []
+
+        async def execute(self, tool_name, args):
+            self.calls.append((tool_name, args))
+            return {"ok": True}
+
+    async def run_case():
+        repository = InMemoryRepository()
+        session = GameSession.new("group-1")
+        session.world_tags["_plot_locked"] = True
+        session.scene["_game_started"] = True
+        repository.save_session(session)
+        router = IntentRouter.__new__(IntentRouter)
+        llm = FakeLoopLlm()
+        executor = RecordingExecutor()
+        router.max_steps = 2
+        router._llm_generate = llm
+        router.repository = repository
+
+        result = await router._run_llm_tool_loop(
+            chat_provider_id="fake-provider",
+            system_prompt="system",
+            initial_prompt="玩家行动",
+            toolset=object(),
+            tool_executor=executor,
+            session_id="group-1",
+            raw_player_message="没拒绝就是同意，我偷偷摸龙娘尾巴",
+            available_tool_names=["execute_rule"],
+        )
+        return result, llm, executor, repository.last_audit_records("group-1", limit=20)
+
+    result, llm, executor, records = asyncio.run(run_case())
+    tool_results = records[-1]["tool_results"]
+
+    assert executor.calls == []
+    assert result.completion_text == "没有被影响玩家明确同意，这个接触不能用检定判成成功。"
+    assert tool_results[0]["result"]["error"] == "player_consent_required"
+    assert "玩家同意边界守卫" in llm.prompts[1]
+
+
+def test_router_blocks_execute_rule_when_player_modifier_not_declared():
+    class FakeToolCallResponse:
+        completion_text = ""
+        tools_call_name = ["execute_rule"]
+        tools_call_args = [
+            {"rule_name": "d20_check", "args": {"dc": 15}, "reason": "破门检定"}
+        ]
+        tool_calls = []
+
+    class FakeLoopLlm:
+        def __init__(self):
+            self.calls = 0
+            self.prompts = []
+
+        async def __call__(self, **kwargs):
+            self.calls += 1
+            self.prompts.append(kwargs["prompt"])
+            if self.calls == 1:
+                return FakeToolCallResponse()
+            return FakeLlmResponse("先把长剑锋锐和力量修正是否纳入说清楚，再进行检定。")
+
+    class RecordingExecutor:
+        def __init__(self):
+            self.calls = []
+
+        async def execute(self, tool_name, args):
+            self.calls.append((tool_name, args))
+            return {"ok": True}
+
+    async def run_case():
+        repository = InMemoryRepository()
+        session = GameSession.new("group-1")
+        session.world_tags["_plot_locked"] = True
+        session.scene["_game_started"] = True
+        repository.save_session(session)
+        router = IntentRouter.__new__(IntentRouter)
+        llm = FakeLoopLlm()
+        executor = RecordingExecutor()
+        router.max_steps = 2
+        router._llm_generate = llm
+        router.repository = repository
+
+        result = await router._run_llm_tool_loop(
+            chat_provider_id="fake-provider",
+            system_prompt="system",
+            initial_prompt="玩家行动",
+            toolset=object(),
+            tool_executor=executor,
+            session_id="group-1",
+            raw_player_message="我用大师级锋锐长剑破门，力量加成也要算",
+            available_tool_names=["execute_rule"],
+        )
+        return result, llm, executor, repository.last_audit_records("group-1", limit=20)
+
+    result, llm, executor, records = asyncio.run(run_case())
+    tool_results = records[-1]["tool_results"]
+
+    assert executor.calls == []
+    assert result.completion_text == "先把长剑锋锐和力量修正是否纳入说清楚，再进行检定。"
+    assert tool_results[0]["result"]["error"] == "modifier_review_required"
+    assert "修正值复核守卫" in llm.prompts[1]
+
+
+def test_router_allows_execute_rule_when_player_modifier_declared():
+    class FakeToolCallResponse:
+        completion_text = ""
+        tools_call_name = ["execute_rule"]
+        tools_call_args = [
+            {
+                "rule_name": "d20_check",
+                "args": {"dc": 15, "modifier": 5},
+                "reason": "破门检定，已纳入力量修正和大师级锋锐长剑加值",
+            }
+        ]
+        tool_calls = []
+
+    class FakeLoopLlm:
+        def __init__(self):
+            self.calls = 0
+
+        async def __call__(self, **kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                return FakeToolCallResponse()
+            return FakeLlmResponse("修正已纳入，破门检定完成。")
+
+    class RecordingExecutor:
+        def __init__(self):
+            self.calls = []
+
+        async def execute(self, tool_name, args):
+            self.calls.append((tool_name, args))
+            return {"ok": True, "result": {"success": True}}
+
+    async def run_case():
+        repository = InMemoryRepository()
+        session = GameSession.new("group-1")
+        session.world_tags["_plot_locked"] = True
+        session.scene["_game_started"] = True
+        repository.save_session(session)
+        router = IntentRouter.__new__(IntentRouter)
+        executor = RecordingExecutor()
+        router.max_steps = 2
+        router._llm_generate = FakeLoopLlm()
+        router.repository = repository
+
+        result = await router._run_llm_tool_loop(
+            chat_provider_id="fake-provider",
+            system_prompt="system",
+            initial_prompt="玩家行动",
+            toolset=object(),
+            tool_executor=executor,
+            session_id="group-1",
+            raw_player_message="我用大师级锋锐长剑破门，力量加成也要算",
+            available_tool_names=["execute_rule"],
+        )
+        return result, executor, repository.last_audit_records("group-1", limit=20)
+
+    result, executor, records = asyncio.run(run_case())
+
+    assert [name for name, _args in executor.calls] == ["execute_rule"]
+    assert records[-1]["tool_results"][0]["result"]["ok"] is True
 
 
 def test_router_turn_auto_advance_uses_map_store_owner_over_stale_battle_grid():

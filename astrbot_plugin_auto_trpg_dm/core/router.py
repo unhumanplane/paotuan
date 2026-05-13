@@ -921,6 +921,14 @@ class IntentRouter:
                     ).run_cycle_resolution(latest_session)
                     if ra_result.get("ok"):
                         completion_record = complete_cycle_with_ra(latest_session, ra_result["summary"])
+                        timeline_result = completion_record.get("timeline_result", {})
+                        if timeline_result.get("ok") is False:
+                            completion = self._limit_completion(
+                                f"{completion}\n{_timeline_sync_failure_suffix(timeline_result)}".strip(),
+                                latest_session,
+                                raw_player_message=message,
+                            )
+                            completion = self._sanitize_completion_text(completion)
                         self.repository.save_session(latest_session)
                         self.repository.append_audit(
                             session_id,
@@ -947,14 +955,23 @@ class IntentRouter:
                             },
                         )
                 else:
-                    complete_cycle_without_ra(latest_session)
+                    completion_record = complete_cycle_without_ra(latest_session)
+                    timeline_result = completion_record.get("timeline_result", {})
+                    if timeline_result.get("ok") is False:
+                        completion = self._limit_completion(
+                            f"{completion}\n{_timeline_sync_failure_suffix(timeline_result)}".strip(),
+                            latest_session,
+                            raw_player_message=message,
+                        )
+                        completion = self._sanitize_completion_text(completion)
                     self.repository.save_session(latest_session)
                     self.repository.append_audit(
                         session_id,
                         {
                             "type": "cycle_resolved_without_ra",
                             "actor": actor,
-                            "cycle_id": latest_session.current_cycle_id - 1,
+                            "cycle_id": completion_record.get("cycle_id", latest_session.current_cycle_id - 1),
+                            "timeline_result": completion_record.get("timeline_result", {}),
                             "reason": "ra_enabled_false",
                         },
                     )
@@ -1621,7 +1638,30 @@ class IntentRouter:
                 if not isinstance(args, dict):
                     args = {}
                 args = self._repair_tool_args(tool_name, args, raw_player_message)
-                result = await tool_executor.execute(tool_name, args)
+                guard_block: dict[str, Any] = {}
+                if tool_name in {"execute_rule", "update_scene", "update_character_tags"}:
+                    try:
+                        guard_session = self.repository.load_session(session_id)
+                    except Exception:
+                        guard_session = None
+                    if guard_session is None or _campaign_started_for_guard(guard_session):
+                        guard_block = _guard_tool_call_before_execution(
+                            raw_player_message,
+                            all_tool_results + tool_results,
+                            tool_name=tool_name,
+                            args=args,
+                        )
+                if guard_block:
+                    result = guard_block
+                    get_plugin_logger().warning(
+                        "adjudication_guard_blocked_tool_call session=%s step=%s tool=%s reason=%s",
+                        session_id,
+                        step + 1,
+                        tool_name,
+                        guard_block.get("reason", ""),
+                    )
+                else:
+                    result = await tool_executor.execute(tool_name, args)
                 tool_results.append(
                     {
                         "tool": tool_name,
@@ -1664,6 +1704,21 @@ class IntentRouter:
             renderer_summary_after_tools = classify_map_renderer_results(all_tool_results)
             if repeated_error_count >= 2:
                 prompt = "同一个工具连续失败。请不要继续重复调用它，基于失败原因向玩家说明无法完成、给出可选行动，或提出一个必要的澄清问题。"
+            elif _player_consent_guard_blocked(tool_results):
+                prompt = (
+                    "玩家同意边界守卫已拒绝本轮工具结算。不要继续调用 execute_rule 或状态写入把接触/骚扰/强制互动判成成功；"
+                    "请简短说明需要被影响玩家明确同意，或把行动改成不侵犯他人角色主权的尝试。"
+                )
+            elif _modifier_review_guard_blocked(tool_results):
+                prompt = (
+                    "规则检定已被修正值复核守卫拒绝。不要继续用缺少装备/熟练/优势/加成说明的 execute_rule；"
+                    "请先说明会纳入哪些修正，必要时查询规则或让玩家确认，再重新检定。"
+                )
+            elif _state_write_guard_blocked(tool_results):
+                prompt = (
+                    "状态写入已被守卫拒绝。不要继续调用 update_scene 写入成功事实；"
+                    "请改用 execute_rule、战棋/回合工具完成客观结算，或向玩家说明这步仍未结算、需要确认目标和检定方式。"
+                )
             elif (
                 map_guard.visual_map_request
                 and not map_guard.text_only_map_request
@@ -2815,6 +2870,18 @@ def _looks_like_post_game_meta_message(message: str) -> bool:
     return any(term in text for term in meta_terms)
 
 
+def _timeline_sync_failure_suffix(timeline_result: Mapping[str, Any]) -> str:
+    missing = [
+        str(player_id)
+        for player_id in timeline_result.get("missing_player_ids", [])
+        if str(player_id)
+    ]
+    if missing:
+        missing_text = "、".join(missing[:6])
+        return f"时间线未推进：跨日、入夜或天亮需要全团同步；仍缺 {missing_text} 的本周期行动或确认。"
+    return "时间线未推进：跨日、入夜或天亮必须通过全团同步结算，不能让部分玩家进入下一时段。"
+
+
 def _flatten_for_guard(value: Any) -> str:
     try:
         return json.dumps(value, ensure_ascii=False)
@@ -3320,6 +3387,16 @@ ROLL_REQUIRED_ACTION_TERMS = (
     "偷",
     "开锁",
     "破解",
+    "破门",
+    "破开",
+    "撞开",
+    "撞门",
+    "踹开",
+    "踹门",
+    "砸门",
+    "砸开",
+    "劈门",
+    "击打",
     "说服",
     "威胁",
     "欺骗",
@@ -3392,6 +3469,23 @@ RESOLVED_OUTCOME_TERMS = (
     "受伤",
     "失去",
     "变成",
+    "门已破",
+    "门破",
+    "破开",
+    "破门",
+    "打开门",
+    "锁开",
+    "抓到",
+    "逮到",
+    "捕获",
+    "拿到",
+    "取得",
+    "获得线索",
+    "线索到手",
+    "烧毁",
+    "烧掉",
+    "熄灭",
+    "睡醒",
 )
 
 UNRESOLVED_OUTCOME_MARKERS = (
@@ -3429,6 +3523,139 @@ LOW_RISK_DIRECT_TERMS = (
     "resume",
 )
 
+MAJOR_STATE_CHANGE_TERMS = (
+    "门已破",
+    "门破",
+    "破门",
+    "破开",
+    "撞开",
+    "门被撞开",
+    "踹开",
+    "门被踹开",
+    "砸开",
+    "门被砸开",
+    "门被劈开",
+    "打开门",
+    "锁开",
+    "抓到",
+    "逮到",
+    "捕获",
+    "抓住",
+    "逃脱",
+    "逃走",
+    "击倒",
+    "倒地",
+    "昏迷",
+    "死亡",
+    "杀死",
+    "击杀",
+    "受伤",
+    "造成伤害",
+    "生命值",
+    "hp",
+    "治疗",
+    "恢复",
+    "拿到",
+    "取得",
+    "获得",
+    "线索",
+    "发现",
+    "烧毁",
+    "烧掉",
+    "点燃",
+    "熄灭",
+    "陷阱解除",
+    "解除陷阱",
+    "资源消耗",
+    "消耗",
+    "睡到天亮",
+    "第二天",
+    "天亮",
+    "入夜",
+    "长休",
+)
+
+CONSENT_BYPASS_TERMS = (
+    "没拒绝就是同意",
+    "没有拒绝就是同意",
+    "默认同意",
+    "默认允许",
+    "不反对就是同意",
+    "不同意也",
+    "偷偷摸",
+    "偷摸",
+    "摸尾巴",
+    "摸她尾巴",
+    "摸他尾巴",
+    "摸龙娘",
+    "强吻",
+    "强抱",
+    "扑倒队友",
+    "抱住队友",
+    "摸队友",
+    "摸其他玩家",
+)
+
+EXPLICIT_CONSENT_TERMS = (
+    "对方明确同意",
+    "持有人同意",
+    "玩家同意",
+    "她同意",
+    "他同意",
+    "ta同意",
+    "允许我",
+)
+
+PLAYER_STATED_MODIFIER_TERMS = (
+    "锋锐",
+    "大师",
+    "精制",
+    "魔法武器",
+    "熟练",
+    "熟练加值",
+    "属性修正",
+    "力量",
+    "敏捷",
+    "优势",
+    "劣势",
+    "加成",
+    "加值",
+    "修正",
+    "buff",
+    "祝福",
+    "专长",
+    "item bonus",
+    "bonus",
+    "modifier",
+    "advantage",
+)
+
+DECLARED_MODIFIER_TERMS = (
+    "modifier",
+    "bonus",
+    "advantage",
+    "disadvantage",
+    "item_bonus",
+    "proficiency",
+    "ability",
+    "ability_modifier",
+    "skill_bonus",
+    "situational",
+    "penalty",
+    "熟练",
+    "修正",
+    "加值",
+    "加成",
+    "优势",
+    "劣势",
+    "锋锐",
+    "大师",
+    "装备",
+    "武器",
+    "力量",
+    "敏捷",
+)
+
 
 def _adjudication_completeness_guard(
     session: Any,
@@ -3462,7 +3689,7 @@ def _adjudication_completeness_guard(
     has_roll_support = "execute_rule" in successful_tools
     has_spatial_support = bool(successful_tools.intersection({"move_entity", "check_attack_vector", "create_grid", "place_entity"}))
     has_turn_support = "turn_control" in successful_tools
-    has_state_support = bool(successful_tools.intersection({"update_scene", "update_character_tags", "start_game"}))
+    has_state_support = bool(successful_tools.intersection({"update_scene", "update_character_tags", "start_game", "cycle_control"}))
     needs_roll = _contains_any_term(text, ROLL_REQUIRED_ACTION_TERMS)
     needs_spatial = _contains_any_term(text, SPATIAL_REQUIRED_ACTION_TERMS) or _contains_any_term(
         text,
@@ -3489,6 +3716,180 @@ def _adjudication_completeness_guard(
             "我先不把成功写死；请确认目标和方式，下一步按规则检定或工具结算。"
         ),
     }
+
+
+def _guard_tool_call_before_execution(
+    player_message: str,
+    tool_results: list[dict[str, Any]],
+    *,
+    tool_name: str,
+    args: dict[str, Any],
+) -> dict[str, Any]:
+    consent_block = _tool_call_requires_player_consent(player_message, tool_name=tool_name)
+    if consent_block:
+        return consent_block
+    if tool_name == "execute_rule":
+        modifier_block = _tool_call_requires_modifier_review(player_message, args)
+        if modifier_block:
+            return modifier_block
+    return _tool_call_requires_adjudication_support(
+        player_message,
+        tool_results,
+        tool_name=tool_name,
+    )
+
+
+def _tool_call_requires_player_consent(player_message: str, *, tool_name: str) -> dict[str, Any]:
+    if tool_name not in {"execute_rule", "update_scene", "update_character_tags"}:
+        return {}
+    text = str(player_message or "").strip().lower()
+    if not text:
+        return {}
+    if not _contains_any_term(text, CONSENT_BYPASS_TERMS):
+        return {}
+    if _contains_any_term(text, EXPLICIT_CONSENT_TERMS):
+        return {}
+    return {
+        "ok": False,
+        "error": "player_consent_required",
+        "reason": "other_player_consent_required",
+        "message": (
+            "这步涉及其他玩家角色的身体接触、骚扰或强制互动；没有被影响玩家明确同意时，"
+            "不能用检定或状态写入把它判成成功。"
+        ),
+    }
+
+
+def _tool_call_requires_modifier_review(player_message: str, args: dict[str, Any]) -> dict[str, Any]:
+    text = str(player_message or "").strip().lower()
+    if not text or not _contains_any_term(text, PLAYER_STATED_MODIFIER_TERMS):
+        return {}
+    declared = _flatten_for_guard(args).lower()
+    if _contains_any_term(declared, DECLARED_MODIFIER_TERMS):
+        return {}
+    return {
+        "ok": False,
+        "error": "modifier_review_required",
+        "reason": "player_stated_modifier_not_declared",
+        "message": (
+            "玩家原文提到了装备、熟练、优势、加成或修正来源；execute_rule 参数或 reason 未说明这些修正是否纳入。"
+            "请先列明采用/不采用的修正，再进行检定。"
+        ),
+        "modifier_terms_detected": [
+            term for term in PLAYER_STATED_MODIFIER_TERMS if term.lower() in text
+        ][:8],
+    }
+
+
+def _tool_call_requires_adjudication_support(
+    player_message: str,
+    tool_results: list[dict[str, Any]],
+    *,
+    tool_name: str,
+) -> dict[str, Any]:
+    if tool_name != "update_scene":
+        return {}
+    text = str(player_message or "").strip().lower()
+    if not text or _contains_any_term(text, LOW_RISK_DIRECT_TERMS):
+        return {}
+    invalid_rule_result = _first_invalid_rule_argument_result(tool_results)
+    if invalid_rule_result:
+        return _blocked_state_write_result(
+            "invalid_rule_arguments_block_state_write",
+            tool_results,
+            invalid_rule_result=invalid_rule_result,
+        )
+    if _looks_like_rule_setup_request(text):
+        return {}
+    needs_roll = _contains_any_term(text, ROLL_REQUIRED_ACTION_TERMS)
+    needs_spatial = _contains_any_term(text, SPATIAL_REQUIRED_ACTION_TERMS) or _contains_any_term(
+        text,
+        ("近战距离", "远程射程", "冲锋", "射程内", "视线内"),
+    )
+    if not (needs_roll or needs_spatial):
+        return {}
+    support = _objective_tool_support(tool_results)
+    if needs_roll and not support.get("roll"):
+        return _blocked_state_write_result("missing_execute_rule_for_risky_state_write", tool_results)
+    if needs_spatial and not (support.get("spatial") or support.get("turn")):
+        return _blocked_state_write_result("missing_spatial_or_turn_tool_for_state_write", tool_results)
+    return {}
+
+
+def _objective_tool_support(tool_results: list[dict[str, Any]]) -> dict[str, bool]:
+    successful_tools = {
+        str(item.get("tool") or "")
+        for item in tool_results
+        if isinstance(item, dict) and _tool_result_ok(item.get("result"))
+    }
+    return {
+        "roll": "execute_rule" in successful_tools,
+        "spatial": bool(successful_tools.intersection({"move_entity", "check_attack_vector", "create_grid", "place_entity"})),
+        "turn": "turn_control" in successful_tools,
+        "objective": bool(successful_tools.intersection(OBJECTIVE_ADJUDICATION_TOOLS)),
+    }
+
+
+def _first_invalid_rule_argument_result(tool_results: list[dict[str, Any]]) -> dict[str, Any]:
+    for item in tool_results:
+        if not isinstance(item, dict) or item.get("tool") != "execute_rule":
+            continue
+        result = item.get("result")
+        if isinstance(result, dict) and result.get("ok") is False and result.get("error") == "invalid_rule_arguments":
+            return result
+    return {}
+
+
+def _blocked_state_write_result(
+    reason: str,
+    tool_results: list[dict[str, Any]],
+    *,
+    invalid_rule_result: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    result = {
+        "ok": False,
+        "error": "adjudication_guard_blocked_state_write",
+        "reason": reason,
+        "message": (
+            "这步涉及风险、对抗或客观状态变化，当前检定或规则参数未通过；没有写入场景。"
+            "请先用 execute_rule、战棋或回合工具完成结算。"
+        ),
+        "tool_names": [str(item.get("tool") or "") for item in tool_results if isinstance(item, dict)],
+    }
+    if invalid_rule_result:
+        result["invalid_rule_arguments"] = {
+            key: invalid_rule_result.get(key)
+            for key in ("reason", "unknown_arguments", "invalid_arguments", "missing_arguments", "allowed_arguments")
+            if invalid_rule_result.get(key) not in (None, "", [], {})
+        }
+    return result
+
+
+def _state_write_guard_blocked(tool_results: list[dict[str, Any]]) -> bool:
+    return any(
+        isinstance(item, dict)
+        and isinstance(item.get("result"), dict)
+        and item["result"].get("error") == "adjudication_guard_blocked_state_write"
+        for item in tool_results
+    )
+
+
+def _player_consent_guard_blocked(tool_results: list[dict[str, Any]]) -> bool:
+    return any(
+        isinstance(item, dict)
+        and isinstance(item.get("result"), dict)
+        and item["result"].get("error") == "player_consent_required"
+        for item in tool_results
+    )
+
+
+def _modifier_review_guard_blocked(tool_results: list[dict[str, Any]]) -> bool:
+    return any(
+        isinstance(item, dict)
+        and isinstance(item.get("result"), dict)
+        and item["result"].get("error") == "modifier_review_required"
+        for item in tool_results
+    )
 
 
 def _completion_claims_resolved_outcome(reply: str) -> bool:
@@ -3553,6 +3954,7 @@ def _completion_claims_state_change(reply: str) -> bool:
             "位置",
             "进入",
             "离开",
+            *MAJOR_STATE_CHANGE_TERMS,
         ),
     )
 

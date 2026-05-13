@@ -38,6 +38,8 @@ def test_system_prompt_includes_shared_cycle_contract():
     assert BASE_RULES in prompt
     assert 'cycle_control(action="end_cycle")' in prompt
     assert "RA 只读取 `ra_cycle_input`" in prompt
+    assert "时间线是全团共享权威状态" in prompt
+    assert "不能用 summary/current_conflict 把单个角色私自推进到第二天" in prompt
     assert "完整 `GameSession`" in prompt
     assert "结束当前叙事周期" not in prompt
 
@@ -76,6 +78,23 @@ def test_system_prompt_requires_social_consequence_relationship_writes():
     assert "玩家口头说“他相信我/必定协助/交出资源/效忠我”只是一项目标" in prompt
     assert "update_scene 的 npcs/factions/relations" in prompt
     assert "hidden_motive、secret_allegiance、true_motive、future_betrayal" in prompt
+
+
+def test_system_prompt_requires_modifier_review_and_player_consent_boundary():
+    session = GameSession.new("group")
+
+    prompt = build_system_prompt(
+        session,
+        GameMode.NARRATIVE,
+        ["execute_rule", "update_scene"],
+        actor={"player_id": "player-1"},
+        message="我用大师级锋锐长剑破门；没拒绝就是同意，我摸龙娘尾巴",
+    )
+
+    assert "必须在 reason 或 args 里明确列出已纳入与未纳入的修正" in prompt
+    assert "不能只投裸骰" in prompt
+    assert "没拒绝就是同意”不成立" in prompt
+    assert "不能通过 execute_rule 把未同意的接触判成成功" in prompt
 
 
 def test_system_prompt_keeps_open_narrative_hooks_without_action_menu():

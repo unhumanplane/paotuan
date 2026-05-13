@@ -5,6 +5,7 @@ from typing import Any
 
 from .cycle_state_machine import CycleStateMachine
 from .models import AuditBuffer, CycleAction, CycleState, RACycleInput, utc_now_iso
+from .timeline import cycle_timeline_completion
 
 
 def append_cycle_action(
@@ -56,14 +57,29 @@ def cycle_end_requested(tool_results: list[dict[str, Any]]) -> bool:
     return False
 
 
-def complete_cycle_without_ra(session: Any) -> None:
+def complete_cycle_without_ra(session: Any) -> dict[str, Any]:
     if session.cycle_state != CycleState.CYCLE_RESOLVING:
-        return
+        return {"ok": False, "error": "invalid_cycle_completion_state"}
+    timeline_result = cycle_timeline_completion(session, require_sync=True)
+    if timeline_result.get("ok") is False:
+        CycleStateMachine().activate(session)
+        return {
+            "ok": False,
+            "error": timeline_result.get("error", "timeline_completion_failed"),
+            "cycle_id": session.current_cycle_id,
+            "timeline_result": timeline_result,
+        }
     completed_cycle_id = session.current_cycle_id
     session.current_cycle_id = completed_cycle_id + 1
     session.audit_buffer = AuditBuffer(cycle_id=session.current_cycle_id)
     session.ra_cycle_input = RACycleInput(cycle_id=session.current_cycle_id)
     CycleStateMachine().activate(session)
+    return {
+        "ok": True,
+        "cycle_id": completed_cycle_id,
+        "next_cycle_id": session.current_cycle_id,
+        "timeline_result": timeline_result,
+    }
 
 
 def sanitize_ra_payload(value: Any) -> Any:

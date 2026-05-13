@@ -23,6 +23,14 @@ from ..core.models import (
     project_public_relation_state,
     utc_now_iso,
 )
+from ..core.timeline import (
+    apply_timeline_patch,
+    extract_timeline_patch,
+    patch_has_per_player_timeline,
+    patch_mentions_implicit_timeline_advance,
+    timeline_view,
+    validate_global_timeline_advance,
+)
 from ..core.scene_hooks import (
     format_scene_tracking_status,
     normalize_scene_tracking_patch,
@@ -70,6 +78,33 @@ class UpdateSceneArgs(BaseModel):
             "suspected, resolved, false_lead, blocked。不要写入未被角色确认的幕后真相。"
         ),
     )
+
+
+SCENE_THREAD_CONTROL_KEYS = {"scene_thread_id", "thread_id", "_scene_thread_id"}
+SCENE_THREAD_METADATA_KEYS = {
+    "scene_thread_id",
+    "thread_id",
+    "_scene_thread_id",
+    "active_scene_thread_id",
+    "scene_threads",
+}
+SCENE_THREAD_MIRROR_KEYS = {
+    "summary",
+    "location",
+    "_location",
+    "scene_time_label",
+    "scene_time_of_day",
+    "current_conflict",
+    "current_objective",
+    "open_hooks",
+    "clues",
+    "mysteries",
+    "stakes",
+    "pressure_clock",
+    "npcs",
+    "factions",
+    "relations",
+}
 
 
 class UpdateWorldTagsArgs(BaseModel):
@@ -559,13 +594,72 @@ class MemoryTools:
         if gate:
             self._audit("update_scene", {"patch": patch}, gate)
             return gate
+        if patch_has_per_player_timeline(patch):
+            result = {
+                "ok": False,
+                "error": "per_player_timeline_forbidden",
+                "message": "时间线是全团共享权威状态，不能按玩家或角色分别写入不同日期/时段。",
+            }
+            self._audit("update_scene", {"patch": patch}, result)
+            return result
+        timeline_patch, scene_patch = extract_timeline_patch(patch)
+        if timeline_patch:
+            validation = validate_global_timeline_advance(session, timeline_patch)
+            if not validation.get("ok"):
+                self._audit("update_scene", {"patch": patch}, validation)
+                return validation
+            session.timeline = apply_timeline_patch(
+                session.timeline,
+                timeline_patch,
+                reason=self.message or "update_scene",
+                cycle_id=session.current_cycle_id,
+            )
+        patch = scene_patch
+        if not patch:
+            self.repository.save_session(session)
+            result = {"ok": True, "scene": session.scene, "timeline": timeline_view(session.timeline)}
+            self._audit("update_scene", {"patch": timeline_patch}, result)
+            return result
+        if not timeline_patch and patch_mentions_implicit_timeline_advance(patch):
+            result = {
+                "ok": False,
+                "error": "timeline_patch_required",
+                "message": (
+                    "场景补丁里包含跨日、天亮、入夜、长休或等待到下一时段的推进；"
+                    "必须通过全团同步 timeline_patch/cycle_control 处理，不能只写入某条 scene thread。"
+                ),
+                "timeline": timeline_view(session.timeline),
+            }
+            self._audit("update_scene", {"patch": patch}, result)
+            return result
         normalized_patch = normalize_relationship_collections(
             normalize_scene_tracking_patch(patch)
         )
-        session.scene.update(normalized_patch)
+        thread_id = _resolve_scene_thread_id(session, self.actor, self.message, normalized_patch)
+        normalized_patch = {
+            key: value
+            for key, value in normalized_patch.items()
+            if key not in SCENE_THREAD_METADATA_KEYS
+        }
+        scene_threads = _scene_threads(session.scene)
+        scene_thread = _merge_scene_thread(
+            dict(scene_threads.get(thread_id) or {}),
+            normalized_patch,
+            actor=self.actor,
+            character_id=_actor_character_id(session, self.actor),
+        )
+        scene_threads[thread_id] = scene_thread
+        _write_scene_mirror(session.scene, thread_id, scene_thread, normalized_patch)
         self.repository.save_session(session)
-        result = {"ok": True, "scene": session.scene}
-        self._audit("update_scene", {"patch": normalized_patch}, result)
+        result = {
+            "ok": True,
+            "scene": session.scene,
+            "timeline": timeline_view(session.timeline),
+            "scene_thread_id": thread_id,
+            "scene_thread": scene_thread,
+            "scene_threads_isolated": True,
+        }
+        self._audit("update_scene", {"patch": normalized_patch, "scene_thread_id": thread_id}, result)
         return result
 
     async def update_world_tags(self, patch: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
@@ -3583,6 +3677,111 @@ def infer_tags_from_text(text: str) -> List[Dict[str, Any]]:
         for key, value in collected.items()
         if str(key).strip() and value not in ("", [], None)
     ]
+
+
+def _scene_threads(scene: Dict[str, Any]) -> Dict[str, Any]:
+    threads = scene.get("scene_threads")
+    if isinstance(threads, dict):
+        return threads
+    threads = {}
+    scene["scene_threads"] = threads
+    return threads
+
+
+def _resolve_scene_thread_id(
+    session: GameSession,
+    actor: Dict[str, str],
+    message: str,
+    patch: Dict[str, Any],
+) -> str:
+    for key in SCENE_THREAD_CONTROL_KEYS:
+        value = str(patch.get(key) or "").strip()
+        if value:
+            return _safe_scene_thread_id(value)
+    location = str(patch.get("location") or patch.get("_location") or "").strip()
+    character_id = _actor_character_id(session, actor)
+    if location:
+        base = f"{character_id or 'scene'}:{location}"
+    elif character_id:
+        base = f"character:{character_id}"
+    else:
+        base = f"session:{_short_tag_value(message or session.session_id, 40)}"
+    return _safe_scene_thread_id(base)
+
+
+def _actor_character_id(session: GameSession, actor: Dict[str, str]) -> str:
+    player_id = str((actor or {}).get("player_id") or "").strip()
+    if not player_id:
+        return ""
+    return str((session.player_character_map or {}).get(player_id, "") or "")
+
+
+def _safe_scene_thread_id(value: str) -> str:
+    safe = re.sub(r"[^a-zA-Z0-9_.:-]+", "_", str(value or "").strip())
+    safe = safe.strip("._:-")
+    return safe[:96] or "default"
+
+
+def _merge_scene_thread(
+    current: Dict[str, Any],
+    patch: Dict[str, Any],
+    *,
+    actor: Dict[str, str],
+    character_id: str,
+) -> Dict[str, Any]:
+    merged = dict(current or {})
+    merged.update(patch)
+    merged["updated_at"] = utc_now_iso()
+    scene_time_label = _scene_thread_time_label(patch)
+    if scene_time_label:
+        merged["scene_time_label"] = scene_time_label
+    scene_time_of_day = _scene_thread_time_of_day(patch)
+    if scene_time_of_day:
+        merged["scene_time_of_day"] = scene_time_of_day
+    if character_id:
+        participants = list(merged.get("participants") or [])
+        if character_id not in participants:
+            participants.append(character_id)
+        merged["participants"] = participants[-12:]
+        merged["active_character_id"] = character_id
+    player_id = str((actor or {}).get("player_id") or "").strip()
+    if player_id:
+        merged["last_actor_player_id"] = player_id
+    return merged
+
+
+def _scene_thread_time_label(patch: Dict[str, Any]) -> str:
+    for key in ("scene_time_label", "time_label", "current_time_label", "time", "scene_time", "current_time"):
+        value = patch.get(key)
+        if isinstance(value, str) and value.strip():
+            return _short_tag_value(value, 80)
+    return ""
+
+
+def _scene_thread_time_of_day(patch: Dict[str, Any]) -> str:
+    for key in ("scene_time_of_day", "time_of_day", "period", "phase"):
+        value = patch.get(key)
+        if isinstance(value, str) and value.strip():
+            return _short_tag_value(value, 40)
+    label = _scene_thread_time_label(patch)
+    for token in ("黎明", "清晨", "早上", "上午", "中午", "下午", "傍晚", "黄昏", "晚上", "夜晚", "深夜", "凌晨"):
+        if token in label:
+            return token
+    return ""
+
+
+def _write_scene_mirror(
+    scene: Dict[str, Any],
+    thread_id: str,
+    scene_thread: Dict[str, Any],
+    patch: Dict[str, Any],
+) -> None:
+    scene["active_scene_thread_id"] = thread_id
+    for key in SCENE_THREAD_MIRROR_KEYS:
+        if key in scene_thread:
+            scene[key] = scene_thread[key]
+        else:
+            scene.pop(key, None)
 
 
 def _clean_tag_text(text: str) -> str:

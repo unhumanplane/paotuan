@@ -30,6 +30,8 @@ def test_old_save_loads_with_cycle_defaults():
     assert session.ra_cycle_input.actions == []
     assert session.environment_summaries == []
     assert session.rule_sets == {}
+    assert session.timeline["day"] == 1
+    assert session.timeline["status"] == "global"
 
 
 def test_cycle_fields_round_trip_to_dict():
@@ -37,6 +39,7 @@ def test_cycle_fields_round_trip_to_dict():
     session.cycle_state = CycleState.CYCLE_RESOLVING
     session.current_cycle_id = 2
     session.rule_sets["combat"] = {"name": "combat"}
+    session.timeline = {"day": 2, "time_of_day": "morning", "label": "第 2 天清晨", "status": "global"}
     session.audit_buffer = AuditBuffer(
         cycle_id=2,
         actions=[
@@ -73,6 +76,8 @@ def test_cycle_fields_round_trip_to_dict():
     assert loaded.ra_cycle_input.actions[0]["tools_called"][0]["result_sanitized"]["hp"] == 4
     assert loaded.environment_summaries == [{"cycle_id": 1, "summary": "first cycle"}]
     assert loaded.rule_sets["combat"]["name"] == "combat"
+    assert loaded.timeline["day"] == 2
+    assert loaded.timeline["time_of_day"] == "morning"
 
 
 def test_invalid_cycle_state_falls_back_to_active():

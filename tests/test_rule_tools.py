@@ -60,3 +60,30 @@ def test_list_rules_restricts_unfiltered_detail_for_large_rule_sets(tmp_path):
     assert len(result["details"]) <= 4
     assert result["details_omitted"] >= 48
     assert "_omitted_keys" in result["details"][0]["input_schema"]
+
+
+def test_execute_rule_does_not_inject_threshold_when_difficulty_exists(tmp_path):
+    tools, runtime = _make_rule_tools(tmp_path)
+    runtime.register_rule(
+        "skill_check",
+        "Resolve a skill check.",
+        """
+def calculate(skill, difficulty):
+    return {"total": skill, "success": skill >= difficulty}
+""".strip(),
+        input_schema={"skill": "number", "difficulty": "number"},
+    )
+
+    result = asyncio.run(
+        tools.execute_rule(
+            "skill_check",
+            args={"skill": 12, "difficulty": 10, "target": 15},
+            reason="test difficulty alias handling",
+        )
+    )
+
+    assert result["ok"] is False
+    assert result["error"] == "invalid_rule_arguments"
+    assert result["unknown_arguments"] == ["target"]
+    audit = tools.repository.last_audit_records("group", limit=1)[0]
+    assert "threshold" not in audit["input"]["args"]

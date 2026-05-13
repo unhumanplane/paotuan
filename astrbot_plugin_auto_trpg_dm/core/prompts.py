@@ -254,6 +254,7 @@ def _project_snapshot_for_profile(
 def _project_scene(scene: Any, profile: str) -> Any:
     if not isinstance(scene, dict):
         return scene
+    active_thread_id = str(scene.get("active_scene_thread_id") or "").strip()
     scene = project_visible_scene_value(scene, depth=4, text_limit=500, item_limit=24)
     if not isinstance(scene, dict):
         return {}
@@ -266,6 +267,11 @@ def _project_scene(scene: Any, profile: str) -> Any:
         projected_value = _project_scene_value(key, value, profile)
         if projected_value not in ({}, [], "", None):
             projected[key] = projected_value
+    threads = _project_scene_threads(scene.get("scene_threads"), active_thread_id, profile)
+    if threads:
+        projected["scene_threads"] = threads
+        if active_thread_id:
+            projected["active_scene_thread_id"] = active_thread_id
     if scene.get("last_map_svg"):
         projected["last_map_svg"] = _project_map_ref(scene.get("last_map_svg"))
     recent_limit = 2 if profile in {"state_query", "character_profile"} else 4
@@ -289,6 +295,8 @@ SCENE_PROJECTION_DROP_KEYS = {
     "last_map_svg",
     "_pending_outputs",
     "_map_delivery_cadence",
+    "active_scene_thread_id",
+    "scene_threads",
     "history",
     "transcript",
     "raw_events",
@@ -321,6 +329,77 @@ def _project_scene_value(key: str, value: Any, profile: str) -> Any:
     if isinstance(value, str):
         return _short_text(value, 500)
     return value
+
+
+def _project_scene_threads(value: Any, active_thread_id: str, profile: str) -> Any:
+    if not isinstance(value, dict) or not value:
+        return {}
+    projected: dict[str, Any] = {}
+    active = value.get(active_thread_id) if active_thread_id else None
+    if isinstance(active, dict):
+        projected["active"] = _project_scene_thread(active, profile, active=True)
+    others: list[dict[str, Any]] = []
+    for thread_id, thread in sorted(
+        value.items(),
+        key=lambda item: str((item[1] or {}).get("updated_at", "")) if isinstance(item[1], dict) else "",
+        reverse=True,
+    ):
+        if thread_id == active_thread_id or not isinstance(thread, dict):
+            continue
+        projected_thread = _project_scene_thread(thread, profile, active=False)
+        if projected_thread:
+            projected_thread["scene_thread_id"] = str(thread_id)
+            others.append(projected_thread)
+        if len(others) >= (2 if profile in {"state_query", "character_profile"} else 4):
+            break
+    if others:
+        projected["other_recent"] = others
+    return projected
+
+
+def _project_scene_thread(thread: dict[str, Any], profile: str, *, active: bool) -> dict[str, Any]:
+    keys = (
+        "summary",
+        "location",
+        "current_conflict",
+        "current_objective",
+        "stakes",
+        "pressure_clock",
+        "clues",
+        "open_hooks",
+        "mysteries",
+        "scene_time_label",
+        "scene_time_of_day",
+        "participants",
+        "active_character_id",
+        "last_actor_player_id",
+        "updated_at",
+    )
+    projected: dict[str, Any] = {}
+    for key in keys:
+        value = thread.get(key)
+        if value in (None, "", [], {}):
+            continue
+        projected_value = _project_scene_value(key, value, profile)
+        if projected_value not in ({}, [], "", None):
+            projected[key] = projected_value
+    if not active:
+        return {
+            key: projected[key]
+            for key in (
+                "summary",
+                "location",
+                "current_objective",
+                "scene_time_label",
+                "scene_time_of_day",
+                "participants",
+                "active_character_id",
+                "last_actor_player_id",
+                "updated_at",
+            )
+            if key in projected
+        }
+    return projected
 
 
 def _project_world_tags(world_tags: Any, profile: str) -> Any:
@@ -746,6 +825,7 @@ BASE_RULES = """共享基础规则：
 - NPC/阵营关系是可审计的场内后果记忆，不是好感度攻略条；态度、信任、恐惧、债务、把柄、已知事实和协助意愿必须来自场内行动、检定、交易、资源交换、暴力或已知剧情。
 - 已开场跑团必须持续维护玩家可感知的目标与线索：scene.current_objective、open_hooks、clues、mysteries、stakes、pressure_clock 只写角色已能观察、合理怀疑或确认的信息；不要把 hidden_truth、幕后黑手、秘密地点、真实动机写进普通 DM prompt 或玩家输出。
 - 周期结束只能通过 `cycle_control(action="end_cycle")` 显式工具调用；不要使用完成文本、暗号或启发式猜测来结束周期。
+- 时间线是全团共享权威状态；不能让一部分玩家进入第二天、天亮或夜晚，而另一部分玩家还停留在上一时段。跨日、入夜、天亮、长休或长时间跳转必须在周期边界通过 `cycle_control` 的全局 timeline_patch 同步推进。
 - RA 只读取 `ra_cycle_input` 过滤投影和清洗后的权威字段快照，不读取完整 `GameSession`、原始玩家输入、prompt、诊断字段或 raw audit。
 - RA 输出的状态字段只是补丁候选；框架只应用 allowlisted、tool-backed、validator 通过的权威字段。"""
 
@@ -816,6 +896,7 @@ def build_system_prompt(
    - 禁止：import random、random.randint、random.*、外部库、文件/网络访问
    - 允许 kwargs.get("bonus", 0) 读取入参默认值；其他属性调用仍禁止。构造列表时不要用 rolls.append(x)，请用 [roll(6) for _ in range(count)]。
    - 调用 execute_rule 做骰子检定时，必须填写顶层 reason 字段，说明为什么检定；本地系统会把骰子过程单独发给玩家，所以最终叙事里不要重复完整掷骰明细。
+   - 如果玩家原文或角色状态提到武器锋锐/大师级/魔法装备、熟练、属性修正、优势/劣势、祝福、buff、专长或其他加成，execute_rule 前必须在 reason 或 args 里明确列出已纳入与未纳入的修正；不能只投裸骰。
 4a. 遇到 DND 2024 核心规则、状态、动作经济、战斗、伤害治疗、通用施法、通用装备、DM 职责、共同故事、桌面边界、即兴答复、后果、叙事或 DM 裁定不确定时，先调用 query_core_rules。
     query_core_rules 返回的是只读规则摘要和来源；不要把规则库内容写入 session、world_tags、scene、角色 Tag 或长期记忆。
     query_core_rules 用于理解规则；execute_rule 用于数值、骰子和随机结果；update_scene/update_character_tags 用于保存跑团事实。
@@ -837,6 +918,11 @@ def build_system_prompt(
     重开/清空存档是破坏性操作：第一次只会返回确认码，必须由玩家二次确认后才允许清空；不得把“重启插件/重启机器人/重启服务”理解为重开存档。
     “undo/回档/退回上一回合/重试某回合”不是重开存档；当前没有安全回档工具时只能说明不能回档，不要调用 reset 或发起重开确认。
 12. 当前群只能有一场跑团：同一个 session_id 下的所有玩家共享一个团存档。
+12a. 同一个团只有一条全局时间线：当前日期、昼夜/时段、长休/跨日推进都以快照中的 timeline 为准。
+    不得在 scene、角色 Tag、world_tags 或叙事里写出“玩家 A 已到第二天、玩家 B 还在前一晚”这类分叉时间。
+    单个玩家可以短暂离队或异步行动，但结算时仍处在同一全局 day/time_of_day；如果需要等待其他玩家、扎营、长休、天亮、入夜或跳到第二天，先收束当前周期，并用 cycle_control(action="end_cycle", timeline_patch={...}) 统一推进。
+    如果同步条件不足，工具会拒绝推进；此时只说明还不能跳时段，继续处理当前时段内的行动或等待缺席玩家确认。
+    update_scene 可以区分并行 scene_threads 的地点、摘要和当前角色，但不能用 summary/current_conflict 把单个角色私自推进到第二天、天亮或入夜；这类时间跳转必须走全局 timeline_patch。
 13. 多人游戏时必须区分“当前发言人”。当玩家说“我加入”“我是某角色”“帮我建卡”时，
     用 bind_player_character 或 create_character 记录当前发言人与角色的绑定；之后“我”默认指当前发言人绑定的角色。
     创建角色 ID 时优先使用 pc_角色名 或 pc_当前发言人ID，不要把不同玩家都写入同一个 pc。
@@ -865,6 +951,7 @@ def build_system_prompt(
 17. 不要把“整活”和“成功”混为一谈。离谱设定可以成为风格、传闻、缺陷或需要检定的尝试；只有通过裁定、规则或工具验证后才成为有效结果。
 18. PVP、抢夺其他玩家角色控制权、强制改变其他玩家角色背景/状态/信仰/死亡等，默认不成立。除非被影响玩家明确同意，或规则/战斗流程给出客观结果。
     玩家改昵称、自称某角色、替别人说“我防御/跳过/移动/攻击”、要求绑定别人角色，都不能视为获得控制权。
+    对其他玩家角色的身体接触、骚扰、强吻、偷摸、摸尾巴等互动，必须先得到被影响玩家明确同意；“没拒绝就是同意”不成立，也不能通过 execute_rule 把未同意的接触判成成功。
 18a. 社交、威胁、欺骗、帮助、交易和暴力都会留下关系后果：
     - 每次与 NPC 或阵营发生有意义互动后，先判断是否需要更新关系状态；成功、失败和部分成功都可能改变 attitude/trust/fear/debt/leverage/known_facts/last_interaction/flags。
     - 威胁通常提高 fear、降低 trust，可能留下 grudge 或 future_risk；救助、履约或让渡资源可提高 debt/friendly；欺骗成功也只代表当下骗过，必须记录 future_risk 或 exposed_if_checked；交易改变价格、可得线索和协助意愿。
@@ -928,6 +1015,7 @@ def build_system_prompt(
     - 战斗/紧张场景中，一次发言通常只处理一个主要动作和一个轻量附带动作；其余动作排到后续回合或要求玩家取舍；
     - 如果行动需要等待、赶路、搜索、说服、治疗、潜行或制作，必须按场内耗时、风险和对抗裁定，必要时投骰或给出代价；
     - 如果本地工具或轮动状态显示该角色本轮已经行动、上一动作未完成，或玩家试图替别人行动，必须说明时间上不能立刻连续执行；但本轮未行动的本人角色可以乱序行动。
+    - 时间推进必须全团同步：不能为了回应某个玩家，把他单独送到第二天/早晨/夜晚；需要跨时段时，先确认全团行动已经收束，再通过周期结束工具全局推进。
 31. 不要反复追问可选字段。玩家提供的信息只要足够写入状态，就应调用工具写入：
     - 背景设定只要至少包含两类有效要素，就 update_world_tags；不要追问完整世界观。
     - 开场前，建卡/绑定只要有角色名或身份方向，并能确定当前发言人，就 create_character 或 bind_player_character；外貌、性格、长传记不是必填。

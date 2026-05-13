@@ -64,6 +64,47 @@ def test_complete_cycle_without_ra_returns_to_active_and_rotates_buffer():
     assert session.ra_cycle_input.actions == []
 
 
+def test_complete_cycle_without_ra_infers_global_timeline_from_cycle_text():
+    session = GameSession.new("group")
+    session.cycle_state = CycleState.CYCLE_RESOLVING
+    append_cycle_action(
+        session,
+        actor={"player_id": "player-1"},
+        player_message="我守夜到天亮",
+        completion="营火熄成灰，队伍来到第二天清晨。",
+        tool_results=[],
+    )
+
+    complete_cycle_without_ra(session)
+
+    assert session.timeline["day"] == 2
+    assert session.timeline["time_of_day"] == "dawn"
+
+
+def test_complete_cycle_without_ra_refuses_unsynced_timeline_advance():
+    session = GameSession.new("group")
+    session.participants = {"player-1": {}, "player-2": {}}
+    session.player_character_map = {"player-1": "pc-1", "player-2": "pc-2"}
+    session.cycle_state = CycleState.CYCLE_RESOLVING
+    append_cycle_action(
+        session,
+        actor={"player_id": "player-1"},
+        player_message="我守夜到天亮",
+        completion="你准备把时间推到第二天清晨。",
+        tool_results=[],
+    )
+
+    result = complete_cycle_without_ra(session)
+
+    assert result["timeline_result"]["ok"] is False
+    assert result["timeline_result"]["error"] == "timeline_sync_required"
+    assert result["timeline_result"]["missing_player_ids"] == ["player-2"]
+    assert session.cycle_state == CycleState.CYCLE_ACTIVE
+    assert session.current_cycle_id == 0
+    assert session.audit_buffer.actions
+    assert session.timeline["day"] == 1
+
+
 def test_append_cycle_action_sanitizes_raw_grid_from_ra_tool_input():
     session = GameSession.new("group")
     tool_results = [

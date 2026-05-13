@@ -219,7 +219,11 @@ class ToolRegistry:
             ),
             "execute_rule": make_tool(
                 name="execute_rule",
-                description="执行已注册规则，用于检定、伤害、资源消耗和随机判定。",
+                description=(
+                    "执行已注册规则，用于检定、伤害、资源消耗和随机判定。"
+                    "如果玩家或角色状态提到武器/装备、熟练、属性、优势/劣势、buff、祝福或其他修正，"
+                    "必须在 reason 或 args 中说明已纳入/未纳入的修正，不能漏算后直接投骰。"
+                ),
                 model=ExecuteRuleArgs,
                 handler=rule_tools.execute_rule,
             ),
@@ -257,6 +261,9 @@ class ToolRegistry:
                 name="update_scene",
                 description=(
                     "更新当前场景、冲突、地点、NPC 摘要、可见线索和开放钩子等叙事状态。"
+                    "并行角色线会按 scene_thread_id/当前角色/地点隔离；写入地点线时尽量带 location，"
+                    "必要时可带 scene_time_label/scene_time_of_day 描述当前全局时段。"
+                    "不能把单个角色私自写到第二天、天亮、入夜或长休后；时间跳转必须通过全局 timeline_patch/cycle_control。"
                     "调查、询问、搜索、交易、交涉或战斗后若发现信息或改变风险，优先写入 "
                     "clues/open_hooks/mysteries/current_objective/stakes/pressure_clock；"
                     "clue status 用 discovered/suspected/resolved/false_lead/blocked。不要写未确认的幕后真相。"
@@ -360,7 +367,11 @@ class ToolRegistry:
             ),
             "cycle_control": make_tool(
                 name="cycle_control",
-                description='显式结束当前叙事周期。MVP 仅支持 action="end_cycle"；不要用完成文本或猜测来结束周期。',
+                description=(
+                    '显式结束当前叙事周期。MVP 仅支持 action="end_cycle"；不要用完成文本或猜测来结束周期。'
+                    "如需跨日、入夜、天亮、长休或跳到下一时段，必须传全局 timeline_patch；"
+                    "工具会拒绝按玩家/角色分叉的时间线。"
+                ),
                 model=CycleControlArgs,
                 handler=cycle_tools.cycle_control,
             ),
