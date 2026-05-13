@@ -82,8 +82,9 @@ def calculate(skill, difficulty):
         )
     )
 
-    assert result["ok"] is False
-    assert result["error"] == "invalid_rule_arguments"
-    assert result["unknown_arguments"] == ["target"]
+    assert result["ok"] is True
+    assert result["result"]["total"] == 12
+    assert result["result"]["success"] is True
+    assert result["coerced_args"] == {"skill": 12, "difficulty": 10}
     audit = tools.repository.last_audit_records("group", limit=1)[0]
     assert "threshold" not in audit["input"]["args"]

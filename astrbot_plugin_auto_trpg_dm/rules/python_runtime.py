@@ -39,6 +39,30 @@ SAFE_BUILTINS = {
 }
 
 
+RULE_CONTEXT_ARGUMENTS = {
+    "actor",
+    "approach",
+    "context",
+    "dc",
+    "difficulty_class",
+    "environment",
+    "modifier",
+    "note",
+    "notes",
+    "reason",
+    "situation",
+    "target",
+    "terrain",
+}
+
+BONUS_ARGUMENT_ALIASES = {
+    "bonus_modifier",
+    "context_bonus",
+    "modifier",
+    "situational_bonus",
+}
+
+
 class PythonRuleRuntime:
     def __init__(self, rules_dir: Path, timeout_seconds: float = 2.0):
         self.rules_dir = rules_dir
@@ -105,7 +129,8 @@ class PythonRuleRuntime:
         code = code_path.read_text(encoding="utf-8")
         original_args = dict(args or {})
         input_schema = self._load_input_schema(resolved_name, selected_version)
-        schema_validation = _validate_rule_args_against_schema(original_args, input_schema)
+        schema_args = _normalize_rule_args_for_schema(original_args, input_schema)
+        schema_validation = _validate_rule_args_against_schema(schema_args, input_schema)
         if schema_validation:
             schema_validation["rule_name"] = resolved_name
             schema_validation["version"] = selected_version
@@ -113,7 +138,7 @@ class PythonRuleRuntime:
                 schema_validation["requested_rule_name"] = safe_name
             return schema_validation
         execution_args = _coerce_rule_args_by_schema(
-            original_args,
+            schema_args,
             input_schema,
         )
         try:
@@ -310,6 +335,69 @@ def _should_retry_with_numeric_args(payload: dict[str, Any]) -> bool:
         or "invalid literal for int()" in reason
         or "could not convert string to float" in reason
     )
+
+
+def _normalize_rule_args_for_schema(args: dict[str, Any], input_schema: dict[str, Any]) -> dict[str, Any]:
+    properties = _schema_properties(input_schema)
+    if not properties:
+        return dict(args or {})
+    normalized = dict(args or {})
+    allowed = set(properties.keys())
+    for source, destinations in (
+        ("dc", ("dc", "difficulty", "difficulty_class", "target_number", "threshold")),
+        ("difficulty_class", ("difficulty_class", "difficulty", "dc", "target_number", "threshold")),
+        ("target_dc", ("target_dc", "dc", "difficulty", "target_number", "threshold")),
+    ):
+        if source in normalized and source not in allowed:
+            destination = _first_allowed_argument(destinations, allowed)
+            if destination:
+                normalized.setdefault(destination, normalized[source])
+                normalized.pop(source, None)
+    bonus_destination = _first_allowed_argument(("bonus", "modifier", "skill_bonus", "ability_modifier"), allowed)
+    if bonus_destination:
+        for source in BONUS_ARGUMENT_ALIASES:
+            if source in normalized and source not in allowed:
+                normalized[bonus_destination] = _merge_numeric_like_values(
+                    normalized.get(bonus_destination),
+                    normalized[source],
+                )
+                normalized.pop(source, None)
+    for key in list(normalized.keys()):
+        if key not in allowed and key in RULE_CONTEXT_ARGUMENTS:
+            normalized.pop(key, None)
+    return normalized
+
+
+def _first_allowed_argument(candidates: tuple[str, ...], allowed: set[str]) -> str | None:
+    for candidate in candidates:
+        if candidate in allowed:
+            return candidate
+    return None
+
+
+def _merge_numeric_like_values(current: Any, extra: Any) -> Any:
+    current_number = _number_or_none(current)
+    extra_number = _number_or_none(extra)
+    if current_number is not None and extra_number is not None:
+        merged = current_number + extra_number
+        return int(merged) if float(merged).is_integer() else merged
+    if current in (None, ""):
+        return extra
+    return current
+
+
+def _number_or_none(value: Any) -> float | None:
+    if isinstance(value, bool) or value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        return float(text)
+    except ValueError:
+        return None
 
 
 def _validate_rule_args_against_schema(args: dict[str, Any], input_schema: dict[str, Any]) -> dict[str, Any] | None:
@@ -625,9 +713,10 @@ def _filter_calculate_args(calculate: Any, args: dict[str, Any]) -> dict[str, An
         if param.kind in (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)
     }
     if not accepted:
-        return {"args": {}, "ignored": sorted(str(key) for key in args), "missing": []}
+        unknown = sorted(str(key) for key in args if key not in RULE_CONTEXT_ARGUMENTS)
+        return {"args": {}, "ignored": unknown, "missing": []}
     filtered = {key: value for key, value in args.items() if key in accepted}
-    ignored = sorted(str(key) for key in args if key not in accepted)
+    ignored = sorted(str(key) for key in args if key not in accepted and key not in RULE_CONTEXT_ARGUMENTS)
     missing = sorted(
         name
         for name, param in signature.parameters.items()

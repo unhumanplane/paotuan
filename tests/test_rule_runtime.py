@@ -63,13 +63,65 @@ def calculate(skill, difficulty):
 
     executed = runtime.execute_rule(
         "skill_check",
-        {"skill": 3, "difficulty": 10, "target": "door"},
+        {"skill": 3, "difficulty": 10, "unexpected": "door"},
     )
 
     assert executed["ok"] is False
     assert executed["error"] == "invalid_rule_arguments"
-    assert executed["unknown_arguments"] == ["target"]
+    assert executed["unknown_arguments"] == ["unexpected"]
     assert executed["allowed_arguments"] == ["difficulty", "skill"]
+
+
+def test_ignores_context_arguments_and_maps_common_aliases(tmp_path: Path):
+    runtime = PythonRuleRuntime(tmp_path, timeout_seconds=3)
+    code = """
+def calculate(bonus, difficulty):
+    total = roll("1d20") + bonus
+    return {"total": total, "success": total >= difficulty}
+""".strip()
+    registered = runtime.register_rule(
+        rule_name="contextual_check",
+        description="check with schema aliases",
+        code_string=code,
+        input_schema={"bonus": "number", "difficulty": "number"},
+    )
+    assert registered["ok"] is True
+
+    executed = runtime.execute_rule(
+        "contextual_check",
+        {
+            "context_bonus": 2,
+            "dc": 10,
+            "terrain": "暴雨甲板",
+            "target": "船舷",
+            "reason": "攀爬检定",
+        },
+    )
+
+    assert executed["ok"] is True
+    assert executed["coerced_args"] == {"bonus": 2, "difficulty": 10}
+
+
+def test_context_arguments_do_not_break_no_arg_rule(tmp_path: Path):
+    runtime = PythonRuleRuntime(tmp_path, timeout_seconds=3)
+    code = """
+def calculate():
+    return {"ok": True}
+""".strip()
+    registered = runtime.register_rule(
+        rule_name="simple_event",
+        description="simple no arg event",
+        code_string=code,
+    )
+    assert registered["ok"] is True
+
+    executed = runtime.execute_rule(
+        "simple_event",
+        {"target": "门", "terrain": "雨地", "reason": "触发事件"},
+    )
+
+    assert executed["ok"] is True
+    assert executed["result"] == {"ok": True}
 
 
 def test_rejects_import(tmp_path: Path):
