@@ -43,7 +43,7 @@ from .tools.registry import ToolRegistry
 from .tools.turn_tools import TurnTools
 
 
-PLUGIN_VERSION = "0.1.103"
+PLUGIN_VERSION = "0.1.104"
 
 DEFAULT_REASSURANCE_PHRASES = (
     "正在翻找合适的骰子。",
@@ -257,6 +257,7 @@ class AutoTrpgDmPlugin(Star):
         self.ambient_image_config = ambient_image_config
         prompt_snapshot_projection_enabled = self._config_bool("prompt_snapshot_projection_enabled", True)
         heartbeat_idle_log_interval = max(1, self._config_int("heartbeat_idle_log_interval", 10))
+        llm_tool_loop_max_steps = max(1, self._config_int("llm_tool_loop_max_steps", 16))
         self.prompt_snapshot_projection_enabled = prompt_snapshot_projection_enabled
         self.heartbeat_idle_log_interval = heartbeat_idle_log_interval
         ambient_image_provider = AmbientImageProvider(ambient_image_config)
@@ -275,6 +276,7 @@ class AutoTrpgDmPlugin(Star):
             ambient_image_config=ambient_image_config,
             ambient_image_provider=ambient_image_provider,
             ambient_image_sender=self._send_independent_ambient_image,
+            max_steps=llm_tool_loop_max_steps,
             ra_enabled=self._config_bool("ra_enabled", False),
             ra_model_provider=self._config_str("ra_model_provider", "default") or "default",
             ra_max_tokens=self._config_int("ra_max_tokens", 2048),
@@ -296,7 +298,7 @@ class AutoTrpgDmPlugin(Star):
         self._heartbeat_idle_ticks = 0
         self._start_heartbeat_task()
         self.plugin_logger.info(
-            "plugin_initialized version=%s data_dir=%s honcho_enabled=%s honcho_workspace=%s ambient_image_enabled=%s ambient_image_mode=%s prompt_snapshot_projection_enabled=%s continuity_auditor_enabled=%s heartbeat_idle_log_interval=%s",
+            "plugin_initialized version=%s data_dir=%s honcho_enabled=%s honcho_workspace=%s ambient_image_enabled=%s ambient_image_mode=%s prompt_snapshot_projection_enabled=%s continuity_auditor_enabled=%s heartbeat_idle_log_interval=%s llm_tool_loop_max_steps=%s",
             PLUGIN_VERSION,
             data_dir,
             honcho_config.enabled,
@@ -306,6 +308,7 @@ class AutoTrpgDmPlugin(Star):
             prompt_snapshot_projection_enabled,
             self._config_bool("continuity_auditor_enabled", True),
             heartbeat_idle_log_interval,
+            llm_tool_loop_max_steps,
         )
         logger.info("Auto TRPG DM plugin initialized.")
 

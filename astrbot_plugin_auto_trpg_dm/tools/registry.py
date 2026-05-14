@@ -59,6 +59,13 @@ class EmptyArgs(BaseModel):
     pass
 
 
+class FinalResponseArgs(BaseModel):
+    reply: str = Field(
+        ...,
+        description="Final player-facing reply. Use this only when all needed tool facts are available.",
+    )
+
+
 @dataclass
 class LocalFunctionTool(FunctionTool[AstrAgentContext]):
     name: str
@@ -99,6 +106,10 @@ def make_tool(
         parameters=model_schema(model),
         handler=handler,
     )
+
+
+async def submit_final_response(reply: str) -> Dict[str, Any]:
+    return {"ok": True, "reply": str(reply or "")}
 
 
 def _validate_tool_parameters(parameters: dict[str, Any]) -> None:
@@ -211,6 +222,16 @@ class ToolRegistry:
         )
 
         catalog: dict[str, LocalFunctionTool] = {
+            "final_response": make_tool(
+                name="final_response",
+                description=(
+                    "Submit the final player-facing DM reply and end this LLM/tool loop. "
+                    "Use it only after all required checks, state writes, map renders, or clarifications are complete; "
+                    "do not combine it with other tool calls in the same step."
+                ),
+                model=FinalResponseArgs,
+                handler=submit_final_response,
+            ),
             "register_rule": make_tool(
                 name="register_rule",
                 description="注册一条新的 TRPG 纯计算规则。只有缺少对应规则或玩家正在设定机制时使用。",
@@ -263,6 +284,8 @@ class ToolRegistry:
                     "更新当前场景、冲突、地点、NPC 摘要、可见线索和开放钩子等叙事状态。"
                     "并行角色线会按 scene_thread_id/当前角色/地点隔离；写入地点线时尽量带 location，"
                     "必要时可带 scene_time_label/scene_time_of_day 描述当前全局时段。"
+                    "不要指望 summary/current_objective/current_conflict/stakes 里的“退场、被驱逐、结局、终幕”等文字改变线程状态；"
+                    "若确有工具/审计证据支持关闭线程，必须显式传 status=closed/resolved/retired/archived。"
                     "不能把单个角色私自写到第二天、天亮、入夜或长休后；时间跳转必须通过全局 timeline_patch/cycle_control。"
                     "调查、询问、搜索、交易、交涉或战斗后若发现信息或改变风险，优先写入 "
                     "clues/open_hooks/mysteries/current_objective/stakes/pressure_clock；"
@@ -415,8 +438,7 @@ class ToolRegistry:
             except Exception:
                 pass
             names = self._prune_diagnostic_tools(names, message=message)
-            if "cycle_control" not in names:
-                names.append("cycle_control")
+            names = self._with_loop_control_tools(names)
             specs_for_names = [
                 {
                     "name": catalog[name].name,
@@ -443,8 +465,7 @@ class ToolRegistry:
         if not has_campaign_background(session):
             allowed = self._background_first_tool_names(allowed, message=message)
         allowed = self._prune_diagnostic_tools(allowed, message=message)
-        if "cycle_control" not in allowed:
-            allowed.append("cycle_control")
+        allowed = self._with_loop_control_tools(allowed)
         selected = {name: catalog[name] for name in allowed}
         specs = [
             {
@@ -643,6 +664,14 @@ class ToolRegistry:
         ):
             base_tools.insert(8, "query_core_rules")
         return base_tools
+
+    @staticmethod
+    def _with_loop_control_tools(names: list[str]) -> list[str]:
+        selected = list(dict.fromkeys(names))
+        for name in ("cycle_control", "final_response"):
+            if name not in selected:
+                selected.append(name)
+        return selected
 
     @staticmethod
     def _with_llm_decided_tools(names: list[str], message: str = "") -> list[str]:

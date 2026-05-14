@@ -50,12 +50,14 @@ _install_fake_astrbot_modules()
 
 from astrbot_plugin_auto_trpg_dm.core.ambient_image import AmbientImageConfig
 from astrbot_plugin_auto_trpg_dm.core.map_core import DEFAULT_STRICT_LOCAL_MAP_ID, save_active_strict_grid
+from astrbot_plugin_auto_trpg_dm.core.modes import GameModeStateMachine
 from astrbot_plugin_auto_trpg_dm.core.models import GameMode, GameSession
 from astrbot_plugin_auto_trpg_dm.core.router import (
     IntentRouter,
     _adjudication_completeness_guard,
     _extract_llm_usage_summary,
     _is_diagnostic_request,
+    _maybe_close_concluded_turn,
     _should_record_narrative_trace,
 )
 
@@ -109,6 +111,30 @@ def test_diagnostic_request_excludes_fact_check_corrections():
     assert _is_diagnostic_request("查日志，DM记错了，修正剧情") is False
     assert _is_diagnostic_request("看一下日志和token消耗") is True
 
+
+def test_router_uses_detected_mode_for_routing_without_persisting_keyword_mode():
+    repository = InMemoryRepository()
+    session = repository.load_session("group-1")
+    session.mode = GameMode.NARRATIVE
+    message = GameModeStateMachine.CHARACTER_HINTS[0]
+    astr_context = FakeAstrContext("Character setup routing did not persist mode.")
+    router = IntentRouter(
+        astr_context=astr_context,
+        repository=repository,
+        tool_registry=FakeToolRegistry(),
+    )
+
+    reply = asyncio.run(router.handle_message(FakeEvent(message)))
+    saved = repository.load_session("group-1")
+    handled = [
+        item
+        for item in repository.last_audit_records("group-1", limit=20)
+        if item.get("type") == "message_handled"
+    ]
+
+    assert "Character setup routing" in reply
+    assert handled[-1]["mode"] == GameMode.CHARACTER_CREATION.value
+    assert saved.mode == GameMode.NARRATIVE
 
 def test_extract_llm_usage_summary_reads_anthropic_cache_fields():
     summary = _extract_llm_usage_summary(
@@ -342,6 +368,92 @@ def test_router_projects_tool_results_before_returning_to_dm_context():
     assert "D:/runtime" not in tool_context
     assert "example.invalid" not in tool_context
     assert "debug trace" not in tool_context
+
+
+def test_router_accepts_final_response_tool_as_loop_completion():
+    class FirstToolCallResponse:
+        completion_text = ""
+        tools_call_name = ["session_control"]
+        tools_call_args = [{"action": "status"}]
+        tool_calls = []
+
+    class FinalToolCallResponse:
+        completion_text = ""
+        tools_call_name = ["final_response"]
+        tools_call_args = [{"reply": "当前状态稳定，可以继续行动。"}]
+        tool_calls = []
+
+    class FakeLoopLlm:
+        def __init__(self):
+            self.calls = 0
+
+        async def __call__(self, **kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                return FirstToolCallResponse()
+            return FinalToolCallResponse()
+
+    class RecordingExecutor:
+        def __init__(self):
+            self.calls = []
+
+        async def execute(self, tool_name, args):
+            self.calls.append((tool_name, args))
+            if tool_name == "session_control":
+                return {"ok": True, "status": "stable"}
+            if tool_name == "final_response":
+                return {"ok": True, "reply": args["reply"]}
+            raise AssertionError(f"unexpected tool: {tool_name}")
+
+    async def run_case():
+        repository = InMemoryRepository()
+        router = IntentRouter.__new__(IntentRouter)
+        llm = FakeLoopLlm()
+        executor = RecordingExecutor()
+        router.max_steps = 4
+        router._llm_generate = llm
+        router.repository = repository
+
+        result = await router._run_llm_tool_loop(
+            chat_provider_id="fake-provider",
+            system_prompt="system",
+            initial_prompt="玩家行动",
+            toolset=object(),
+            tool_executor=executor,
+            session_id="group-1",
+            raw_player_message="现在怎样",
+            available_tool_names=["session_control", "final_response"],
+        )
+        return result, llm, executor, repository.last_audit_records("group-1", limit=20)
+
+    result, llm, executor, records = asyncio.run(run_case())
+
+    assert result.completion_text == "当前状态稳定，可以继续行动。"
+    assert llm.calls == 2
+    assert [name for name, _args in executor.calls] == ["session_control", "final_response"]
+    assert result.tool_results[-1]["tool"] == "final_response"
+    assert records[-1]["tool_results"][0]["tool"] == "final_response"
+
+
+def test_terminal_request_wording_does_not_close_battle_turn_locally():
+    session = GameSession.new("group")
+    session.battle = {
+        "active": True,
+        "turn": {
+            "active": True,
+            "phase": "character_turn",
+            "current_entity_id": "pc-1",
+            "current_index": 0,
+        },
+        "turn_entity_id": "pc-1",
+    }
+
+    result = _maybe_close_concluded_turn(session, "灞曠ず缁撶畻锛屾湰娆″埌姝ょ粨鏉?")
+
+    assert result is None
+    assert session.battle["active"] is True
+    assert session.battle["turn"]["active"] is True
+    assert session.battle["turn"]["phase"] == "character_turn"
 
 
 def test_router_retries_visual_map_request_when_llm_skips_renderer():

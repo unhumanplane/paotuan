@@ -232,7 +232,7 @@ def test_update_scene_isolates_parallel_character_threads(tmp_path):
     assert "stakes" not in saved.scene
 
 
-def test_update_scene_closes_retired_thread_without_mirroring_active_scene(tmp_path):
+def test_update_scene_terminal_wording_does_not_close_thread_without_explicit_status(tmp_path):
     repository = JsonGameRepository(tmp_path / "data")
     session = GameSession.new("group")
     session.world_tags["_background_ready"] = True
@@ -269,13 +269,13 @@ def test_update_scene_closes_retired_thread_without_mirroring_active_scene(tmp_p
     assert result["ok"] is True
     saved = repository.load_session("group")
     retired = saved.scene["scene_threads"]["character:pc_esmeralda"]
-    assert retired["status"] == "closed"
+    assert "status" not in retired
     assert saved.scene["active_scene_thread_id"] == "character:pc_laofei"
     assert saved.scene["summary"] == "老肥在酒馆等天亮。"
     assert saved.scene["location"] == "酒馆"
 
 
-def test_update_scene_closes_llm_terminal_thread_wording_without_mirroring(tmp_path):
+def test_update_scene_explicit_closed_status_closes_thread_without_mirroring(tmp_path):
     repository = JsonGameRepository(tmp_path / "data")
     session = GameSession.new("group")
     session.world_tags["_background_ready"] = True
@@ -302,6 +302,7 @@ def test_update_scene_closes_llm_terminal_thread_wording_without_mirroring(tmp_p
             {
                 "summary": "扎古被守卫制服并驱逐离船，无法继续参与本次航行。",
                 "current_objective": "无活跃目标：扎古无法继续参与本次航行。",
+                "status": "closed",
                 "participants": [],
                 "scene_thread_id": "character:pc_zhagu",
             }
@@ -359,6 +360,51 @@ def test_update_scene_reopens_closed_actor_thread_when_new_active_patch_arrives(
     assert "status" not in thread
     assert saved.scene["active_scene_thread_id"] == "character:pc_yaka"
     assert saved.scene["summary"] == "雅卡在客舱电脑前继续调查音速号试航记录。"
+
+
+def test_update_scene_canonicalizes_character_thread_id_alias(tmp_path):
+    repository = JsonGameRepository(tmp_path / "data")
+    session = GameSession.new("group")
+    session.world_tags["_background_ready"] = True
+    session.characters["pc_yaka"] = Character(id="pc_yaka", name="Yaka", player_id="p1")
+    session.player_character_map["p1"] = "pc_yaka"
+    session.scene["active_scene_thread_id"] = "pc_yaka"
+    session.scene["scene_threads"] = {
+        "pc_yaka": {
+            "summary": "Yaka waits in the dining room.",
+            "participants": ["pc_yaka"],
+            "active_character_id": "pc_yaka",
+            "updated_at": "2026-05-14T13:44:58+00:00",
+        },
+        "character:pc_yaka": {
+            "summary": "Yaka connected the projector in the meeting room.",
+            "participants": ["pc_yaka"],
+            "active_character_id": "pc_yaka",
+            "updated_at": "2026-05-14T13:58:44+00:00",
+        },
+    }
+    repository.save_session(session)
+
+    tools = MemoryTools(repository, "group", actor={"player_id": "p1"}, message="continue meeting")
+    result = asyncio.run(
+        tools.update_scene(
+            {
+                "scene_thread_id": "pc_yaka",
+                "summary": "Yaka listens to Stone explain the expedition plan in the meeting room.",
+                "current_objective": "Hear Stone explain the real objective.",
+            }
+        )
+    )
+
+    assert result["ok"] is True
+    assert result["scene_thread_id"] == "character:pc_yaka"
+    saved = repository.load_session("group")
+    assert "pc_yaka" not in saved.scene["scene_threads"]
+    assert saved.scene["active_scene_thread_id"] == "character:pc_yaka"
+    assert (
+        saved.scene["scene_threads"]["character:pc_yaka"]["summary"]
+        == "Yaka listens to Stone explain the expedition plan in the meeting room."
+    )
 
 
 def test_update_scene_rejects_implicit_thread_timeline_advance(tmp_path):

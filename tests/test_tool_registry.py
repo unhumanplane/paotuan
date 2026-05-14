@@ -1,3 +1,4 @@
+import asyncio
 import sys
 import types
 from pathlib import Path
@@ -83,6 +84,21 @@ def test_tool_registry_prunes_estimate_token_usage_for_ordinary_requests():
     assert "estimate_token_usage" not in names
     assert "session_control" in names
     assert "cycle_control" in names
+    assert "final_response" in names
+
+
+def test_tool_registry_always_exposes_final_response_tool():
+    registry = _registry_without_background()
+    _toolset, names, executor, specs = registry.for_mode(
+        GameMode.NARRATIVE,
+        "group",
+        message="先聊聊当前状态",
+    )
+
+    assert "final_response" in names
+    assert any(spec["name"] == "final_response" for spec in specs)
+    result = asyncio.run(executor.execute("final_response", {"reply": "可以。"}))
+    assert result == {"ok": True, "reply": "可以。"}
 
 
 def test_tool_registry_keeps_estimate_token_usage_for_diagnostic_requests():

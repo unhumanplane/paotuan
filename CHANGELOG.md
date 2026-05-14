@@ -2,6 +2,20 @@
 
 所有已经合入 `main` 的用户可见变更都记录在这里。日期使用香港时区对应的开发日期。
 
+## [0.1.104] - 2026-05-14
+
+### Fixed
+
+- 关键词不再直接改变游戏状态：`update_scene` 只接受显式 `status=closed/resolved/retired/archived` 关闭 scene thread，不再因 summary/current_objective/current_conflict/stakes 里出现“退场/驱逐/无法继续参与”等文字自动关闭线程。
+- 周期结算和 RA 摘要不再从普通叙事文本推断“第二天/天亮/入夜”并推进 timeline；只有显式结构化 `timeline`/`time`/`current_time`/`scene_time` 或 `cycle_control(..., timeline_patch=...)` 才能写入全团时间线。
+- 玩家输入里的“结局/终幕/幕间/休整”等词不再让本地路由在 LLM 前直接结束战斗回合；只有已落库的结构化场景结束状态会触发本地收束。
+- `GameModeStateMachine` 的关键词判断现在只用于本轮工具路由，不再直接把检测出的模式写进存档，避免“地图/角色/攻击”等普通词把会话长期卡进战术或建卡模式。
+- 兼容旧 `scene_thread_id` 别名：显式传入已有角色 id 时会归一为 `character:<id>` 并合并旧线程，减少同一角色被分裂到两条 thread 的情况。
+- 补齐 `final_response` 工具和可配置的 `llm_tool_loop_max_steps`，让 LLM 在工具事实足够时能显式结束本轮工具循环，默认上限提升到 16 步。
+
+### Verified
+
+- `python -m pytest tests/test_memory_tools.py tests/test_cycle_buffer.py tests/test_cycle_tools.py tests/test_environment_agent.py tests/test_router_usage.py tests/test_tool_registry.py tests/test_modes.py -q`
 ## [0.1.103] - 2026-05-14
 
 ### Fixed

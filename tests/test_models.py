@@ -104,6 +104,14 @@ def test_config_schema_defines_continuity_auditor_defaults_on():
     assert schema["continuity_auditor_max_tokens"]["default"] == 1200
 
 
+def test_config_schema_defines_llm_tool_loop_max_steps_default():
+    schema_path = Path(__file__).parents[1] / "astrbot_plugin_auto_trpg_dm" / "_conf_schema.json"
+    schema = json.loads(schema_path.read_text(encoding="utf-8"))
+
+    assert schema["llm_tool_loop_max_steps"]["type"] == "int"
+    assert schema["llm_tool_loop_max_steps"]["default"] == 16
+
+
 def test_relationship_tag_layer_inference_and_public_compaction():
     assert infer_tag_layer("attitude_to_watch_captain") == "relations"
     assert infer_tag_layer("阵营关系") == "relations"

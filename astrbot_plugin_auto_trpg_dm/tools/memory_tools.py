@@ -106,28 +106,6 @@ SCENE_THREAD_MIRROR_KEYS = {
     "relations",
 }
 SCENE_THREAD_CLOSED_STATUSES = {"archived", "closed", "resolved", "retired"}
-SCENE_THREAD_TERMINAL_TERMS = (
-    "永久退场",
-    "确认退场",
-    "已退场",
-    "退场",
-    "退休",
-    "永久离队",
-    "离开本地故事",
-    "不再与本地故事交织",
-    "不再与这座小镇交织",
-    "不再参与当前故事",
-    "被驱逐",
-    "驱逐离船",
-    "被捕且无法继续参与",
-    "无法继续参与",
-    "不可继续参与",
-    "已离开当前故事",
-    "retired",
-    "out of play",
-)
-
-
 class UpdateWorldTagsArgs(BaseModel):
     patch: Dict[str, Any] = Field(default_factory=dict, description="世界设定 Tag 补丁，例如 genre,tone,factions,mysteries")
 
@@ -663,6 +641,7 @@ class MemoryTools:
             if key not in SCENE_THREAD_METADATA_KEYS
         }
         scene_threads = _scene_threads(session.scene)
+        _coalesce_character_thread_alias(session.scene, scene_threads, thread_id)
         scene_thread = _merge_scene_thread(
             dict(scene_threads.get(thread_id) or {}),
             normalized_patch,
@@ -3732,7 +3711,7 @@ def _resolve_scene_thread_id(
     for key in SCENE_THREAD_CONTROL_KEYS:
         value = str(patch.get(key) or "").strip()
         if value:
-            return _safe_scene_thread_id(value)
+            return _canonical_scene_thread_id(session, value)
     location = str(patch.get("location") or patch.get("_location") or "").strip()
     character_id = _actor_character_id(session, actor)
     if location:
@@ -3757,6 +3736,39 @@ def _safe_scene_thread_id(value: str) -> str:
     return safe[:96] or "default"
 
 
+def _canonical_scene_thread_id(session: GameSession, value: str) -> str:
+    safe = _safe_scene_thread_id(value)
+    if safe.startswith("character:"):
+        return safe
+    if safe in (session.characters or {}):
+        return _safe_scene_thread_id(f"character:{safe}")
+    return safe
+
+
+def _coalesce_character_thread_alias(
+    scene: Dict[str, Any],
+    scene_threads: Dict[str, Any],
+    thread_id: str,
+) -> None:
+    if not thread_id.startswith("character:"):
+        return
+    alias = thread_id.split(":", 1)[1]
+    if not alias or alias == thread_id or alias not in scene_threads:
+        return
+    legacy = scene_threads.pop(alias)
+    if not isinstance(legacy, dict):
+        return
+    current = scene_threads.get(thread_id)
+    if isinstance(current, dict):
+        merged = dict(legacy)
+        merged.update(current)
+        scene_threads[thread_id] = merged
+    else:
+        scene_threads[thread_id] = dict(legacy)
+    if scene.get("active_scene_thread_id") == alias:
+        scene["active_scene_thread_id"] = thread_id
+
+
 def _merge_scene_thread(
     current: Dict[str, Any],
     patch: Dict[str, Any],
@@ -3777,7 +3789,8 @@ def _merge_scene_thread(
     scene_time_of_day = _scene_thread_time_of_day(patch)
     if scene_time_of_day:
         merged["scene_time_of_day"] = scene_time_of_day
-    if character_id:
+    explicit_empty_participants = "participants" in patch and not list(patch.get("participants") or [])
+    if character_id and not explicit_empty_participants:
         participants = list(merged.get("participants") or [])
         if character_id not in participants:
             participants.append(character_id)
@@ -3825,6 +3838,8 @@ def _write_scene_mirror(
             else:
                 scene.pop("active_scene_thread_id", None)
         return
+    if _scene_thread_is_inactive(scene_thread):
+        return
     scene["active_scene_thread_id"] = thread_id
     _mirror_scene_thread_fields(scene, scene_thread)
 
@@ -3842,17 +3857,13 @@ def _scene_thread_is_closed(thread: Dict[str, Any]) -> bool:
     return status in SCENE_THREAD_CLOSED_STATUSES
 
 
+def _scene_thread_is_inactive(thread: Dict[str, Any]) -> bool:
+    return isinstance(thread, dict) and "participants" in thread and not list(thread.get("participants") or [])
+
+
 def _scene_thread_patch_is_terminal(thread: Dict[str, Any], patch: Dict[str, Any]) -> bool:
     status = str((patch or {}).get("status") or "").strip().lower()
-    if status in SCENE_THREAD_CLOSED_STATUSES:
-        return True
-    text = _flatten_text(
-        {
-            key: (patch or thread or {}).get(key)
-            for key in ("summary", "current_objective", "current_conflict", "stakes", "status")
-        }
-    )
-    return _contains_any_text(text, SCENE_THREAD_TERMINAL_TERMS)
+    return status in SCENE_THREAD_CLOSED_STATUSES
 
 
 def _scene_thread_patch_reopens_terminal(thread: Dict[str, Any], patch: Dict[str, Any], character_id: str) -> bool:

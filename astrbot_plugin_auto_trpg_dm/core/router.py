@@ -90,6 +90,8 @@ class ToolLoopResult:
         self.tool_results = tool_results or []
 
 
+DEFAULT_LLM_TOOL_LOOP_MAX_STEPS = 16
+
 LLM_USAGE_FIELDS = (
     "prompt_tokens",
     "input_tokens",
@@ -372,7 +374,7 @@ class IntentRouter:
         ambient_image_config: AmbientImageConfig | None = None,
         ambient_image_provider: AmbientImageProvider | None = None,
         ambient_image_sender: Callable[[str, dict[str, Any]], Awaitable[bool]] | None = None,
-        max_steps: int = 8,
+        max_steps: int = DEFAULT_LLM_TOOL_LOOP_MAX_STEPS,
         ra_enabled: bool = False,
         ra_model_provider: str = "default",
         ra_max_tokens: int = 2048,
@@ -460,7 +462,6 @@ class IntentRouter:
                     actor=actor,
                 ).apply_turn_timeout_policy(session, message)
             mode = self.mode_machine.detect(session, message)
-            session.mode = mode
             snapshot_chars_before = self.memory_compressor.snapshot_chars(session)
             if self.memory_compressor.maybe_compress(session):
                 self.repository.append_audit(
@@ -1175,7 +1176,7 @@ class IntentRouter:
         turn = dict(battle.get("turn") or {})
         if not turn.get("active") or str(turn.get("phase", "")) != "character_turn":
             return None
-        if _scene_looks_concluded(session) or _looks_like_terminal_or_interlude_request(player_message):
+        if _scene_looks_concluded(session):
             return None
         actor_id = str(actor.get("player_id") or "").strip()
         if not actor_id:
@@ -1809,6 +1810,18 @@ class IntentRouter:
             else:
                 async with audit_lock:
                     self.repository.append_audit(session_id, audit_record)
+            final_reply = _final_response_reply(tool_results)
+            if final_reply is not None:
+                completion_text = await guarded_completion(
+                    self._sanitize_completion_text(final_reply)
+                )
+                get_plugin_logger().info(
+                    "llm_final_response_tool session=%s step=%s chars=%s",
+                    session_id,
+                    step + 1,
+                    len(completion_text),
+                )
+                return ToolLoopResult(completion_text, all_tool_results)
             contexts.append(
                 {
                     "role": "user",
@@ -2808,9 +2821,8 @@ def _maybe_close_concluded_turn(session: Any, message: str) -> dict[str, Any] | 
     turn = battle.get("turn") if isinstance(battle.get("turn"), dict) else {}
     if not turn.get("active") and not battle.get("active"):
         return None
-    terminal_request = _looks_like_terminal_or_interlude_request(message)
     scene_concluded = _scene_looks_concluded(session)
-    if not terminal_request and not scene_concluded:
+    if not scene_concluded:
         return None
     previous_phase = str(turn.get("phase") or "")
     previous_entity_id = str(turn.get("current_entity_id") or "")
@@ -2832,7 +2844,7 @@ def _maybe_close_concluded_turn(session: Any, message: str) -> dict[str, Any] | 
     return {
         "previous_phase": previous_phase,
         "previous_entity_id": previous_entity_id,
-        "reason": "terminal_or_interlude_request" if terminal_request else "scene_already_concluded",
+        "reason": "scene_already_concluded",
     }
 
 
@@ -4150,6 +4162,24 @@ def _tool_result_ok(result: Any) -> bool:
     if isinstance(result, dict):
         return bool(result.get("ok", True))
     return result is not None
+
+
+def _final_response_reply(tool_results: list[dict[str, Any]]) -> str | None:
+    for item in reversed(tool_results or []):
+        if not isinstance(item, dict) or item.get("tool") != "final_response":
+            continue
+        args = item.get("args")
+        result = item.get("result")
+        candidates: list[Any] = []
+        if isinstance(result, dict):
+            candidates.extend([result.get("reply"), result.get("message"), result.get("text")])
+        if isinstance(args, dict):
+            candidates.extend([args.get("reply"), args.get("message"), args.get("text")])
+        for candidate in candidates:
+            text = str(candidate or "").strip()
+            if text:
+                return text
+    return None
 
 
 def _audit_safe_tool_results(tool_results: list[dict[str, Any]]) -> list[dict[str, Any]]:

@@ -1,6 +1,6 @@
 # AstrBot Auto TRPG DM
 
-全自然语言 TRPG DM 插件，基于 AstrBot v4.5.7+。当前插件版本：`v0.1.103`。
+全自然语言 TRPG DM 插件，基于 AstrBot v4.5.7+。当前插件版本：`v0.1.104`。
 
 这个插件把 AstrBot 变成一个可长期跑团的小型 TRPG runtime。玩家只需要像聊天一样说“我靠墙潜行过去，再射最近的敌人”，插件会结合当前场景、角色状态、战棋事实、本地规则和 LLM 裁定完成回应。
 
@@ -205,6 +205,7 @@ pip install honcho
 | `continuity_auditor_enabled` | `true` | 是否启用独立上下文连续性审计器。 |
 | `continuity_auditor_model_provider` | `default` | 连续性审计器使用的模型 provider。 |
 | `continuity_auditor_max_tokens` | `1200` | 连续性审计器输出 token 上限建议值。 |
+| `llm_tool_loop_max_steps` | `16` | 单次 `/dm` 请求内最多允许的 LLM 工具循环步数。 |
 | `ambient_image_enabled` | `false` | 是否启用 TRPG 氛围图片。 |
 | `ambient_image_api_mode` | `images` | 图片 API 路径：`images` 或 `chat_completions`。 |
 | `ambient_image_base_url` | `https://www.packyapi.com` | 图片 API base URL。 |

@@ -257,6 +257,33 @@ def test_complete_cycle_with_ra_advances_global_timeline_from_summary():
     assert session.timeline["time_of_day"] == "morning"
 
 
+def test_complete_cycle_with_ra_does_not_infer_timeline_from_summary_text():
+    session = GameSession.new("group")
+    session.cycle_state = CycleState.CYCLE_RESOLVING
+    append_cycle_action(
+        session,
+        actor={"player_id": "player-1"},
+        player_message="I keep watch until dawn",
+        completion="The night ends and the party reaches the next morning.",
+        tool_results=[],
+    )
+    summary = {
+        "cycle_id": 0,
+        "summary": "The party rests until the second morning.",
+        "character_status": [],
+        "enemy_status": [],
+        "world_changes": [],
+        "relationship_changes": [],
+        "rules_triggered": [],
+        "dm_narrative_aligned": True,
+        "discrepancies": [],
+    }
+
+    result = complete_cycle_with_ra(session, summary)
+
+    assert result["timeline_result"]["timeline_advanced"] is False
+    assert session.timeline["day"] == 1
+
 def test_complete_cycle_with_ra_refuses_unsynced_timeline_summary():
     session = GameSession.new("group")
     session.participants = {"player-1": {}, "player-2": {}}

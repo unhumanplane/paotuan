@@ -307,13 +307,7 @@ def infer_timeline_patch_from_summary(summary: Mapping[str, Any], current: Mappi
         value = summary.get(key)
         if isinstance(value, Mapping):
             return dict(value)
-        if isinstance(value, str) and value.strip():
-            return infer_timeline_patch_from_text(value, current)
-    parts = [
-        str(summary.get("summary") or ""),
-        " ".join(str(item) for item in summary.get("world_changes") or []),
-    ]
-    return infer_timeline_patch_from_text("\n".join(parts), current)
+    return {}
 
 
 def timeline_advance_requires_sync(value: Any) -> bool:
@@ -461,8 +455,6 @@ def cycle_timeline_completion(
     additional_player_ids: set[str] | None = None,
 ) -> dict[str, Any]:
     patch = dict(explicit_patch or {})
-    if not patch:
-        patch = infer_timeline_patch_from_text(reason or _cycle_action_timeline_text(session), getattr(session, "timeline", {}))
     if not patch:
         return {"ok": True, "timeline_advanced": False}
     if require_sync:
