@@ -84,6 +84,28 @@ def test_cycle_control_strict_sync_ignores_retired_bound_character():
     assert repo.session.timeline["day"] == 2
 
 
+def test_cycle_control_strict_sync_ignores_llm_terminal_status_wording():
+    repo = FakeRepository()
+    repo.session.participants = {"p1": {}, "p2": {}}
+    repo.session.player_character_map = {"p1": "pc-1", "p2": "pc-expelled"}
+    repo.session.characters["pc-expelled"] = Character(id="pc-expelled", name="驱逐角色", player_id="p2")
+    repo.session.characters["pc-expelled"].tags.append(
+        TagValue(key="退场状态", value="被驱逐下船，无法继续参与本次航行", layer="status")
+    )
+
+    result = asyncio.run(
+        CycleTools(repo, "group", actor={"player_id": "p1"}).cycle_control(
+            "end_cycle",
+            reason="大家休息到第二天清晨",
+            timeline_patch={"day": 2, "time_of_day": "morning"},
+        )
+    )
+
+    assert result["ok"] is True
+    assert result["timeline_result"]["active_player_ids"] == ["p1"]
+    assert repo.session.timeline["day"] == 2
+
+
 def test_cycle_control_advances_global_timeline_when_players_synced():
     repo = FakeRepository()
     repo.session.participants = {"p1": {}, "p2": {}}

@@ -275,6 +275,48 @@ def test_update_scene_closes_retired_thread_without_mirroring_active_scene(tmp_p
     assert saved.scene["location"] == "酒馆"
 
 
+def test_update_scene_closes_llm_terminal_thread_wording_without_mirroring(tmp_path):
+    repository = JsonGameRepository(tmp_path / "data")
+    session = GameSession.new("group")
+    session.world_tags["_background_ready"] = True
+    session.characters["pc_zhagu"] = Character(id="pc_zhagu", name="扎古", player_id="p1")
+    session.characters["pc_laofei"] = Character(id="pc_laofei", name="老肥", player_id="p2")
+    session.player_character_map["p1"] = "pc_zhagu"
+    session.player_character_map["p2"] = "pc_laofei"
+    session.scene["active_scene_thread_id"] = "character:pc_laofei"
+    session.scene["summary"] = "老肥在酒馆等天亮。"
+    session.scene["location"] = "酒馆"
+    session.scene["scene_threads"] = {
+        "character:pc_laofei": {
+            "summary": "老肥在酒馆等天亮。",
+            "location": "酒馆",
+            "active_character_id": "pc_laofei",
+            "participants": ["pc_laofei"],
+        }
+    }
+    repository.save_session(session)
+
+    tools = MemoryTools(repository, "group", actor={"player_id": "p1"}, message="扎古被驱逐下船")
+    result = asyncio.run(
+        tools.update_scene(
+            {
+                "summary": "扎古被守卫制服并驱逐离船，无法继续参与本次航行。",
+                "current_objective": "无活跃目标：扎古无法继续参与本次航行。",
+                "participants": [],
+                "scene_thread_id": "character:pc_zhagu",
+            }
+        )
+    )
+
+    assert result["ok"] is True
+    saved = repository.load_session("group")
+    retired = saved.scene["scene_threads"]["character:pc_zhagu"]
+    assert retired["status"] == "closed"
+    assert saved.scene["active_scene_thread_id"] == "character:pc_laofei"
+    assert saved.scene["summary"] == "老肥在酒馆等天亮。"
+    assert saved.scene["location"] == "酒馆"
+
+
 def test_update_scene_reopens_closed_actor_thread_when_new_active_patch_arrives(tmp_path):
     repository = JsonGameRepository(tmp_path / "data")
     session = GameSession.new("group")

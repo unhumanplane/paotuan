@@ -2,6 +2,22 @@
 
 所有已经合入 `main` 的用户可见变更都记录在这里。日期使用香港时区对应的开发日期。
 
+## [0.1.103] - 2026-05-14
+
+### Fixed
+
+- 角色退场事实改由独立连续性审计 LLM 基于本轮证据判断；本地确定性修复器不再因为“退场/退休”等关键词直接写入退场状态或关闭角色线程。
+- 连续性审计器每轮叙事回复后都会运行，能识别死亡、被捕、被驱逐离船、无法继续参与当前故事等非玩家主动声明的退场事实。
+- 审计补丁必须带有来自玩家消息、DM 回复、工具结果或存档快照的外部证据；仅靠补丁自己写“已退场”不能自证。
+- 同步推进、AFK 默认、后继角色创建和 scene thread 收束现在能识别“被驱逐/无法继续参与/已离开当前故事”等审计器写入的终局状态。
+- 已开场跑团不再因为普通消息里出现“角色”二字就切入建卡模式；明确建卡/角色卡/绑定角色请求仍会进入建卡流程。
+
+### Verified
+
+- `python -m pytest tests/test_continuity_auditor.py tests/test_modes.py tests/test_cycle_tools.py tests/test_memory_tools.py -q`
+- `python -m pytest tests/test_router_usage.py tests/test_continuity_auditor.py tests/test_modes.py tests/test_cycle_tools.py tests/test_memory_tools.py -q`
+- `python -m pytest -q`
+
 ## [0.1.102] - 2026-05-14
 
 ### Fixed

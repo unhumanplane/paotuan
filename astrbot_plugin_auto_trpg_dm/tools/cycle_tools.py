@@ -323,7 +323,26 @@ def _character_is_terminal(session: Any, character_id: str) -> bool:
         return False
     for tag in getattr(character, "tags", []) or []:
         text = f"{getattr(tag, 'key', '')} {getattr(tag, 'value', '')}".lower()
-        if any(term in text for term in ("死亡", "阵亡", "永久退场", "退场", "退休", "dead", "retired", "out_of_play")):
+        if any(
+            term in text
+            for term in (
+                "死亡",
+                "阵亡",
+                "永久退场",
+                "退场",
+                "退休",
+                "被驱逐",
+                "驱逐离船",
+                "被捕且无法继续参与",
+                "无法继续参与",
+                "不可继续参与",
+                "已离开当前故事",
+                "不再参与当前故事",
+                "dead",
+                "retired",
+                "out_of_play",
+            )
+        ):
             return True
     return False
 

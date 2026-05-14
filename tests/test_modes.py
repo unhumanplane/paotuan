@@ -108,13 +108,13 @@ def test_retirement_backstory_stays_resolution_in_live_campaign():
     assert mode == GameMode.RESOLUTION
 
 
-def test_explicit_retirement_message_still_stays_narrative_in_live_campaign():
+def test_explicit_retirement_message_uses_normal_live_campaign_routing():
     session = GameSession.new("s")
     session.scene["_game_started"] = True
     session.characters["pc_zhagu"] = object()
     session.player_character_map = {"p1": "pc_zhagu"}
 
-    mode = GameModeStateMachine().detect(session, "扎古，退休")
+    mode = GameModeStateMachine().detect(session, "扎古，退休后继续调查线索")
 
-    assert mode == GameMode.NARRATIVE
+    assert mode == GameMode.RESOLUTION
 

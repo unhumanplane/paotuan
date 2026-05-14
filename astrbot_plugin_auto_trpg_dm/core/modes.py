@@ -52,23 +52,24 @@ class GameModeStateMachine:
         text = message.strip().lower()
         battle = session.battle or {}
         turn = battle.get("turn") if isinstance(battle.get("turn"), dict) else {}
+        campaign_started = self._campaign_started(session)
         if combat_lifecycle_active(session):
             return GameMode.TACTICAL
         if any(hint in text for hint in self.BATTLE_HINTS):
             return GameMode.TACTICAL
-        if self._campaign_started(session) and self._looks_like_terminal_exit_statement(text):
-            return GameMode.NARRATIVE
-        if self._campaign_started(session) and self._looks_like_live_action(text):
+        if campaign_started and self._looks_like_live_action(text):
             return GameMode.RESOLUTION
-        if self._looks_like_character_request(text):
+        if campaign_started and self._looks_like_post_start_character_request(text):
+            return GameMode.CHARACTER_CREATION
+        if not campaign_started and self._looks_like_character_request(text):
             return GameMode.CHARACTER_CREATION
         if self._looks_like_start_request(text) and not battle.get("active"):
             return GameMode.NARRATIVE
-        if session.mode == GameMode.CHARACTER_CREATION and not self._campaign_started(session) and not self._looks_finished(text):
+        if session.mode == GameMode.CHARACTER_CREATION and not campaign_started and not self._looks_finished(text):
             return GameMode.CHARACTER_CREATION
         if session.mode == GameMode.RULE_AUTHORING and not self._looks_finished(text) and not self._has_background_ready(session):
             return GameMode.RULE_AUTHORING
-        if any(hint in text for hint in self.CHARACTER_HINTS):
+        if not campaign_started and any(hint in text for hint in self.CHARACTER_HINTS):
             return GameMode.CHARACTER_CREATION
         if any(hint in text for hint in self.RULE_HINTS):
             return GameMode.RULE_AUTHORING
@@ -95,41 +96,10 @@ class GameModeStateMachine:
         return False
 
     @staticmethod
-    def _looks_like_terminal_exit_statement(text: str) -> bool:
+    def _looks_like_post_start_character_request(text: str) -> bool:
         if not text:
             return False
-        terminal_terms = ("退场", "退休", "离队", "不再扮演", "角色结束", "角色结局")
-        rejoin_terms = ("新角色", "建卡", "创建人物", "创建角色", "绑定角色", "换新角色", "重新加入", "重新进团")
-        background_terms = (
-            "背景",
-            "经历",
-            "往事",
-            "生活",
-            "复出",
-            "退役",
-            "退休后",
-            "退休后的",
-            "提前退休",
-            "提前“退休”",
-            '提前"退休"',
-            "渔夫生活",
-            "讲述",
-            "聊",
-            "回忆",
-            "曾经",
-            "以前",
-            "过去",
-        )
-        if any(term in text for term in rejoin_terms):
-            return False
-        explicit_terms = ("退场", "退休", "离队", "角色退场", "角色结束", "角色结局", "不再扮演")
-        if text.strip(" ，,。.!！?？:：;；").endswith(explicit_terms) or "算是角色退场" in text:
-            return True
-        if any(term in text for term in background_terms) and not any(
-            term in text for term in ("已退场", "确认退场", "永久退场", "角色已退场")
-        ):
-            return False
-        return any(term in text for term in terminal_terms)
+        return any(token in text for token in ("人物卡", "角色卡", "车卡", "建卡", "创建人物", "创建角色", "绑定角色", "换新角色"))
 
     @staticmethod
     def _looks_like_start_request(text: str) -> bool:

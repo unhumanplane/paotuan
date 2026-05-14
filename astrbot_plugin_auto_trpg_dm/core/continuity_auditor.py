@@ -17,10 +17,12 @@ CONTINUITY_AUDITOR_SYSTEM_PROMPT = """你是独立上下文的跑团连续性审
 
 重点检查：
 - DM 回复是否否认了工具结果或较新的权威状态中已经发生的事实。
-- 角色死亡、退休、退场、离队后，相关 scene thread 是否仍被当作 active。
+- 你要基于叙事事实判断角色是否已经离开当前故事，不要求玩家本人同意、主动选择或明确说“我要退场”。
+- 角色死亡、被捕后无法继续参与、被驱逐/离船、被剧情永久隔离、失去当前故事参与资格、退休或主动退场后，相关 scene thread 是否仍被当作 active。
 - 单个玩家退场是否错误地把整个团切到建卡模式。
 - scene.summary/current_conflict/current_objective/open_hooks 是否和 scene_threads、last_resolution、角色 status tag 冲突。
 - 状态查询、核对、抱怨类消息不应被当成新的剧情事实。
+- 不要只因为出现“退休/退场/被捕/死亡”等字样就判定退场；背景经历、假设规则、条件说明、抱怨、询问、复述旧设定都不能当作新事实。
 
 只输出一个 JSON 对象，不要输出 Markdown 或解释文字：
 {
@@ -50,7 +52,7 @@ CONTINUITY_AUDITOR_SYSTEM_PROMPT = """你是独立上下文的跑团连续性审
       {
         "character_id": "已有角色 id",
         "tags": [
-          {"key": "退场状态", "value": "已退场/已离开当前故事等证据支持的状态", "layer": "status"}
+          {"key": "退场状态", "value": "已死亡/被捕且无法继续参与/被驱逐离船/已离开当前故事等由证据支持的状态", "layer": "status"}
         ]
       }
     ],
@@ -67,17 +69,42 @@ CONTINUITY_AUDITOR_SYSTEM_PROMPT = """你是独立上下文的跑团连续性审
 - 不要凭猜测补新地点、新 NPC、新战利品、新线索。
 - 如果只是怀疑，写入 issues，不要给 safe_patches。
 - safe_patches 只能修正一致性，不能扩展剧情。
+- 只要本轮事实已经让角色无法继续参与当前故事，就应给出退场状态和关闭对应 scene thread；不要把玩家不愿意退场当作否定已发生事实。
+- 给出退场状态或关闭线程时，issues.evidence 必须引用输入里已有的事实片段，不能只复述 safe_patches 自己打算写入的文字。
 - 只有玩家明确要求恢复活跃，或本轮成功工具结果已证明角色继续活跃时，才允许把旧的 retired/closed 线程改回 active/空字符串。
 """
 
 
 CLOSED_THREAD_STATUSES = {"archived", "closed", "resolved", "retired"}
+TERMINAL_STATUS_TAG_KEYS = (
+    "退场状态",
+    "离场状态",
+    "参与状态",
+    "生命状态",
+    "生死状态",
+    "角色结局",
+    "结局",
+    "terminal_status",
+    "out_of_play_status",
+)
 TERMINAL_TERMS = (
+    "死亡",
+    "已死亡",
+    "确认死亡",
+    "阵亡",
+    "已死",
+    "身亡",
+    "牺牲",
     "永久退场",
     "确认退场",
     "已退场",
     "退场",
     "退休",
+    "被驱逐",
+    "驱逐离船",
+    "被捕且无法继续参与",
+    "无法继续参与",
+    "不可继续参与",
     "离队",
     "永久离队",
     "角色结束",
@@ -89,6 +116,7 @@ TERMINAL_TERMS = (
     "已离开当前故事",
     "retired",
     "out of play",
+    "out_of_play",
 )
 TERMINAL_REJOIN_TERMS = (
     "新角色",
@@ -113,40 +141,6 @@ TERMINAL_REJOIN_TERMS = (
     "取消退场",
     "撤销退场",
     "继续参与",
-)
-TERMINAL_BACKGROUND_CONTEXT_TERMS = (
-    "背景",
-    "经历",
-    "往事",
-    "来历",
-    "生活",
-    "复出",
-    "为什么复出",
-    "退役",
-    "退休后",
-    "退休后的",
-    "提前退休",
-    "提前“退休”",
-    "提前\"退休\"",
-    "水手长",
-    "渔夫生活",
-    "讲述",
-    "聊",
-    "聊天",
-    "家常",
-    "回忆",
-    "曾经",
-    "以前",
-    "过去",
-    "海上漂泊",
-)
-EXPLICIT_TERMINAL_EXIT_PATTERNS = (
-    re.compile(r"^(?:我|俺|咱|本角色|当前角色|[A-Za-z0-9_\-\u4e00-\u9fff]{1,16})?[，,：:\s]*(?:确认|正式|主动)?(?:永久)?退场(?:了|吧|。|！|!|$)"),
-    re.compile(r"^(?:我|俺|咱|本角色|当前角色|[A-Za-z0-9_\-\u4e00-\u9fff]{1,16})?[，,：:\s]*(?:确认|正式|主动)?(?:永久)?退休(?:了|吧|。|！|!|$)"),
-    re.compile(r"^(?:我|俺|咱|本角色|当前角色|[A-Za-z0-9_\-\u4e00-\u9fff]{1,16})?[，,：:\s]*(?:确认|正式|主动)?(?:永久)?离队(?:了|吧|。|！|!|$)"),
-    re.compile(r"^(?:我的|当前)?角色退场(?:了|吧|。|！|!|$)"),
-    re.compile(r"^(?:我|俺|咱|本角色|当前角色)?[，,：:\s]*(?:不再扮演|角色结束|角色结局)(?:了|吧|。|！|!|$)"),
-    re.compile(r"算是(?:我的|当前)?角色退场(?:了|吧|。|！|!|$)"),
 )
 STATE_QUERY_TERMS = (
     "当前我的状态",
@@ -289,7 +283,7 @@ def continuity_audit_should_run(
         return False
     if _contains_any(text, FACT_COMPLAINT_TERMS):
         return True
-    if _looks_like_terminal_exit(player_message) or _looks_like_terminal_exit(completion):
+    if str(completion or "").strip():
         return True
     if _contains_any(completion.lower(), DENIAL_TERMS) and _state_has_completed_fact(session):
         return True
@@ -324,31 +318,6 @@ def apply_deterministic_continuity_repairs(
                     **reactivated,
                 }
             )
-    if actor_character_id and _terminal_exit_evidence_for_actor(
-        session,
-        actor_character_id,
-        player_message=player_message,
-        completion=completion,
-        tool_results=tool_results,
-    ):
-        applied_tags = _mark_character_terminal(session, actor_character_id)
-        if applied_tags:
-            result["applied"].append(
-                {
-                    "type": "character_terminal_tags",
-                    "character_id": actor_character_id,
-                    "tags": applied_tags,
-                }
-            )
-        closed = _close_character_scene_threads(session, actor_character_id)
-        if closed:
-            result["applied"].append(
-                {
-                    "type": "closed_character_scene_threads",
-                    "character_id": actor_character_id,
-                    "thread_ids": closed,
-                }
-            )
 
     active_result = normalize_active_scene_thread(session)
     if active_result.get("changed"):
@@ -369,6 +338,14 @@ def apply_continuity_audit_patches(
     patches = payload.get("safe_patches")
     if not isinstance(patches, dict):
         return result
+    terminal_evidence = _terminal_patch_evidence_map(
+        session,
+        payload,
+        actor=actor,
+        player_message=player_message,
+        completion=completion,
+        tool_results=tool_results,
+    )
 
     mode = str(patches.get("mode") or "").strip().lower()
     if mode == GameMode.NARRATIVE.value:
@@ -392,7 +369,7 @@ def apply_continuity_audit_patches(
             key = str(tag.get("key") or "").strip()
             value = str(tag.get("value") or "").strip()
             layer = str(tag.get("layer") or infer_tag_layer(key)).strip() or "status"
-            if layer != "status" or not _terminal_text_match(f"{key} {value}"):
+            if layer != "status" or not _is_terminal_status_tag(key, value):
                 result["rejected"].append(
                     {
                         "type": "character_tag",
@@ -402,12 +379,10 @@ def apply_continuity_audit_patches(
                     }
                 )
                 continue
-            if not _terminal_evidence_for_character(
+            if not _llm_terminal_evidence_for_character(
+                terminal_evidence,
                 session,
                 character_id,
-                player_message=player_message,
-                completion=completion,
-                tool_results=tool_results,
             ):
                 result["rejected"].append(
                     {
@@ -451,6 +426,7 @@ def apply_continuity_audit_patches(
             player_message=player_message,
             completion=completion,
             tool_results=tool_results,
+            terminal_evidence=terminal_evidence,
         )
         if applied.get("ok"):
             result["applied"].append(applied)
@@ -482,7 +458,7 @@ def apply_continuity_audit_patches(
 def normalize_active_scene_thread(session: GameSession) -> dict[str, Any]:
     scene = session.scene if isinstance(session.scene, dict) else {}
     threads = _scene_threads(scene)
-    closed_thread_ids = _close_terminal_threads_from_text(threads)
+    closed_thread_ids: list[str] = []
     active_id = str(scene.get("active_scene_thread_id") or "").strip()
     active = threads.get(active_id) if active_id else None
     if isinstance(active, dict) and not _scene_thread_is_closed(active):
@@ -713,6 +689,7 @@ def _apply_safe_scene_thread_patch(
     player_message: str,
     completion: str,
     tool_results: list[dict[str, Any]],
+    terminal_evidence: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     threads = _scene_threads(session.scene)
     thread = threads.get(thread_id)
@@ -733,7 +710,7 @@ def _apply_safe_scene_thread_patch(
         thread.pop("status", None)
         for key in ("summary", "current_objective", "current_conflict", "location"):
             value = patch.get(key)
-            if isinstance(value, str) and value.strip() and not _terminal_text_match(value):
+            if isinstance(value, str) and value.strip() and not _terminal_status_text_match(value):
                 thread[key] = _short_text(value, 700 if key == "summary" else 360)
         thread["updated_at"] = utc_now_iso()
         return {"ok": True, "type": "scene_thread", "thread_id": thread_id, "patch": {"status": "active"}}
@@ -751,71 +728,28 @@ def _apply_safe_scene_thread_patch(
         thread.pop("status", None)
         for key in ("summary", "current_objective", "current_conflict", "location"):
             value = patch.get(key)
-            if isinstance(value, str) and value.strip() and not _terminal_text_match(value):
+            if isinstance(value, str) and value.strip() and not _terminal_status_text_match(value):
                 thread[key] = _short_text(value, 700 if key == "summary" else 360)
         thread["updated_at"] = utc_now_iso()
         return {"ok": True, "type": "scene_thread", "thread_id": thread_id, "patch": {"status": ""}}
     if status and status not in CLOSED_THREAD_STATUSES:
         return {"ok": False, "type": "scene_thread", "thread_id": thread_id, "reason": "unsupported_status"}
     if status in CLOSED_THREAD_STATUSES:
-        if not _terminal_evidence_for_thread(
+        if not _llm_terminal_evidence_for_thread(
+            terminal_evidence or {},
             session,
             thread_id,
             thread,
-            player_message=player_message,
-            completion=completion,
-            tool_results=tool_results,
         ):
             return {"ok": False, "type": "scene_thread", "thread_id": thread_id, "reason": "missing_terminal_evidence"}
         thread["status"] = status
         for key in ("summary", "current_objective", "current_conflict"):
             value = patch.get(key)
-            if isinstance(value, str) and value.strip() and _terminal_text_match(value):
+            if isinstance(value, str) and value.strip():
                 thread[key] = _short_text(value, 700 if key == "summary" else 360)
         thread["updated_at"] = utc_now_iso()
         return {"ok": True, "type": "scene_thread", "thread_id": thread_id, "patch": {"status": status}}
     return {"ok": False, "type": "scene_thread", "thread_id": thread_id, "reason": "no_safe_change"}
-
-
-def _mark_character_terminal(session: GameSession, character_id: str) -> list[dict[str, Any]]:
-    character = session.characters.get(character_id)
-    if not character:
-        return []
-    existing = {
-        (str(tag.layer or infer_tag_layer(tag.key)), str(tag.key)): str(tag.value)
-        for tag in character.tags or []
-    }
-    tags = []
-    if not _terminal_text_match(existing.get(("status", "退场状态"), "")):
-        tags.append(
-            {
-                "key": "退场状态",
-                "value": "已退场；旧角色保持退场状态，不得被后续叙事复活或当作当前活跃角色。",
-                "type": "text",
-                "source": "system_continuity",
-                "layer": "status",
-            }
-        )
-    if tags:
-        character.upsert_tags(tags)
-    return tags
-
-
-def _close_character_scene_threads(session: GameSession, character_id: str) -> list[str]:
-    closed = []
-    for thread_id, thread in _scene_threads(session.scene).items():
-        if not isinstance(thread, dict) or _scene_thread_is_closed(thread):
-            continue
-        participants = {str(item) for item in thread.get("participants") or [] if str(item)}
-        if (
-            str(thread.get("active_character_id") or "") == character_id
-            or character_id in participants
-            or character_id in str(thread_id)
-        ):
-            thread["status"] = "closed"
-            thread["updated_at"] = utc_now_iso()
-            closed.append(str(thread_id))
-    return closed
 
 
 def _reactivate_character_threads(session: GameSession, character_id: str) -> dict[str, Any]:
@@ -828,7 +762,7 @@ def _reactivate_character_threads(session: GameSession, character_id: str) -> di
     for tag in existing_tags:
         layer = str(tag.layer or infer_tag_layer(tag.key))
         key = str(tag.key or "")
-        if layer == "status" and _terminal_text_match(f"{key} {tag.value}"):
+        if layer == "status" and _terminal_status_text_match(f"{key} {tag.value}"):
             continue
         retained_tags.append(tag)
     if len(retained_tags) != len(existing_tags):
@@ -856,7 +790,7 @@ def _reactivate_character_threads(session: GameSession, character_id: str) -> di
             continue
         if _scene_thread_is_closed(thread):
             thread.pop("status", None)
-            if _terminal_text_match(thread.get("summary", "")):
+            if _terminal_status_text_match(thread.get("summary", "")):
                 thread["summary"] = f"{character.name or character_id}继续作为活跃角色参与当前故事。"
             thread["updated_at"] = utc_now_iso()
             reopened.append(str(thread_id))
@@ -896,56 +830,145 @@ def _should_reset_mode_to_narrative(
     return False
 
 
-def _terminal_evidence_for_character(
+def _terminal_patch_evidence_map(
     session: GameSession,
-    character_id: str,
+    payload: dict[str, Any],
     *,
+    actor: dict[str, Any],
     player_message: str,
     completion: str,
     tool_results: list[dict[str, Any]],
-) -> bool:
-    character = session.characters.get(character_id)
-    name = character.name if character else ""
-    if _looks_like_terminal_exit(player_message):
-        return True
-    evidence_text = _flatten_text(
-        [
-            _terminal_relevant_completion(completion, character_id=character_id, name=name),
-            _successful_tool_results_text(tool_results),
-            session.scene.get("last_resolution") if isinstance(session.scene, dict) else "",
-        ]
+) -> dict[str, Any]:
+    actor_character_id = _actor_character_id(session, actor)
+    source_text = _terminal_source_text(
+        session,
+        actor=actor,
+        player_message=player_message,
+        completion=completion,
+        tool_results=tool_results,
     )
-    if _terminal_text_match(evidence_text) and (character_id in evidence_text or (name and name in evidence_text)):
+    by_character: dict[str, list[str]] = {}
+    by_thread: dict[str, list[str]] = {}
+    any_evidence: list[str] = []
+    for issue in _list_of_dicts(payload.get("issues"))[:12]:
+        evidence_items = issue.get("evidence")
+        if not isinstance(evidence_items, list):
+            continue
+        text = _flatten_text([issue.get("problem"), issue.get("repair"), evidence_items])
+        accepted = []
+        for raw in evidence_items[:8]:
+            evidence = _short_text(raw, 260)
+            if not _external_audit_evidence_supported(evidence, source_text):
+                continue
+            accepted.append(evidence)
+        if not accepted:
+            continue
+        any_evidence.extend(accepted)
+        for character_id, character in session.characters.items():
+            if _text_mentions_character(text, str(character_id), character):
+                by_character.setdefault(str(character_id), []).extend(accepted)
+        for thread_id, thread in _scene_threads(session.scene).items():
+            if isinstance(thread, dict) and _text_mentions_thread(text, str(thread_id), thread, session):
+                by_thread.setdefault(str(thread_id), []).extend(accepted)
+    return {
+        "any": any_evidence,
+        "actor_character_id": actor_character_id,
+        "by_character": by_character,
+        "by_thread": by_thread,
+    }
+
+
+def _llm_terminal_evidence_for_character(
+    evidence_map: dict[str, Any],
+    session: GameSession,
+    character_id: str,
+) -> bool:
+    if evidence_map.get("by_character", {}).get(character_id):
         return True
+    if character_id and character_id == str(evidence_map.get("actor_character_id") or "") and evidence_map.get("any"):
+        return True
+    character = session.characters.get(character_id)
+    if character:
+        for evidence in evidence_map.get("any", []):
+            if _text_mentions_character(str(evidence), character_id, character):
+                return True
     return False
 
 
-def _terminal_evidence_for_thread(
+def _llm_terminal_evidence_for_thread(
+    evidence_map: dict[str, Any],
     session: GameSession,
     thread_id: str,
     thread: dict[str, Any],
+) -> bool:
+    if evidence_map.get("by_thread", {}).get(thread_id):
+        return True
+    active_character_id = str(thread.get("active_character_id") or "")
+    if not active_character_id and thread_id.startswith("character:"):
+        active_character_id = thread_id.split(":", 1)[1]
+    if active_character_id and _llm_terminal_evidence_for_character(evidence_map, session, active_character_id):
+        return True
+    for participant in thread.get("participants") or []:
+        participant_id = str(participant or "")
+        if participant_id and _llm_terminal_evidence_for_character(evidence_map, session, participant_id):
+            return True
+    return False
+
+
+def _terminal_source_text(
+    session: GameSession,
     *,
+    actor: dict[str, Any],
     player_message: str,
     completion: str,
     tool_results: list[dict[str, Any]],
-) -> bool:
-    active_character_id = str(thread.get("active_character_id") or "")
-    if active_character_id:
-        return _terminal_evidence_for_character(
-            session,
-            active_character_id,
-            player_message=player_message,
-            completion=completion,
-            tool_results=tool_results,
-        )
-    text = _flatten_text(
+) -> str:
+    scene = session.scene if isinstance(session.scene, dict) else {}
+    return _flatten_text(
         [
-            player_message if _looks_like_terminal_exit(player_message) else "",
-            _terminal_relevant_completion(completion, character_id="", name=""),
+            player_message,
+            completion,
             _successful_tool_results_text(tool_results),
+            scene.get("last_resolution"),
+            scene.get("_recent_narrative_events"),
+            build_continuity_audit_view(session, actor=actor),
         ]
     )
-    return bool(_terminal_text_match(text))
+
+
+def _external_audit_evidence_supported(evidence: str, source_text: str) -> bool:
+    evidence = _short_text(evidence, 260)
+    if not evidence or not source_text:
+        return False
+    if evidence in source_text:
+        return True
+    tokens = _salient_tokens(evidence)
+    if not tokens:
+        return False
+    hits = sum(1 for token in tokens[:8] if token in source_text)
+    return hits >= max(1, min(2, len(tokens)))
+
+
+def _text_mentions_character(text: str, character_id: str, character: Character | None) -> bool:
+    text = str(text or "")
+    if character_id and character_id in text:
+        return True
+    name = str(getattr(character, "name", "") or "").strip()
+    return bool(name and name in text)
+
+
+def _text_mentions_thread(text: str, thread_id: str, thread: dict[str, Any], session: GameSession) -> bool:
+    text = str(text or "")
+    if thread_id and thread_id in text:
+        return True
+    active_character_id = str(thread.get("active_character_id") or "")
+    if active_character_id and _text_mentions_character(text, active_character_id, session.characters.get(active_character_id)):
+        return True
+    for participant in thread.get("participants") or []:
+        participant_id = str(participant or "")
+        if participant_id and _text_mentions_character(text, participant_id, session.characters.get(participant_id)):
+            return True
+    return False
 
 
 def _has_recent_tool_backed_scene_fact(tool_results: list[dict[str, Any]]) -> bool:
@@ -968,58 +991,6 @@ def _scene_patch_value_is_backed(session: GameSession, value: Any, tool_results:
     if not tokens:
         return False
     return any(token in evidence for token in tokens)
-
-
-def _terminal_exit_evidence_for_actor(
-    session: GameSession,
-    character_id: str,
-    *,
-    player_message: str,
-    completion: str,
-    tool_results: list[dict[str, Any]],
-) -> bool:
-    if _looks_like_terminal_exit(player_message):
-        return True
-    if not _looks_like_terminal_exit(completion):
-        return False
-    character = session.characters.get(character_id)
-    name = character.name if character else ""
-    direct_completion = _terminal_relevant_completion(completion, character_id=character_id, name=name)
-    if direct_completion and _terminal_text_match(direct_completion):
-        return True
-    return _successful_tool_terminal_evidence(tool_results, character_id)
-
-
-def _terminal_relevant_completion(completion: str, *, character_id: str, name: str) -> str:
-    text = str(completion or "").strip()
-    if not text or not _looks_like_terminal_exit(text):
-        return ""
-    if _terminal_text_is_policy_or_conditional(text):
-        return ""
-    if not character_id and not name:
-        return text
-    if character_id and character_id in text:
-        return text
-    if name and name in text:
-        return text
-    if _contains_any(text, ("该角色已退场", "当前角色已退场", "角色已退场", "你已退场", "你已经退场")):
-        return text
-    return ""
-
-
-def _successful_tool_terminal_evidence(tool_results: list[dict[str, Any]], character_id: str) -> bool:
-    for item in tool_results or []:
-        if not isinstance(item, dict):
-            continue
-        result = item.get("result")
-        if isinstance(result, dict) and result.get("ok") is False:
-            continue
-        text = _flatten_text({"tool": item.get("tool"), "args": item.get("args"), "result": result})
-        if character_id and character_id not in text:
-            continue
-        if _terminal_text_match(text) and not _terminal_text_is_policy_or_conditional(text):
-            return True
-    return False
 
 
 def _reactivation_evidence_for_thread(
@@ -1076,7 +1047,7 @@ def _character_has_active_status(session: GameSession, character_id: str) -> boo
         if str(tag.layer or infer_tag_layer(tag.key)) != "status":
             continue
         text = f"{tag.key} {tag.value}"
-        if _contains_any(text, ("活跃", "恢复", "参团", "当前所在", "最近行动")) and not _terminal_text_match(text):
+        if _contains_any(text, ("活跃", "恢复", "参团", "当前所在", "最近行动")) and not _terminal_status_text_match(text):
             return True
     return False
 
@@ -1089,7 +1060,7 @@ def _character_has_terminal_status(session: GameSession, character_id: str) -> b
         if str(tag.layer or infer_tag_layer(tag.key)) != "status":
             continue
         text = f"{tag.key} {tag.value}"
-        if _terminal_text_match(text):
+        if _terminal_status_text_match(text):
             return True
     return False
 
@@ -1167,34 +1138,6 @@ def _find_replacement_scene_thread_id(scene: dict[str, Any], *, exclude_thread_i
     return candidates[0][1]
 
 
-def _close_terminal_threads_from_text(threads: dict[str, Any]) -> list[str]:
-    closed = []
-    for thread_id, thread in threads.items():
-        if not isinstance(thread, dict) or _scene_thread_is_closed(thread):
-            continue
-        if _thread_text_is_terminal(thread):
-            thread["status"] = "closed"
-            thread["updated_at"] = utc_now_iso()
-            closed.append(str(thread_id))
-    return closed
-
-
-def _thread_text_is_terminal(thread: dict[str, Any]) -> bool:
-    text = _flatten_text(
-        {
-            key: thread.get(key)
-            for key in ("summary", "current_objective", "current_conflict", "stakes", "status")
-        }
-    )
-    if not _terminal_text_match(text):
-        return False
-    if _contains_any(text, ("无活跃主线目标", "不再与本地故事交织", "不再与这座小镇交织", "不再参与当前故事")):
-        return True
-    if _contains_any(text, ("已退场", "确认退场", "永久退场", "角色已退场")):
-        return True
-    return False
-
-
 def _mirror_scene_thread_fields(scene: dict[str, Any], scene_thread: dict[str, Any]) -> None:
     for key in SCENE_MIRROR_KEYS:
         if key in scene_thread:
@@ -1214,52 +1157,6 @@ def _campaign_started(session: GameSession) -> bool:
     scene = session.scene if isinstance(session.scene, dict) else {}
     world_tags = session.world_tags if isinstance(session.world_tags, dict) else {}
     return bool(scene.get("_game_started") or scene.get("_legacy_live_campaign") or world_tags.get("_plot_locked") is True)
-
-
-def _looks_like_terminal_exit(text: str) -> bool:
-    normalized = str(text or "").strip().lower()
-    if not normalized:
-        return False
-    if not _contains_any(normalized, TERMINAL_TERMS):
-        return False
-    if _contains_any(normalized, TERMINAL_REJOIN_TERMS):
-        return False
-    if _terminal_text_is_policy_or_conditional(normalized):
-        return False
-    if _looks_like_terminal_background_context(normalized):
-        return False
-    if _explicit_terminal_exit_statement(normalized):
-        return True
-    return _contains_any(
-        normalized,
-        (
-            "已退场",
-            "确认退场",
-            "永久退场",
-            "角色已退场",
-            "已离开当前故事",
-            "不再参与当前故事",
-            "out of play",
-        ),
-    )
-
-
-def _explicit_terminal_exit_statement(text: str) -> bool:
-    normalized = str(text or "").strip().lower()
-    if not normalized:
-        return False
-    return any(pattern.search(normalized) for pattern in EXPLICIT_TERMINAL_EXIT_PATTERNS)
-
-
-def _looks_like_terminal_background_context(text: str) -> bool:
-    normalized = str(text or "").strip().lower()
-    if not normalized:
-        return False
-    if _contains_any(normalized, ("退场状态", "已退场", "确认退场", "永久退场", "角色已退场")):
-        return False
-    if _explicit_terminal_exit_statement(normalized):
-        return False
-    return _contains_any(normalized, TERMINAL_BACKGROUND_CONTEXT_TERMS)
 
 
 def _looks_like_reactivation_request(text: str) -> bool:
@@ -1288,35 +1185,6 @@ def _looks_like_reactivation_request(text: str) -> bool:
     )
 
 
-def _terminal_text_is_policy_or_conditional(text: str) -> bool:
-    normalized = str(text or "").strip().lower()
-    if not normalized:
-        return False
-    policy_terms = (
-        "如果",
-        "若",
-        "假如",
-        "需要等",
-        "等当前角色退场",
-        "等角色退场",
-        "退场后",
-        "只有",
-        "除非",
-        "才可以",
-        "才能",
-        "允许",
-        "规则",
-        "政策",
-        "allowed_after_start",
-        "character_card_locked_after_start",
-        "blocked_after_start",
-        "可以创建新角色",
-        "换一个",
-        "换新角色",
-    )
-    return _contains_any(normalized, policy_terms) and _contains_any(normalized, TERMINAL_TERMS)
-
-
 def _looks_like_character_creation_request(text: str) -> bool:
     normalized = str(text or "").strip().lower()
     if not normalized:
@@ -1333,7 +1201,17 @@ def _looks_like_state_query(text: str) -> bool:
     return _contains_any(normalized, STATE_QUERY_TERMS)
 
 
-def _terminal_text_match(text: Any) -> bool:
+def _is_terminal_status_tag(key: Any, value: Any) -> bool:
+    key_text = str(key or "").strip().lower()
+    value_text = str(value or "").strip().lower()
+    if not value_text:
+        return False
+    if _contains_any(value_text, TERMINAL_REJOIN_TERMS):
+        return False
+    return _contains_any(key_text, TERMINAL_STATUS_TAG_KEYS) or _terminal_status_text_match(value_text)
+
+
+def _terminal_status_text_match(text: Any) -> bool:
     normalized = str(text or "").lower()
     return _contains_any(normalized, TERMINAL_TERMS) and not _contains_any(normalized, TERMINAL_REJOIN_TERMS)
 

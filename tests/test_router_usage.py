@@ -226,6 +226,7 @@ def test_router_semantic_judge_deletes_ambiguous_tail_menu():
         "门后的锁孔里透出蓝光，金属链条在里面轻轻晃动。\n\n"
         "你是指：研究机关？还是询问守卫？或者同时？",
         '{"classification":"closed_player_options","action":"delete_candidate","confidence":0.91,"reason":"候选文本是：你是指：研究机关？还是询问守卫？或者同时？"}',
+        '{"ok":true,"needs_repair":false,"issues":[],"safe_patches":{},"player_correction":""}',
     )
     router = IntentRouter(
         astr_context=astr_context,
@@ -239,7 +240,7 @@ def test_router_semantic_judge_deletes_ambiguous_tail_menu():
     cleaned = [item for item in records if item.get("type") == "outbound_menu_guidance_cleaned"]
     handled = [item for item in records if item.get("type") == "message_handled"]
 
-    assert len(astr_context.calls) == 2
+    assert len(astr_context.calls) == 3
     assert reply == "门后的锁孔里透出蓝光，金属链条在里面轻轻晃动。"
     assert "你是指" not in reply
     assert reviewed[-1]["classification"] == "closed_player_options"
@@ -249,6 +250,7 @@ def test_router_semantic_judge_deletes_ambiguous_tail_menu():
     assert "研究机关" not in reviewed[-1]["reason"]
     assert cleaned[-1]["semantic_classification"] == "closed_player_options"
     assert handled[-1]["completion"] == reply
+    assert any(item.get("type") == "continuity_audit_reviewed" for item in records)
 
 
 def test_router_semantic_judge_keeps_necessary_clarification():
@@ -259,6 +261,7 @@ def test_router_semantic_judge_keeps_necessary_clarification():
     astr_context = FakeAstrContext(
         completion,
         '{"classification":"necessary_clarification","action":"keep","confidence":0.88,"reason":"asks target identity"}',
+        '{"ok":true,"needs_repair":false,"issues":[],"safe_patches":{},"player_correction":""}',
     )
     router = IntentRouter(
         astr_context=astr_context,
@@ -270,7 +273,7 @@ def test_router_semantic_judge_keeps_necessary_clarification():
     records = repository.last_audit_records("group-1", limit=30)
     reviewed = [item for item in records if item.get("type") == "outbound_menu_guidance_semantic_reviewed"]
 
-    assert len(astr_context.calls) == 2
+    assert len(astr_context.calls) == 3
     assert reply == completion
     assert reviewed[-1]["classification"] == "necessary_clarification"
     assert reviewed[-1]["action"] == "keep"
@@ -279,6 +282,7 @@ def test_router_semantic_judge_keeps_necessary_clarification():
         and item.get("semantic_classification") == "necessary_clarification"
         for item in records
     )
+    assert any(item.get("type") == "continuity_audit_reviewed" for item in records)
 
 
 def test_router_projects_tool_results_before_returning_to_dm_context():

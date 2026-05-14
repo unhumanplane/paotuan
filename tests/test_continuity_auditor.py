@@ -26,7 +26,7 @@ class FakeLlm:
         return FakeResponse(self.text)
 
 
-def test_deterministic_repair_closes_retired_actor_thread_and_restores_narrative_mode():
+def test_deterministic_repair_does_not_mark_terminal_without_llm_audit():
     session = GameSession.new("group")
     session.mode = GameMode.CHARACTER_CREATION
     session.scene["_game_started"] = True
@@ -60,11 +60,11 @@ def test_deterministic_repair_closes_retired_actor_thread_and_restores_narrative
 
     assert any(item["type"] == "mode" for item in result["applied"])
     assert session.mode == GameMode.NARRATIVE
-    assert session.scene["scene_threads"]["character:pc_latatos"]["status"] == "closed"
-    assert session.scene["active_scene_thread_id"] == "character:pc_laofei"
-    assert session.scene["summary"] == "老肥在酒馆等天亮。"
-    tags = {(tag.layer, tag.key): tag.value for tag in session.characters["pc_latatos"].tags}
-    assert "已退场" in tags[("status", "退场状态")]
+    assert not any(item["type"] == "character_terminal_tags" for item in result["applied"])
+    assert not any(item["type"] == "closed_character_scene_threads" for item in result["applied"])
+    assert "status" not in session.scene["scene_threads"]["character:pc_latatos"]
+    assert session.scene["active_scene_thread_id"] == "character:pc_latatos"
+    assert not session.characters["pc_latatos"].tags
 
 
 def test_deterministic_repair_does_not_retire_actor_from_policy_completion():
@@ -125,7 +125,7 @@ def test_deterministic_repair_does_not_retire_actor_from_retirement_backstory():
         }
     ]
 
-    assert not continuity_audit_should_run(
+    assert continuity_audit_should_run(
         session,
         player_message=player_message,
         completion=completion,
@@ -146,7 +146,7 @@ def test_deterministic_repair_does_not_retire_actor_from_retirement_backstory():
     assert not session.characters["pc_zhagu"].tags
 
 
-def test_named_actor_comma_retire_message_still_marks_terminal():
+def test_named_actor_comma_retire_message_waits_for_llm_audit():
     session = GameSession.new("group")
     session.mode = GameMode.NARRATIVE
     session.scene["_game_started"] = True
@@ -168,13 +168,12 @@ def test_named_actor_comma_retire_message_still_marks_terminal():
         tool_results=[],
     )
 
-    assert any(item["type"] == "character_terminal_tags" for item in result["applied"])
-    assert session.scene["scene_threads"]["character:pc_zhagu"]["status"] == "closed"
-    tags = {(tag.layer, tag.key): tag.value for tag in session.characters["pc_zhagu"].tags}
-    assert "已退场" in tags[("status", "退场状态")]
+    assert not any(item["type"] == "character_terminal_tags" for item in result["applied"])
+    assert "status" not in session.scene["scene_threads"]["character:pc_zhagu"]
+    assert not session.characters["pc_zhagu"].tags
 
 
-def test_named_actor_comma_retirement_message_still_marks_terminal():
+def test_named_actor_comma_retirement_message_waits_for_llm_audit():
     session = GameSession.new("group")
     session.mode = GameMode.NARRATIVE
     session.scene["_game_started"] = True
@@ -196,8 +195,9 @@ def test_named_actor_comma_retirement_message_still_marks_terminal():
         tool_results=[],
     )
 
-    assert any(item["type"] == "character_terminal_tags" for item in result["applied"])
-    assert session.scene["scene_threads"]["character:pc_zhagu"]["status"] == "closed"
+    assert not any(item["type"] == "character_terminal_tags" for item in result["applied"])
+    assert "status" not in session.scene["scene_threads"]["character:pc_zhagu"]
+    assert not session.characters["pc_zhagu"].tags
 
 
 def test_audit_patch_does_not_retire_actor_from_retirement_backstory():
@@ -214,6 +214,14 @@ def test_audit_patch_does_not_retire_actor_from_retirement_backstory():
         }
     }
     payload = {
+        "issues": [
+            {
+                "severity": "high",
+                "problem": "扎古已退场。",
+                "evidence": ["扎古已退场。"],
+                "repair": "关闭线程。",
+            }
+        ],
         "safe_patches": {
             "character_tags": [
                 {
@@ -240,6 +248,113 @@ def test_audit_patch_does_not_retire_actor_from_retirement_backstory():
     assert {item["reason"] for item in result["rejected"]} == {"missing_terminal_evidence"}
     assert "status" not in session.scene["scene_threads"]["character:pc_zhagu"]
     assert not session.characters["pc_zhagu"].tags
+
+
+def test_llm_audit_patch_can_mark_terminal_without_player_consent():
+    session = GameSession.new("group")
+    session.mode = GameMode.NARRATIVE
+    session.scene["_game_started"] = True
+    session.characters["pc_zhagu"] = Character(id="pc_zhagu", name="扎古", player_id="p1")
+    session.player_character_map = {"p1": "pc_zhagu"}
+    session.scene["scene_threads"] = {
+        "character:pc_zhagu": {
+            "summary": "扎古正冲向甲板守卫。",
+            "participants": ["pc_zhagu"],
+            "active_character_id": "pc_zhagu",
+        }
+    }
+    payload = {
+        "issues": [
+            {
+                "severity": "high",
+                "problem": "扎古已被驱逐离船，但角色线程仍是 active。",
+                "evidence": ["扎古被守卫制服铐走，安保宣布他被驱逐下船，无法再参与本次航行。"],
+                "repair": "写入退场状态并关闭扎古角色线程。",
+            }
+        ],
+        "safe_patches": {
+            "character_tags": [
+                {
+                    "character_id": "pc_zhagu",
+                    "tags": [{"key": "退场状态", "value": "被驱逐下船，无法再参与本次航行", "layer": "status"}],
+                }
+            ],
+            "scene_threads": [
+                {
+                    "thread_id": "character:pc_zhagu",
+                    "patch": {
+                        "status": "closed",
+                        "summary": "扎古被守卫制服并驱逐下船，无法再参与本次航行。",
+                    },
+                }
+            ],
+        },
+    }
+
+    result = apply_continuity_audit_patches(
+        session,
+        payload,
+        actor={"player_id": "p1"},
+        player_message="我继续冲向守卫。",
+        completion="守卫把扎古制服铐走，安保宣布他被驱逐下船，无法再参与本次航行。",
+        tool_results=[],
+    )
+
+    assert any(item.get("type") == "character_tags" for item in result["applied"])
+    assert any(item.get("type") == "scene_thread" for item in result["applied"])
+    tags = {(tag.layer, tag.key): tag.value for tag in session.characters["pc_zhagu"].tags}
+    assert tags[("status", "退场状态")] == "被驱逐下船，无法再参与本次航行"
+    assert session.scene["scene_threads"]["character:pc_zhagu"]["status"] == "closed"
+
+
+def test_llm_audit_patch_rejects_terminal_self_attestation():
+    session = GameSession.new("group")
+    session.mode = GameMode.NARRATIVE
+    session.scene["_game_started"] = True
+    session.characters["pc_yaka"] = Character(id="pc_yaka", name="雅卡", player_id="p1")
+    session.player_character_map = {"p1": "pc_yaka"}
+    session.scene["scene_threads"] = {
+        "character:pc_yaka": {
+            "summary": "雅卡正在客舱里查看电脑。",
+            "participants": ["pc_yaka"],
+            "active_character_id": "pc_yaka",
+        }
+    }
+    payload = {
+        "issues": [
+            {
+                "severity": "high",
+                "problem": "雅卡已退场。",
+                "evidence": ["雅卡已退场。"],
+                "repair": "关闭线程。",
+            }
+        ],
+        "safe_patches": {
+            "character_tags": [
+                {
+                    "character_id": "pc_yaka",
+                    "tags": [{"key": "退场状态", "value": "已退场", "layer": "status"}],
+                }
+            ],
+            "scene_threads": [
+                {"thread_id": "character:pc_yaka", "patch": {"status": "closed", "summary": "雅卡已退场。"}}
+            ],
+        },
+    }
+
+    result = apply_continuity_audit_patches(
+        session,
+        payload,
+        actor={"player_id": "p1"},
+        player_message="我查看电脑数据。",
+        completion="雅卡打开电脑，继续调查船内传感器。",
+        tool_results=[],
+    )
+
+    assert not any(item.get("type") in {"character_tags", "scene_thread"} for item in result["applied"])
+    assert {item["reason"] for item in result["rejected"]} == {"missing_terminal_evidence"}
+    assert "status" not in session.scene["scene_threads"]["character:pc_yaka"]
+    assert not session.characters["pc_yaka"].tags
 
 
 def test_terminal_character_thread_cannot_reopen_from_stale_active_status_tags():
@@ -435,6 +550,14 @@ def test_audit_patch_applies_only_terminal_character_tags_with_evidence():
     session.characters["pc_latatos"] = Character(id="pc_latatos", name="拉塔托丝", player_id="p1")
     session.player_character_map["p1"] = "pc_latatos"
     payload = {
+        "issues": [
+            {
+                "severity": "high",
+                "problem": "拉塔托丝已离开当前故事。",
+                "evidence": ["拉塔托丝已退场。"],
+                "repair": "写入退场状态。",
+            }
+        ],
         "safe_patches": {
             "character_tags": [
                 {
@@ -566,7 +689,7 @@ def test_normalize_active_scene_thread_ignores_closed_active_thread():
     assert session.scene["summary"] == "老肥在酒馆等天亮。"
 
 
-def test_normalize_active_scene_thread_closes_legacy_terminal_thread_text():
+def test_normalize_active_scene_thread_does_not_close_from_terminal_text_alone():
     session = GameSession.new("group")
     session.scene["active_scene_thread_id"] = "character:pc_esmeralda"
     session.scene["scene_threads"] = {
@@ -584,7 +707,7 @@ def test_normalize_active_scene_thread_closes_legacy_terminal_thread_text():
 
     result = normalize_active_scene_thread(session)
 
-    assert result["changed"] is True
-    assert result["closed_thread_ids"] == ["character:pc_esmeralda"]
-    assert session.scene["scene_threads"]["character:pc_esmeralda"]["status"] == "closed"
-    assert session.scene["active_scene_thread_id"] == "character:pc_laofei"
+    assert result["changed"] is False
+    assert result["closed_thread_ids"] == []
+    assert "status" not in session.scene["scene_threads"]["character:pc_esmeralda"]
+    assert session.scene["active_scene_thread_id"] == "character:pc_esmeralda"
