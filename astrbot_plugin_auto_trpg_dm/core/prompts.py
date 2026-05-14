@@ -549,17 +549,44 @@ def _project_world_tags(world_tags: Any, profile: str) -> Any:
                 text_limit=280,
                 item_limit=16,
             )
-        elif isinstance(value, dict):
-            projected_value = _project_mapping(value, depth=2, text_limit=360, item_limit=16)
-        elif isinstance(value, list):
-            projected_value = _project_list(value, depth=2, text_limit=280, item_limit=16)
-        elif isinstance(value, str):
-            projected_value = _short_text(value, 500)
         else:
-            projected_value = value
+            text_limit = _world_tag_projection_text_limit(key_text, profile)
+            if isinstance(value, dict):
+                projected_value = _project_mapping(value, depth=2, text_limit=text_limit, item_limit=16)
+            elif isinstance(value, list):
+                projected_value = _project_list(value, depth=2, text_limit=text_limit, item_limit=16)
+            elif isinstance(value, str):
+                projected_value = _short_text(value, text_limit)
+            else:
+                projected_value = value
         if projected_value not in ({}, [], "", None):
             projected[key_text] = projected_value
     return projected
+
+
+def _world_tag_projection_text_limit(key: str, profile: str) -> int:
+    key_lower = str(key or "").strip().lower()
+    if key_lower in {
+        "campaign_background",
+        "background",
+        "world_premise",
+        "premise",
+        "starting_premise",
+        "campaign_outline",
+        "main_plot",
+        "plot",
+        "story_outline",
+        "背景",
+        "世界观",
+        "开场前提",
+        "剧情",
+        "剧本",
+        "主线",
+    }:
+        return 3000 if profile not in {"state_query", "character_profile"} else 1800
+    if key_lower in {"factions", "npcs", "人物", "势力"}:
+        return 1200 if profile not in {"state_query", "character_profile"} else 700
+    return 500
 
 
 def _project_map_ref(value: Any) -> Any:

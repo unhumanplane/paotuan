@@ -43,7 +43,7 @@ from .tools.registry import ToolRegistry
 from .tools.turn_tools import TurnTools
 
 
-PLUGIN_VERSION = "0.1.98"
+PLUGIN_VERSION = "0.1.99"
 
 DEFAULT_REASSURANCE_PHRASES = (
     "正在翻找合适的骰子。",
@@ -347,6 +347,7 @@ class AutoTrpgDmPlugin(Star):
             yield result
 
     def _routed_message_from_command_content(self, content: Any, event: AstrMessageEvent | None = None) -> str:
+        event_argument = _dm_command_argument_from_event(event)
         if isinstance(content, str):
             routed_message = content.strip()
         elif content is None:
@@ -355,8 +356,9 @@ class AutoTrpgDmPlugin(Star):
             routed_message = str(content or "").strip()
             if routed_message == "GreedyStr":
                 routed_message = ""
+        if event_argument is not None and len(event_argument) > len(routed_message):
+            routed_message = event_argument
         if routed_message == "GreedyStr":
-            event_argument = _dm_command_argument_from_event(event)
             if event_argument is not None:
                 routed_message = event_argument
             elif event is not None:
@@ -4253,6 +4255,18 @@ def _compact_text(value: object, limit: int) -> str:
     return text[: max(1, limit - 1)].rstrip() + "…"
 
 
+def _compact_campaign_background(value: object) -> str:
+    return _compact_text(value, 12000)
+
+
+def _compact_starting_premise(value: object) -> str:
+    return _compact_text(value, 6000)
+
+
+def _compact_background_factions(value: object) -> str:
+    return _compact_text(value, 4000)
+
+
 def _extract_reset_confirmation_token(text: str) -> str:
     lowered = str(text or "").strip().lower()
     if not lowered:
@@ -4461,10 +4475,10 @@ def _guided_background_patch_from_text(text: str) -> dict:
             "genre": "grimdark_sci_fi",
             "tone": "哥特军事恐怖、克制高压、重视火力与代价",
             "factions": ["Ultramarines（极限战士）", "Genestealer Cult（基因窃取者教派）"],
-            "starting_premise": _compact_text(text, 240),
+            "starting_premise": _compact_starting_premise(text),
             "location": location,
             "ruleset": "homebrew_warhammer40k_adaptation；风险、命中、伤害和资源消耗用 d20/伤害骰裁定",
-            "campaign_background": _compact_text(text, 320),
+            "campaign_background": _compact_campaign_background(text),
         }
     patch: dict = {}
     genre_terms = _terms_found(
@@ -4502,15 +4516,17 @@ def _guided_background_patch_from_text(text: str) -> dict:
     if location_terms:
         patch["location"] = "、".join(location_terms)
     if any(term in lowered for term in ("势力", "组织", "公司", "教团", "军团", "帮派", "敌人", "怪物", "派系", "贵族", "朝廷")):
-        patch["factions"] = _compact_text(text, 180)
+        patch["factions"] = _compact_background_factions(text)
     if any(term in lowered for term in ("规则", "系统", "检定", "骰", "d20", "dnd", "coc", "无魔", "没有魔")):
         patch["ruleset"] = "以 d20 检定为基础；概率、风险和对抗行动必须投骰。"
     if any(term in lowered for term in ("开始游戏", "开场", "开局", "故事", "剧本", "副本", "任务", "求救", "来到", "醒来", "我是", "我们是", "扮演", "担任")):
-        patch["starting_premise"] = _compact_text(text, 240)
+        patch["starting_premise"] = _compact_starting_premise(text)
     if patch:
         patch.setdefault("tone", "由 DM 补全细节，保持可裁定、可推进、不过度追问")
         patch.setdefault("ruleset", "以 d20 检定为基础；概率、风险和对抗行动必须投骰。")
-        patch.setdefault("campaign_background", _compact_text(text, 320))
+        if _looks_like_enough_background_seed(text) or _looks_like_new_campaign_seed_request(text):
+            patch.setdefault("starting_premise", _compact_starting_premise(text))
+        patch.setdefault("campaign_background", _compact_campaign_background(text))
         return patch
     if delegated_background:
         return {
@@ -4530,7 +4546,7 @@ def _terms_found(text: str, terms: tuple[str, ...]) -> list[str]:
 
 
 def _visual_map_background_patch_from_text(text: str) -> dict:
-    source = _compact_text(text or "玩家请求绘制地图", 180)
+    source = _compact_starting_premise(text or "玩家请求绘制地图")
     return {
         "genre": "待定跑团场景",
         "tone": "清晰、克制、方便裁定",

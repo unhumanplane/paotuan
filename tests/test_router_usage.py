@@ -146,6 +146,8 @@ def test_start_game_arg_repair_coerces_json_string_outline():
 
 def test_router_cleans_menu_like_guidance_before_return_and_audit():
     repository = InMemoryRepository()
+    session = repository.load_session("group-1")
+    session.scene["_game_started"] = True
     astr_context = FakeAstrContext(
         "门缝里透出冷蓝色的光，里面有人压低声音提到巡逻换岗。\n\n"
         "你可以选择：\n"
@@ -173,6 +175,32 @@ def test_router_cleans_menu_like_guidance_before_return_and_audit():
     assert "cleaned_hash" in cleanup[-1]
 
 
+def test_router_preserves_setup_suggestions_before_game_start():
+    repository = InMemoryRepository()
+    astr_context = FakeAstrContext(
+        "好的，背景已准备就绪。\n\n"
+        "**《夜语者》**\n\n"
+        "**背景设定：**\n"
+        "一座不眠的现代都市，新京市。\n\n"
+        "**建议角色方向：**\n"
+        "- 通灵者\n"
+        "- 隐秘社团成员\n"
+        "- 被诅咒之人"
+    )
+    router = IntentRouter(
+        astr_context=astr_context,
+        repository=repository,
+        tool_registry=FakeToolRegistry(),
+    )
+
+    reply = asyncio.run(router.handle_message(FakeEvent("来一个现代背景的跑团：")))
+    records = repository.last_audit_records("group-1", limit=20)
+
+    assert "**建议角色方向：**" in reply
+    assert "通灵者" in reply
+    assert not any(item.get("type") == "outbound_menu_guidance_cleaned" for item in records)
+
+
 def test_router_skips_cleanup_for_diagnostic_completion():
     repository = InMemoryRepository()
     completion = "Token 粗算：1. prompt=100；2. completion=20；3. total=120。"
@@ -192,6 +220,8 @@ def test_router_skips_cleanup_for_diagnostic_completion():
 
 def test_router_semantic_judge_deletes_ambiguous_tail_menu():
     repository = InMemoryRepository()
+    session = repository.load_session("group-1")
+    session.scene["_game_started"] = True
     astr_context = FakeAstrContext(
         "门后的锁孔里透出蓝光，金属链条在里面轻轻晃动。\n\n"
         "你是指：研究机关？还是询问守卫？或者同时？",
@@ -223,6 +253,8 @@ def test_router_semantic_judge_deletes_ambiguous_tail_menu():
 
 def test_router_semantic_judge_keeps_necessary_clarification():
     repository = InMemoryRepository()
+    session = repository.load_session("group-1")
+    session.scene["_game_started"] = True
     completion = "雾里有两道身影。\n\n你是指左边披斗篷的人？还是右边拿灯的人？"
     astr_context = FakeAstrContext(
         completion,

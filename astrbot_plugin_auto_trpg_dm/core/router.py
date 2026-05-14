@@ -770,98 +770,99 @@ class IntentRouter:
                         fallback_turn.get("from_entity_id", ""),
                         fallback_turn.get("to_entity_id", ""),
                     )
-            completion_before_cleanup = completion
-            cleanup = cleanup_menu_like_guidance(
-                completion,
-                player_message=message,
-                diagnostic=diagnostic_prompt,
-            )
-            if cleanup.changed:
-                completion = cleanup.text
-                self.repository.append_audit(
-                    session_id,
-                    {
-                        "type": "outbound_menu_guidance_cleaned",
-                        "actor": actor,
-                        "player_message": message,
-                        "reason": cleanup.reason,
-                        "removed_blocks": cleanup.removed_blocks,
-                        "replacement_used": cleanup.replacement_used,
-                        "original_chars": cleanup.original_chars,
-                        "cleaned_chars": cleanup.cleaned_chars,
-                        "original_hash": _short_hash(completion_before_cleanup),
-                        "cleaned_hash": _short_hash(completion),
-                    },
-                )
-                get_plugin_logger().info(
-                    "outbound_menu_guidance_cleaned session=%s mode=%s actor=%s reason=%s removed_blocks=%s original_chars=%s cleaned_chars=%s",
-                    session_id,
-                    mode.value,
-                    actor.get("player_id", ""),
-                    cleanup.reason,
-                    cleanup.removed_blocks,
-                    cleanup.original_chars,
-                    cleanup.cleaned_chars,
-                )
-            elif cleanup.semantic_candidate:
-                semantic_review = await self._judge_outbound_menu_candidate(
-                    chat_provider_id=provider_id,
-                    player_message=message,
-                    candidate=cleanup.semantic_candidate,
-                )
-                self.repository.append_audit(
-                    session_id,
-                    {
-                        "type": "outbound_menu_guidance_semantic_reviewed",
-                        "actor": actor,
-                        "player_message": message,
-                        "candidate_hash": _short_hash(cleanup.semantic_candidate.text),
-                        "candidate_chars": len(cleanup.semantic_candidate.text),
-                        "candidate_start": cleanup.semantic_candidate.start,
-                        "candidate_end": cleanup.semantic_candidate.end,
-                        "signals": list(cleanup.semantic_candidate.signals),
-                        "classification": semantic_review.get("classification", "uncertain"),
-                        "action": semantic_review.get("action", "keep"),
-                        "confidence": semantic_review.get("confidence", 0.0),
-                        "reason": semantic_review.get("reason", ""),
-                        "parse_ok": semantic_review.get("parse_ok", False),
-                    },
-                )
-                semantic_cleanup = apply_semantic_menu_judgment(
+            if _should_cleanup_outbound_menu_guidance(latest_session, mode):
+                completion_before_cleanup = completion
+                cleanup = cleanup_menu_like_guidance(
                     completion,
-                    cleanup.semantic_candidate,
-                    str(semantic_review.get("action") or "keep"),
+                    player_message=message,
+                    diagnostic=diagnostic_prompt,
                 )
-                if semantic_cleanup.changed:
-                    completion = semantic_cleanup.text
+                if cleanup.changed:
+                    completion = cleanup.text
                     self.repository.append_audit(
                         session_id,
                         {
                             "type": "outbound_menu_guidance_cleaned",
                             "actor": actor,
                             "player_message": message,
-                            "reason": semantic_cleanup.reason,
-                            "removed_blocks": semantic_cleanup.removed_blocks,
-                            "replacement_used": semantic_cleanup.replacement_used,
-                            "original_chars": semantic_cleanup.original_chars,
-                            "cleaned_chars": semantic_cleanup.cleaned_chars,
+                            "reason": cleanup.reason,
+                            "removed_blocks": cleanup.removed_blocks,
+                            "replacement_used": cleanup.replacement_used,
+                            "original_chars": cleanup.original_chars,
+                            "cleaned_chars": cleanup.cleaned_chars,
                             "original_hash": _short_hash(completion_before_cleanup),
                             "cleaned_hash": _short_hash(completion),
-                            "semantic_classification": semantic_review.get("classification", "uncertain"),
-                            "semantic_confidence": semantic_review.get("confidence", 0.0),
                         },
                     )
-                get_plugin_logger().info(
-                    "outbound_menu_guidance_semantic_reviewed session=%s mode=%s actor=%s classification=%s action=%s confidence=%s parse_ok=%s candidate_chars=%s",
-                    session_id,
-                    mode.value,
-                    actor.get("player_id", ""),
-                    semantic_review.get("classification", "uncertain"),
-                    semantic_review.get("action", "keep"),
-                    semantic_review.get("confidence", 0.0),
-                    semantic_review.get("parse_ok", False),
-                    len(cleanup.semantic_candidate.text),
-                )
+                    get_plugin_logger().info(
+                        "outbound_menu_guidance_cleaned session=%s mode=%s actor=%s reason=%s removed_blocks=%s original_chars=%s cleaned_chars=%s",
+                        session_id,
+                        mode.value,
+                        actor.get("player_id", ""),
+                        cleanup.reason,
+                        cleanup.removed_blocks,
+                        cleanup.original_chars,
+                        cleanup.cleaned_chars,
+                    )
+                elif cleanup.semantic_candidate:
+                    semantic_review = await self._judge_outbound_menu_candidate(
+                        chat_provider_id=provider_id,
+                        player_message=message,
+                        candidate=cleanup.semantic_candidate,
+                    )
+                    self.repository.append_audit(
+                        session_id,
+                        {
+                            "type": "outbound_menu_guidance_semantic_reviewed",
+                            "actor": actor,
+                            "player_message": message,
+                            "candidate_hash": _short_hash(cleanup.semantic_candidate.text),
+                            "candidate_chars": len(cleanup.semantic_candidate.text),
+                            "candidate_start": cleanup.semantic_candidate.start,
+                            "candidate_end": cleanup.semantic_candidate.end,
+                            "signals": list(cleanup.semantic_candidate.signals),
+                            "classification": semantic_review.get("classification", "uncertain"),
+                            "action": semantic_review.get("action", "keep"),
+                            "confidence": semantic_review.get("confidence", 0.0),
+                            "reason": semantic_review.get("reason", ""),
+                            "parse_ok": semantic_review.get("parse_ok", False),
+                        },
+                    )
+                    semantic_cleanup = apply_semantic_menu_judgment(
+                        completion,
+                        cleanup.semantic_candidate,
+                        str(semantic_review.get("action") or "keep"),
+                    )
+                    if semantic_cleanup.changed:
+                        completion = semantic_cleanup.text
+                        self.repository.append_audit(
+                            session_id,
+                            {
+                                "type": "outbound_menu_guidance_cleaned",
+                                "actor": actor,
+                                "player_message": message,
+                                "reason": semantic_cleanup.reason,
+                                "removed_blocks": semantic_cleanup.removed_blocks,
+                                "replacement_used": semantic_cleanup.replacement_used,
+                                "original_chars": semantic_cleanup.original_chars,
+                                "cleaned_chars": semantic_cleanup.cleaned_chars,
+                                "original_hash": _short_hash(completion_before_cleanup),
+                                "cleaned_hash": _short_hash(completion),
+                                "semantic_classification": semantic_review.get("classification", "uncertain"),
+                                "semantic_confidence": semantic_review.get("confidence", 0.0),
+                            },
+                        )
+                    get_plugin_logger().info(
+                        "outbound_menu_guidance_semantic_reviewed session=%s mode=%s actor=%s classification=%s action=%s confidence=%s parse_ok=%s candidate_chars=%s",
+                        session_id,
+                        mode.value,
+                        actor.get("player_id", ""),
+                        semantic_review.get("classification", "uncertain"),
+                        semantic_review.get("action", "keep"),
+                        semantic_review.get("confidence", 0.0),
+                        semantic_review.get("parse_ok", False),
+                        len(cleanup.semantic_candidate.text),
+                    )
             deterministic_repair = apply_deterministic_continuity_repairs(
                 latest_session,
                 actor=actor,
@@ -2078,12 +2079,12 @@ class IntentRouter:
         if not text:
             return text
         if _wants_full_status_output(raw_player_message) or _wants_expanded_detail_output(raw_player_message):
-            limit = 2200
+            limit = 3600
             if len(text) <= limit:
                 return text
             return text[:limit].rstrip()
         if _wants_opening_output(raw_player_message):
-            limit = 900
+            limit = 2400
             if len(text) <= limit:
                 return text
             return text[:limit].rstrip()
@@ -2101,7 +2102,7 @@ class IntentRouter:
             limit = 700
         if combat_or_turn_output:
             limit = max(limit, 360)
-        limit = max(360, min(1800, limit))
+        limit = max(360, min(2400, limit))
         if len(text) <= limit:
             return text
         cutoff = limit - 1
@@ -2273,6 +2274,15 @@ def _clean_tool_call_artifacts(text: str) -> str:
             continue
         lines.append(line.rstrip())
     return "\n".join(lines).strip()
+
+
+def _should_cleanup_outbound_menu_guidance(session: GameSession, mode: GameMode) -> bool:
+    if mode == GameMode.CHARACTER_CREATION:
+        return False
+    scene = session.scene or {}
+    if scene.get("_game_started") is not True:
+        return False
+    return True
 
 
 def _json_object_payloads(text: str) -> list[tuple[int, int, Any]]:
@@ -2656,18 +2666,19 @@ def _infer_world_tags_from_text(message: str) -> dict[str, Any]:
         patch["ruleset"] = "、".join(ruleset_terms)
 
     if any(token in lowered for token in ("势力", "组织", "公司", "教团", "军团", "帮派", "派系", "店员", "猫娘", "贵族", "朝廷")):
-        patch["factions"] = _short_inferred_text(text, 160)
+        patch["factions"] = _short_inferred_text(text, 4000)
     if any(token in lowered for token in ("开始游戏", "开场", "开局", "第一幕", "故事", "剧本", "副本", "任务", "求救", "聚集", "来到", "醒来", "退休", "导入", "我是", "我们是", "扮演", "担任")):
-        patch["starting_premise"] = _short_inferred_text(text, 240)
+        patch["starting_premise"] = _short_inferred_text(text, 6000)
 
     if any(token in lowered for token in ("我是", "我们是", "扮演", "担任", "店长", "领主", "队长", "调查员", "学生", "佣兵", "冒险者")):
-        patch.setdefault("player_role_premise", _short_inferred_text(text, 160))
+        patch.setdefault("player_role_premise", _short_inferred_text(text, 1200))
     if any(token in lowered for token in ("补全", "补完", "智能补完", "不用多问", "直接开始", "开始游戏", "开场", "开局")) and len(patch) >= 1:
         patch.setdefault("tone", "由 DM 补全细节，保持可裁定、可推进、不过度追问")
         patch.setdefault("ruleset", "以 d20 检定为基础；概率、风险和对抗行动必须投骰。")
 
     if len(patch) >= 2 or ("genre" in patch and len(str(patch["genre"])) >= 8):
-        patch.setdefault("campaign_background", _short_inferred_text(text, 280))
+        patch.setdefault("starting_premise", _short_inferred_text(text, 6000))
+        patch.setdefault("campaign_background", _short_inferred_text(text, 12000))
         return patch
     return {}
 

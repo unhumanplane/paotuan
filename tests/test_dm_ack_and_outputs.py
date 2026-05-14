@@ -133,6 +133,7 @@ from astrbot_plugin_auto_trpg_dm.core.ambient_image import AmbientImageConfig
 from astrbot_plugin_auto_trpg_dm.core.models import CycleState, GameSession
 from astrbot_plugin_auto_trpg_dm.main import (
     AutoTrpgDmPlugin,
+    _guided_background_patch_from_text,
     _looks_like_backup_preview_request,
     _looks_like_restore_latest_backup_request,
     _looks_like_restart_latest_backup_story_request,
@@ -415,6 +416,26 @@ def test_visual_map_requests_without_background_reach_tool_chain():
         assert not any(record.get("action") == "background_required" for record in repo.audits)
 
 
+def test_guided_background_preserves_full_three_act_campaign_seed():
+    text = (
+        "来一个现代背景的跑团： 第一幕 游艇探险旅行 半路史东房间内身亡  "
+        "正在二爷 鹰酱等人寻找死因期间游艇深陷大雾迷航  "
+        "导航失灵 传统六分仪定位显示船在南极。\n"
+        "第二幕 扎古钓鱼发现神秘语言和遗迹地图 全员水下倒斗 老卡炸开墓室顶部 "
+        "找到神秘导航仪 引导游艇前往未知小岛。\n"
+        "第三幕 未知小岛探索遗迹，全员激斗邪教徒，发现事件真相，"
+        "合力驱散神秘外星生物。小岛沉没，众群友爬上游艇跑路，"
+        "一阵大雾之后回到南太平洋，导航恢复正常。"
+    )
+
+    patch = _guided_background_patch_from_text(text)
+
+    assert "第一幕 游艇探险旅行" in patch["campaign_background"]
+    assert "第二幕 扎古钓鱼发现神秘语言和遗迹地图" in patch["campaign_background"]
+    assert "第三幕 未知小岛探索遗迹" in patch["campaign_background"]
+    assert "第三幕 未知小岛探索遗迹" in patch["starting_premise"]
+
+
 def test_empty_dm_greedystr_sentinel_is_not_routed_to_llm():
     plugin = AutoTrpgDmPlugin.__new__(AutoTrpgDmPlugin)
 
@@ -479,6 +500,24 @@ def test_explicit_greedystr_argument_is_preserved_from_event_message():
     )
 
     assert routed_message == "GreedyStr"
+
+
+def test_dm_command_prefers_full_multiline_event_argument_when_greedystr_is_truncated():
+    plugin = AutoTrpgDmPlugin.__new__(AutoTrpgDmPlugin)
+    full = (
+        "/dm 来一个现代背景的跑团： 第一幕 游艇探险旅行 半路史东房间内身亡\n"
+        "第二幕 扎古钓鱼发现神秘语言和遗迹地图\n"
+        "第三幕 未知小岛探索遗迹"
+    )
+
+    routed_message = plugin._routed_message_from_command_content(
+        "来一个现代背景的跑团：",
+        event=FakeEvent(message_str=full),
+    )
+
+    assert "第一幕 游艇探险旅行" in routed_message
+    assert "第二幕 扎古钓鱼发现神秘语言和遗迹地图" in routed_message
+    assert "第三幕 未知小岛探索遗迹" in routed_message
 
 
 class FakeLogger:

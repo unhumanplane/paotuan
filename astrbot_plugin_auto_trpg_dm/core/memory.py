@@ -33,7 +33,7 @@ class MemoryCompressor:
         if session.scene.get("current_conflict"):
             parts.append(f"当前冲突：{session.scene.get('current_conflict')}")
         if session.world_tags:
-            parts.append("世界设定：" + _compact_json(session.world_tags, 700))
+            parts.append("世界设定：" + _compact_json(session.world_tags, 3000))
         if session.characters:
             character_bits = []
             for character in session.characters.values():

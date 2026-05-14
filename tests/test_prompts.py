@@ -1109,6 +1109,34 @@ def test_prompt_snapshot_projection_does_not_expose_raw_strict_grid():
     assert "'x': 4" not in rendered
 
 
+def test_prompt_snapshot_projection_keeps_long_campaign_seed_context():
+    session = GameSession.new("group")
+    first = "第一幕 游艇探险旅行 半路史东房间内身亡，二爷、鹰酱寻找死因时游艇深陷大雾迷航。"
+    second = "第二幕 扎古钓鱼发现神秘语言和遗迹地图，全员水下倒斗，老卡炸开墓室顶部找到神秘导航仪。"
+    third = "第三幕 未知小岛探索遗迹，全员激斗邪教徒，发现事件真相，合力驱散神秘外星生物。"
+    filler = "雾航记录、船舱证词、遗迹译文、岛上钟声、返航异常。"
+    seed = first + filler * 40 + second + filler * 40 + third
+    session.world_tags.update(
+        {
+            "genre": "现代悬疑",
+            "starting_premise": seed,
+            "campaign_background": seed,
+        }
+    )
+
+    projected_snapshot, _stats = prompt_snapshot_data(
+        session,
+        GameMode.NARRATIVE,
+        "继续开局",
+        snapshot_projection_enabled=True,
+    )
+
+    rendered = json.dumps(projected_snapshot["world_tags"], ensure_ascii=False)
+    assert first in rendered
+    assert second in rendered
+    assert third in rendered
+
+
 def test_compact_snapshot_uses_map_store_entities_before_stale_battle_grid():
     session = GameSession.new("group")
     session.characters["pc_owner"] = Character(id="pc_owner", name="MapStore Owner", player_id="owner")
