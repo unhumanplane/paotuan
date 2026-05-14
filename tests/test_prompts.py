@@ -724,6 +724,52 @@ def test_prompt_snapshot_projection_does_not_project_closed_active_thread_as_act
     assert "老肥在酒馆等天亮" in rendered
 
 
+def test_prompt_snapshot_projection_keeps_actor_thread_when_other_thread_is_active():
+    session = GameSession.new("group")
+    session.characters["pc_yaka"] = Character(id="pc_yaka", name="雅卡", player_id="p1")
+    session.characters["pc_andrei"] = Character(id="pc_andrei", name="安德烈", player_id="p2")
+    session.player_character_map = {"p1": "pc_yaka", "p2": "pc_andrei"}
+    session.scene["active_scene_thread_id"] = "character:pc_andrei"
+    session.scene["scene_threads"] = {
+        "character:pc_andrei": {
+            "summary": "安德烈在公共休息室查看设备间舱门。",
+            "location": "音速号公共休息室",
+            "participants": ["pc_andrei"],
+            "active_character_id": "pc_andrei",
+            "updated_at": "2026-05-14T10:20:00+00:00",
+        },
+        "character:pc_yaka": {
+            "summary": "雅卡在客舱电脑前查到62°S异常回波，并给鹰酱发了消息。",
+            "location": "音速号客舱",
+            "participants": ["pc_yaka"],
+            "active_character_id": "pc_yaka",
+            "updated_at": "2026-05-14T10:15:40+00:00",
+            "clues": [
+                {
+                    "id": "clue_anomaly_warm_water",
+                    "text": "62°S 附近两次试航均记录到300米深处水温异常。",
+                    "status": "discovered",
+                    "visibility": "player",
+                }
+            ],
+        },
+    }
+
+    projected_snapshot, _stats = prompt_snapshot_data(
+        session,
+        GameMode.NARRATIVE,
+        "我在中央控制室的剧情被取消了吗",
+        actor={"player_id": "p1"},
+        snapshot_projection_enabled=True,
+    )
+    threads = projected_snapshot["scene"]["scene_threads"]
+    rendered = json.dumps(threads, ensure_ascii=False)
+
+    assert "安德烈在公共休息室" in rendered
+    assert threads["actor_current"]["scene_thread_id"] == "character:pc_yaka"
+    assert "62°S异常回波" in rendered
+
+
 def test_prompt_snapshot_projection_keeps_recent_tool_backed_ritual_completion_anchor():
     session = GameSession.new("group")
     session.scene["summary"] = "旧摘要：仪式还没开始，需要先准备。"

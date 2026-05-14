@@ -134,6 +134,8 @@ from astrbot_plugin_auto_trpg_dm.core.models import CycleState, GameSession
 from astrbot_plugin_auto_trpg_dm.main import (
     AutoTrpgDmPlugin,
     _guided_background_patch_from_text,
+    _looks_like_in_campaign_content_expansion_request,
+    _looks_like_new_campaign_seed_request,
     _looks_like_backup_preview_request,
     _looks_like_restore_latest_backup_request,
     _looks_like_restart_latest_backup_story_request,
@@ -434,6 +436,42 @@ def test_guided_background_preserves_full_three_act_campaign_seed():
     assert "第二幕 扎古钓鱼发现神秘语言和遗迹地图" in patch["campaign_background"]
     assert "第三幕 未知小岛探索遗迹" in patch["campaign_background"]
     assert "第三幕 未知小岛探索遗迹" in patch["starting_premise"]
+
+
+def test_new_campaign_detector_ignores_in_campaign_npc_roster_expansion():
+    text = "请补充设法，110尺探险游艇通常有15-20名船员，包含船长、大副、水手和服务员、厨师等职业，请补充船上的NPC，符合剧本要求。"
+
+    assert _looks_like_new_campaign_seed_request(text) is True
+    assert _looks_like_in_campaign_content_expansion_request(text) is True
+
+
+def test_in_campaign_npc_roster_expansion_does_not_trigger_reset_fast_path():
+    session = GameSession.new("group")
+    session.world_tags["_background_ready"] = True
+    session.scene["_game_started"] = True
+    session.scene["summary"] = "音速号已经起航前准备中。"
+    repo = FakeRepository(session)
+    plugin = AutoTrpgDmPlugin.__new__(AutoTrpgDmPlugin)
+    plugin.repository = repo
+    plugin.ambient_image_config = AmbientImageConfig(enabled=False)
+    plugin.plugin_logger = FakeLogger()
+    plugin.honcho_config = types.SimpleNamespace(
+        enabled=False,
+        read_enabled=False,
+        max_context_chars=0,
+    )
+
+    reply = asyncio.run(
+        plugin._local_fast_path(
+            FakeEvent(),
+            "group",
+            {"player_id": "player-a"},
+            "请补充设法，110尺探险游艇通常有15-20名船员，包含船长、大副、水手和服务员、厨师等职业，请补充船上的NPC，符合剧本要求。",
+        )
+    )
+
+    assert reply == ""
+    assert not any(record.get("action") == "new_campaign_requires_reset" for record in repo.audits)
 
 
 def test_empty_dm_greedystr_sentinel_is_not_routed_to_llm():

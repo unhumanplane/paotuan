@@ -67,6 +67,69 @@ def test_deterministic_repair_closes_retired_actor_thread_and_restores_narrative
     assert "已退场" in tags[("status", "退场状态")]
 
 
+def test_deterministic_repair_does_not_retire_actor_from_policy_completion():
+    session = GameSession.new("group")
+    session.mode = GameMode.CHARACTER_CREATION
+    session.scene["_game_started"] = True
+    session.characters["pc_yaka"] = Character(id="pc_yaka", name="雅卡", player_id="p1")
+    session.player_character_map = {"p1": "pc_yaka"}
+    session.scene["scene_threads"] = {
+        "character:pc_yaka": {
+            "summary": "雅卡在客舱里补充个人资料。",
+            "participants": ["pc_yaka"],
+            "active_character_id": "pc_yaka",
+        }
+    }
+
+    result = apply_deterministic_continuity_repairs(
+        session,
+        actor={"player_id": "p1"},
+        player_message="补充设定，我的卡是男性角色。",
+        completion="开场后角色卡已锁定。如果确实想换一个男性角色，需要等当前角色退场后再创建新卡入场。",
+        tool_results=[],
+    )
+
+    assert any(item["type"] == "mode" for item in result["applied"])
+    assert not any(item["type"] == "character_terminal_tags" for item in result["applied"])
+    assert not any(item["type"] == "closed_character_scene_threads" for item in result["applied"])
+    assert "status" not in session.scene["scene_threads"]["character:pc_yaka"]
+    assert not session.characters["pc_yaka"].tags
+
+
+def test_reactivation_request_reopens_false_retired_actor_threads():
+    session = GameSession.new("group")
+    session.scene["_game_started"] = True
+    session.characters["pc_yaka"] = Character(id="pc_yaka", name="雅卡", player_id="p1")
+    session.characters["pc_yaka"].upsert_tags(
+        [{"key": "退场状态", "value": "已退场", "layer": "status"}]
+    )
+    session.player_character_map = {"p1": "pc_yaka"}
+    session.scene["active_scene_thread_id"] = "character:pc_yaka"
+    session.scene["scene_threads"] = {
+        "character:pc_yaka": {
+            "summary": "雅卡已退场，不得再作为活跃角色参与当前故事。",
+            "status": "retired",
+            "participants": ["pc_yaka"],
+            "active_character_id": "pc_yaka",
+        }
+    }
+
+    result = apply_deterministic_continuity_repairs(
+        session,
+        actor={"player_id": "p1"},
+        player_message="恢复活跃状态，我仍在参团",
+        completion="收到，雅卡继续参与当前故事。",
+        tool_results=[],
+    )
+
+    assert any(item["type"] == "character_reactivated" for item in result["applied"])
+    thread = session.scene["scene_threads"]["character:pc_yaka"]
+    assert "status" not in thread
+    assert "继续作为活跃角色" in thread["summary"]
+    tags = {(tag.layer, tag.key): tag.value for tag in session.characters["pc_yaka"].tags}
+    assert tags[("status", "退场状态")] == "活跃中"
+
+
 def test_continuity_audit_should_run_for_denial_against_completed_ritual_fact():
     session = GameSession.new("group")
     session.scene["current_conflict"] = "黑暗仪式完成——部分成功；小地主被诅咒标记。"
@@ -151,6 +214,85 @@ def test_audit_patch_applies_only_terminal_character_tags_with_evidence():
     tags = {(tag.layer, tag.key): tag.value for tag in session.characters["pc_latatos"].tags}
     assert tags[("status", "退场状态")] == "已退场"
     assert ("identity", "职业") not in tags
+
+
+def test_terminal_thread_patch_requires_external_evidence_not_patch_text():
+    session = GameSession.new("group")
+    session.scene["_game_started"] = True
+    session.characters["pc_yaka"] = Character(id="pc_yaka", name="雅卡", player_id="p1")
+    session.player_character_map = {"p1": "pc_yaka"}
+    session.scene["scene_threads"] = {
+        "character:pc_yaka": {
+            "summary": "雅卡正在客舱里查看电脑。",
+            "participants": ["pc_yaka"],
+            "active_character_id": "pc_yaka",
+        }
+    }
+    payload = {
+        "safe_patches": {
+            "scene_threads": [
+                {
+                    "thread_id": "character:pc_yaka",
+                    "patch": {"status": "retired", "summary": "雅卡已退场，不得再参与当前故事。"},
+                }
+            ]
+        }
+    }
+
+    result = apply_continuity_audit_patches(
+        session,
+        payload,
+        actor={"player_id": "p1"},
+        player_message="我查看电脑数据",
+        completion="雅卡打开电脑，继续调查船内传感器。",
+        tool_results=[],
+    )
+
+    assert not any(item.get("type") == "scene_thread" for item in result["applied"])
+    assert result["rejected"][0]["reason"] == "missing_terminal_evidence"
+    assert "status" not in session.scene["scene_threads"]["character:pc_yaka"]
+
+
+def test_audit_patch_can_reopen_actor_thread_with_reactivation_evidence():
+    session = GameSession.new("group")
+    session.scene["_game_started"] = True
+    session.characters["pc_yaka"] = Character(id="pc_yaka", name="雅卡", player_id="p1")
+    session.characters["pc_yaka"].upsert_tags(
+        [{"key": "退场状态", "value": "活跃中", "layer": "status"}]
+    )
+    session.player_character_map = {"p1": "pc_yaka"}
+    session.scene["scene_threads"] = {
+        "character:pc_yaka": {
+            "summary": "旧记录显示雅卡离开了故事焦点。",
+            "status": "resolved",
+            "participants": ["pc_yaka"],
+            "active_character_id": "pc_yaka",
+        }
+    }
+    payload = {
+        "safe_patches": {
+            "scene_threads": [
+                {
+                    "thread_id": "character:pc_yaka",
+                    "patch": {"status": "active", "summary": "雅卡在客舱电脑前继续调查。"},
+                }
+            ]
+        }
+    }
+
+    result = apply_continuity_audit_patches(
+        session,
+        payload,
+        actor={"player_id": "p1"},
+        player_message="恢复活跃状态",
+        completion="雅卡继续参与当前故事。",
+        tool_results=[],
+    )
+
+    assert any(item["type"] == "scene_thread" for item in result["applied"])
+    thread = session.scene["scene_threads"]["character:pc_yaka"]
+    assert "status" not in thread
+    assert thread["summary"] == "雅卡在客舱电脑前继续调查。"
 
 
 def test_normalize_active_scene_thread_ignores_closed_active_thread():

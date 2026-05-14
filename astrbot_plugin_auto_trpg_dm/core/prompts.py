@@ -261,7 +261,11 @@ def _project_snapshot_for_profile(
     if profile == "diagnostic":
         return _diagnostic_snapshot(session, session.mode)
     projected = dict(snapshot)
-    projected["scene"] = _project_scene(snapshot.get("scene", {}), profile)
+    actor_character_id = ""
+    actor_player_id = str((actor or {}).get("player_id") or "").strip()
+    if actor_player_id:
+        actor_character_id = str((session.player_character_map or {}).get(actor_player_id, "") or "")
+    projected["scene"] = _project_scene(snapshot.get("scene", {}), profile, actor_character_id=actor_character_id)
     projected["world_tags"] = _project_world_tags(snapshot.get("world_tags", {}), profile)
     projected["characters"] = _project_characters(
         snapshot.get("characters", []),
@@ -277,7 +281,7 @@ def _project_snapshot_for_profile(
     return projected
 
 
-def _project_scene(scene: Any, profile: str) -> Any:
+def _project_scene(scene: Any, profile: str, *, actor_character_id: str = "") -> Any:
     if not isinstance(scene, dict):
         return scene
     active_thread_id = str(scene.get("active_scene_thread_id") or "").strip()
@@ -304,7 +308,7 @@ def _project_scene(scene: Any, profile: str) -> Any:
         projected_value = _project_scene_value(key, value, profile)
         if projected_value not in ({}, [], "", None):
             projected[key] = projected_value
-    threads = _project_scene_threads(raw_threads, active_thread_id, profile)
+    threads = _project_scene_threads(raw_threads, active_thread_id, profile, actor_character_id=actor_character_id)
     if threads:
         projected["scene_threads"] = threads
         if active_thread_id:
@@ -364,13 +368,16 @@ def _project_scene_value(key: str, value: Any, profile: str) -> Any:
     return value
 
 
-def _project_scene_threads(value: Any, active_thread_id: str, profile: str) -> Any:
+def _project_scene_threads(value: Any, active_thread_id: str, profile: str, *, actor_character_id: str = "") -> Any:
     if not isinstance(value, dict) or not value:
         return {}
     projected: dict[str, Any] = {}
     active = value.get(active_thread_id) if active_thread_id else None
     if isinstance(active, dict) and not _scene_thread_is_closed(active):
         projected["active"] = _project_scene_thread(active, profile, active=True)
+    actor_thread = _project_actor_scene_thread(value, active_thread_id, profile, actor_character_id=actor_character_id)
+    if actor_thread:
+        projected["actor_current"] = actor_thread
     others: list[dict[str, Any]] = []
     for thread_id, thread in sorted(
         value.items(),
@@ -392,6 +399,29 @@ def _project_scene_threads(value: Any, active_thread_id: str, profile: str) -> A
     if others:
         projected["other_recent"] = others
     return projected
+
+
+def _project_actor_scene_thread(value: dict[str, Any], active_thread_id: str, profile: str, *, actor_character_id: str) -> dict[str, Any]:
+    if not actor_character_id:
+        return {}
+    for thread_id, thread in sorted(
+        value.items(),
+        key=lambda item: str((item[1] or {}).get("updated_at", "")) if isinstance(item[1], dict) else "",
+        reverse=True,
+    ):
+        if thread_id == active_thread_id or not isinstance(thread, dict):
+            continue
+        if _scene_thread_is_closed(thread):
+            continue
+        participants = {str(item) for item in thread.get("participants") or [] if str(item)}
+        if str(thread.get("active_character_id") or "") != actor_character_id and actor_character_id not in participants:
+            continue
+        projected_thread = _project_scene_thread(thread, profile, active=False)
+        if not projected_thread:
+            continue
+        projected_thread["scene_thread_id"] = str(thread_id)
+        return projected_thread
+    return {}
 
 
 def _is_stale_scene_thread(thread: dict[str, Any], active: Any) -> bool:

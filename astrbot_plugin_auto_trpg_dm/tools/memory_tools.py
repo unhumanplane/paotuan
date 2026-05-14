@@ -3748,6 +3748,8 @@ def _merge_scene_thread(
     merged.update(patch)
     if _scene_thread_patch_is_terminal(merged, patch):
         merged["status"] = "closed"
+    elif _scene_thread_is_closed(merged) and _scene_thread_patch_reopens_terminal(merged, patch, character_id):
+        merged.pop("status", None)
     merged["updated_at"] = utc_now_iso()
     scene_time_label = _scene_thread_time_label(patch)
     if scene_time_label:
@@ -3831,6 +3833,41 @@ def _scene_thread_patch_is_terminal(thread: Dict[str, Any], patch: Dict[str, Any
         }
     )
     return _contains_any_text(text, SCENE_THREAD_TERMINAL_TERMS)
+
+
+def _scene_thread_patch_reopens_terminal(thread: Dict[str, Any], patch: Dict[str, Any], character_id: str) -> bool:
+    if not isinstance(patch, dict) or not patch:
+        return False
+    status = str(patch.get("status") or "").strip().lower()
+    if status in SCENE_THREAD_CLOSED_STATUSES:
+        return False
+    if status in {"active", "open", "reopened"}:
+        return True
+    if _scene_thread_patch_is_terminal(thread, patch):
+        return False
+    actor_matches = bool(
+        character_id
+        and (
+            str(thread.get("active_character_id") or "") == character_id
+            or character_id in {str(item) for item in thread.get("participants") or [] if str(item)}
+        )
+    )
+    if not actor_matches:
+        return False
+    active_fields = (
+        "summary",
+        "location",
+        "_location",
+        "current_objective",
+        "current_conflict",
+        "open_hooks",
+        "clues",
+        "mysteries",
+        "stakes",
+        "pressure_clock",
+        "npcs",
+    )
+    return any(key in patch and patch.get(key) not in (None, "", [], {}) for key in active_fields)
 
 
 def _find_replacement_scene_thread_id(scene: Dict[str, Any], *, exclude_thread_id: str) -> str:

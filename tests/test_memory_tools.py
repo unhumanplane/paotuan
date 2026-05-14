@@ -275,6 +275,50 @@ def test_update_scene_closes_retired_thread_without_mirroring_active_scene(tmp_p
     assert saved.scene["location"] == "酒馆"
 
 
+def test_update_scene_reopens_closed_actor_thread_when_new_active_patch_arrives(tmp_path):
+    repository = JsonGameRepository(tmp_path / "data")
+    session = GameSession.new("group")
+    session.world_tags["_background_ready"] = True
+    session.scene["_game_started"] = True
+    session.characters["pc_yaka"] = Character(id="pc_yaka", name="雅卡", player_id="p1")
+    session.player_character_map["p1"] = "pc_yaka"
+    session.scene["scene_threads"] = {
+        "character:pc_yaka": {
+            "summary": "雅卡已重新进入活跃状态，继续参与当前故事。",
+            "status": "resolved",
+            "participants": ["pc_yaka"],
+            "active_character_id": "pc_yaka",
+            "updated_at": "2026-05-14T10:09:46+00:00",
+        }
+    }
+    repository.save_session(session)
+
+    tools = MemoryTools(repository, "group", actor={"player_id": "p1"}, message="我继续查船内电脑")
+    result = asyncio.run(
+        tools.update_scene(
+            {
+                "summary": "雅卡在客舱电脑前继续调查音速号试航记录。",
+                "clues": [
+                    {
+                        "id": "clue_anomaly_warm_water",
+                        "text": "62°S 附近两次试航均记录到深海水温异常。",
+                        "status": "discovered",
+                        "visibility": "player",
+                    }
+                ],
+                "scene_thread_id": "character:pc_yaka",
+            }
+        )
+    )
+
+    assert result["ok"] is True
+    saved = repository.load_session("group")
+    thread = saved.scene["scene_threads"]["character:pc_yaka"]
+    assert "status" not in thread
+    assert saved.scene["active_scene_thread_id"] == "character:pc_yaka"
+    assert saved.scene["summary"] == "雅卡在客舱电脑前继续调查音速号试航记录。"
+
+
 def test_update_scene_rejects_implicit_thread_timeline_advance(tmp_path):
     repository = JsonGameRepository(tmp_path / "data")
     session = GameSession.new("group")

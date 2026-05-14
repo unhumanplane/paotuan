@@ -984,7 +984,11 @@ class AutoTrpgDmPlugin(Star):
             )
             return str(result.get("message") or "重开需要二次确认，存档暂未改动。")
 
-        if _looks_like_new_campaign_seed_request(text) and _session_has_meaningful_campaign_content(session):
+        if (
+            _looks_like_new_campaign_seed_request(text)
+            and _session_has_meaningful_campaign_content(session)
+            and not _looks_like_in_campaign_content_expansion_request(text)
+        ):
             result = await MemoryTools(self.repository, session_id, actor=actor, message=text).session_control(
                 "reset",
                 reason=f"开新团前清空旧团：{text}",
@@ -4675,6 +4679,62 @@ def _looks_like_new_campaign_seed_request(text: str) -> bool:
         )
     )
     return start_or_delegate and _looks_like_enough_background_seed(text)
+
+
+def _looks_like_in_campaign_content_expansion_request(text: str) -> bool:
+    lowered = str(text or "").strip().lower()
+    if not lowered:
+        return False
+    expansion_terms = (
+        "补充",
+        "添加",
+        "增加",
+        "完善",
+        "扩展",
+        "扩写",
+        "生成",
+        "列出",
+        "整理",
+        "补全",
+        "设定",
+    )
+    current_content_terms = (
+        "npc",
+        "船员",
+        "船长",
+        "大副",
+        "水手",
+        "服务员",
+        "厨师",
+        "名单",
+        "人物",
+        "角色",
+        "乘客",
+        "人员",
+        "船上",
+        "游艇",
+        "音速号",
+        "当前",
+        "本团",
+        "剧本要求",
+    )
+    start_terms = (
+        "来一个",
+        "开新团",
+        "新团",
+        "重开",
+        "清空",
+        "重新开始",
+        "开始游戏",
+        "正式开始",
+        "开局",
+        "开场",
+    )
+    return (
+        any(term in lowered for term in expansion_terms)
+        and any(term in lowered for term in current_content_terms)
+        and not any(term in lowered for term in start_terms)
+    )
 
 
 def _session_has_meaningful_campaign_content(session) -> bool:
