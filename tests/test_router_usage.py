@@ -56,6 +56,7 @@ from astrbot_plugin_auto_trpg_dm.core.router import (
     _adjudication_completeness_guard,
     _extract_llm_usage_summary,
     _is_diagnostic_request,
+    _should_record_narrative_trace,
 )
 
 
@@ -78,6 +79,13 @@ def test_extract_llm_usage_summary_reads_openai_cached_tokens():
     assert summary["cached_tokens"] == 64
     assert summary["cache_hit_ratio_pct"] == 64.0
     assert "completion_text" not in summary
+
+
+def test_fact_check_correction_does_not_become_narrative_trace():
+    assert _should_record_narrative_trace(
+        "不是，DM前面记错了，她们不是已经在打雇佣兵吗？",
+        "她们还在老柳树下谈着，佣兵还没碰上一根手指头。",
+    ) is False
 
 
 def test_extract_llm_usage_summary_reads_object_usage():

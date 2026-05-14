@@ -43,7 +43,7 @@ from .tools.registry import ToolRegistry
 from .tools.turn_tools import TurnTools
 
 
-PLUGIN_VERSION = "0.1.94"
+PLUGIN_VERSION = "0.1.95"
 
 DEFAULT_REASSURANCE_PHRASES = (
     "正在翻找合适的骰子。",
@@ -1524,7 +1524,7 @@ class AutoTrpgDmPlugin(Star):
         now = datetime.now(timezone.utc)
         for path in self.repository.saves_dir.glob("*.json"):
             try:
-                data = json.loads(path.read_text(encoding="utf-8"))
+                data = json.loads(path.read_text(encoding="utf-8-sig"))
             except Exception as exc:
                 self.plugin_logger.warning("legacy_turn_migration_read_failed path=%s error=%s", path, exc)
                 continue
@@ -1590,7 +1590,7 @@ class AutoTrpgDmPlugin(Star):
         migrated = 0
         for path in self.repository.saves_dir.glob("*.json"):
             try:
-                data = json.loads(path.read_text(encoding="utf-8"))
+                data = json.loads(path.read_text(encoding="utf-8-sig"))
                 session_id = str(data.get("session_id") or path.stem)
                 session = self.repository.load_session(session_id)
             except Exception as exc:
@@ -1686,7 +1686,7 @@ class AutoTrpgDmPlugin(Star):
         for path in self.repository.saves_dir.glob("*.json"):
             try:
                 session_id = path.stem
-                data = json.loads(path.read_text(encoding="utf-8"))
+                data = json.loads(path.read_text(encoding="utf-8-sig"))
                 session_id = str(data.get("session_id") or session_id)
                 session = self.repository.load_session(session_id)
             except Exception as exc:
@@ -1762,7 +1762,7 @@ class AutoTrpgDmPlugin(Star):
         auto_paused = 0
         for path in sorted(self.repository.saves_dir.glob("*.json")):
             try:
-                data = json.loads(path.read_text(encoding="utf-8"))
+                data = json.loads(path.read_text(encoding="utf-8-sig"))
                 session_id = str(data.get("session_id") or path.stem)
             except Exception as exc:
                 self.plugin_logger.warning("turn_heartbeat_read_failed path=%s error=%s", path, exc)

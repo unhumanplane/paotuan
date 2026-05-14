@@ -29,7 +29,7 @@ class JsonGameRepository:
         path = self._session_path(session_id)
         if not path.exists():
             return GameSession.new(session_id)
-        data = json.loads(path.read_text(encoding="utf-8"))
+        data = json.loads(path.read_text(encoding="utf-8-sig"))
         if not data.get("session_id"):
             data["session_id"] = session_id
         return GameSession.from_dict(data)

@@ -2893,6 +2893,8 @@ def _flatten_for_guard(value: Any) -> str:
 def _should_record_narrative_trace(player_message: str, completion: str) -> bool:
     if _looks_like_post_game_meta_message(player_message):
         return False
+    if looks_like_fact_check_request(player_message):
+        return False
     if not _looks_like_stateful_player_message(player_message):
         return False
     result_text = str(completion or "").strip()

@@ -278,6 +278,7 @@ def test_fact_check_prompt_requires_audit_lookup_before_denial():
 def test_fact_check_detector_covers_log_correction_terms():
     assert looks_like_fact_check_request("查日志，DM记错了，修正剧情") is True
     assert looks_like_fact_check_request("不是，DM前面记错了") is True
+    assert looks_like_fact_check_request("我刚才翻看了一下我们之间的对话，统计的收获不一致") is True
     assert looks_like_fact_check_request("我不是这个角色") is False
     assert looks_like_fact_check_request("看一下日志和token消耗") is False
 
@@ -544,6 +545,190 @@ def test_prompt_snapshot_projection_applies_without_mutating_session():
     }
     assert "/internal/path" not in str(projected_snapshot["scene"])
     assert session.compact_snapshot() == original_snapshot
+
+
+def test_prompt_snapshot_projection_promotes_recent_events_over_stale_summary():
+    session = GameSession.new("group")
+    session.scene["summary"] = "Old willow negotiation is still waiting for a reply."
+    session.scene["open_hooks"] = [
+        {"id": "willow-talk", "text": "Negotiate under the old willow.", "status": "open"}
+    ]
+    session.scene["_recent_narrative_events"] = [
+        {
+            "at": "2026-05-13T13:05:00+00:00",
+            "player_id": "p1",
+            "character_id": "pc_esmeralda",
+            "message": "We leave for the quarry.",
+            "outcome": "Esmeralda and Latatos reach the abandoned quarry camp.",
+        },
+        {
+            "at": "2026-05-13T13:25:00+00:00",
+            "player_id": "p1",
+            "character_id": "pc_esmeralda",
+            "message": "I charge the mercenary.",
+            "outcome": "The charge knocks one mercenary down; the quarry fight is underway.",
+        },
+    ]
+
+    projected_snapshot, _stats = prompt_snapshot_data(
+        session,
+        GameMode.NARRATIVE,
+        "What is happening now?",
+        snapshot_projection_enabled=True,
+    )
+    scene_keys = list(projected_snapshot["scene"].keys())
+
+    assert scene_keys.index("continuity_anchor") < scene_keys.index("summary")
+    assert scene_keys.index("recent_events") < scene_keys.index("summary")
+    assert projected_snapshot["scene"]["continuity_anchor"]["latest_outcome"].startswith("The charge knocks")
+
+
+def test_prompt_snapshot_projection_ignores_internal_repair_events():
+    session = GameSession.new("group")
+    session.scene["summary"] = "Current alley scene."
+    session.scene["_recent_narrative_events"] = [
+        {
+            "at": "2026-05-13T17:00:00+00:00",
+            "player_id": "p1",
+            "character_id": "pc_laofei",
+            "message": "I check the alley.",
+            "outcome": "Laofei stands over a downed cloaked figure.",
+        },
+        {
+            "at": "2026-05-14T00:58:00+00:00",
+            "player_id": "__continuity_repair__",
+            "character_id": "pc_esmeralda",
+            "message": "repair quarry continuity",
+            "outcome": "Internal repair event that should not steer narration.",
+        },
+    ]
+
+    projected_snapshot, _stats = prompt_snapshot_data(
+        session,
+        GameMode.NARRATIVE,
+        "Continue.",
+        snapshot_projection_enabled=True,
+    )
+    rendered = json.dumps(projected_snapshot["scene"], ensure_ascii=False)
+
+    assert "downed cloaked figure" in rendered
+    assert "Internal repair event" not in rendered
+
+
+def test_prompt_snapshot_projection_ignores_fact_check_recent_events_and_resolution():
+    session = GameSession.new("group")
+    session.scene["summary"] = "Current alley scene."
+    session.scene["last_resolution"] = {
+        "player_message": "我刚才翻看了一下我们之间的对话，统计的收获不一致",
+        "outcome": "Here is an inventory audit, not a new scene outcome.",
+    }
+    session.scene["_recent_narrative_events"] = [
+        {
+            "at": "2026-05-13T17:00:00+00:00",
+            "player_id": "p1",
+            "character_id": "pc_laofei",
+            "message": "I check the alley.",
+            "outcome": "Laofei stands over a downed cloaked figure.",
+        },
+        {
+            "at": "2026-05-13T17:29:00+00:00",
+            "player_id": "p1",
+            "character_id": "pc_laofei",
+            "message": "我刚才翻看了一下我们之间的对话，统计的收获不一致",
+            "outcome": "Here is an inventory audit, not a new scene outcome.",
+        },
+    ]
+
+    projected_snapshot, _stats = prompt_snapshot_data(
+        session,
+        GameMode.NARRATIVE,
+        "Continue.",
+        snapshot_projection_enabled=True,
+    )
+    rendered = json.dumps(projected_snapshot["scene"], ensure_ascii=False)
+
+    assert "downed cloaked figure" in rendered
+    assert "inventory audit" not in rendered
+
+
+def test_prompt_snapshot_projection_skips_stale_same_character_threads():
+    session = GameSession.new("group")
+    session.scene["active_scene_thread_id"] = "pc_esmeralda:quarry"
+    session.scene["scene_threads"] = {
+        "pc_esmeralda:willow": {
+            "summary": "Esmeralda is still negotiating under the old willow.",
+            "location": "Old willow",
+            "participants": ["pc_esmeralda"],
+            "active_character_id": "pc_esmeralda",
+            "updated_at": "2026-05-13T12:43:00+00:00",
+        },
+        "pc_esmeralda:quarry": {
+            "summary": "Esmeralda and Latatos are fighting mercenaries at the quarry camp.",
+            "location": "Abandoned quarry",
+            "participants": ["pc_esmeralda", "pc_latatos"],
+            "active_character_id": "pc_esmeralda",
+            "updated_at": "2026-05-13T13:25:00+00:00",
+        },
+        "pc_suyunjin:shop": {
+            "summary": "Su Yunjin has settled the shop and gone to bed.",
+            "location": "Apothecary",
+            "participants": ["pc_suyunjin"],
+            "active_character_id": "pc_suyunjin",
+            "updated_at": "2026-05-13T13:40:00+00:00",
+        },
+    }
+
+    projected_snapshot, _stats = prompt_snapshot_data(
+        session,
+        GameMode.NARRATIVE,
+        "Continue.",
+        snapshot_projection_enabled=True,
+    )
+    rendered = json.dumps(projected_snapshot["scene"], ensure_ascii=False)
+
+    assert "fighting mercenaries at the quarry" in rendered
+    assert "still negotiating under the old willow" not in rendered
+    assert "settled the shop" in rendered
+
+
+def test_prompt_snapshot_projection_skips_stale_thread_even_when_other_thread_active():
+    session = GameSession.new("group")
+    session.scene["active_scene_thread_id"] = "pc_laofei:alley"
+    session.scene["scene_threads"] = {
+        "pc_esmeralda:willow": {
+            "summary": "Esmeralda is still negotiating under the old willow.",
+            "location": "Old willow",
+            "participants": ["pc_esmeralda", "pc_latatos"],
+            "active_character_id": "pc_esmeralda",
+            "updated_at": "2026-05-13T12:43:00+00:00",
+        },
+        "pc_esmeralda:quarry": {
+            "summary": "Esmeralda and Latatos have reached the quarry and are fighting mercenaries.",
+            "location": "Abandoned quarry",
+            "participants": ["pc_esmeralda", "pc_latatos"],
+            "active_character_id": "pc_esmeralda",
+            "updated_at": "2026-05-13T13:25:00+00:00",
+        },
+        "pc_laofei:alley": {
+            "summary": "Laofei stands over a downed cloaked figure in the alley.",
+            "location": "Alley",
+            "participants": ["pc_laofei"],
+            "active_character_id": "pc_laofei",
+            "updated_at": "2026-05-13T17:12:00+00:00",
+        },
+    }
+
+    projected_snapshot, _stats = prompt_snapshot_data(
+        session,
+        GameMode.NARRATIVE,
+        "Continue.",
+        snapshot_projection_enabled=True,
+    )
+    rendered = json.dumps(projected_snapshot["scene"], ensure_ascii=False)
+
+    assert "fighting mercenaries" in rendered
+    assert "still negotiating under the old willow" not in rendered
+    assert "downed cloaked figure" in rendered
 
 
 def test_prompt_snapshot_projection_filters_hidden_scene_clues_and_truths():

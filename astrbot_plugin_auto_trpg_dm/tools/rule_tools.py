@@ -296,6 +296,7 @@ def _normalize_execute_rule_args(rule_name: str, args: Dict[str, Any]) -> Dict[s
             if value is not None:
                 normalized["threshold"] = int(value) if float(value).is_integer() else value
                 break
+    normalized = _drop_contextual_rule_args(normalized)
     if not _is_d20_like_rule(rule_name):
         return normalized
     bonus_terms = (
@@ -326,6 +327,35 @@ def _normalize_execute_rule_args(rule_name: str, args: Dict[str, Any]) -> Dict[s
     if modifier or modifier_was_missing:
         normalized["modifier"] = int(modifier) if float(modifier).is_integer() else modifier
     return normalized
+
+
+CONTEXTUAL_EXECUTE_RULE_ARGS = {
+    "approach",
+    "attacker",
+    "attacker_position",
+    "context",
+    "environment",
+    "enemy_awareness",
+    "enemy_count",
+    "note",
+    "notes",
+    "reason",
+    "situation",
+    "target",
+    "target_aware",
+    "target_name",
+    "target_position",
+    "target_size",
+    "terrain",
+}
+
+
+def _drop_contextual_rule_args(args: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        key: value
+        for key, value in dict(args or {}).items()
+        if str(key) not in CONTEXTUAL_EXECUTE_RULE_ARGS
+    }
 
 
 def _augment_check_result(rule_name: str, args: Dict[str, Any], result: Dict[str, Any]) -> None:

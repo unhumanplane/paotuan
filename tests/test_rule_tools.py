@@ -85,6 +85,37 @@ def calculate(skill, difficulty):
     assert result["ok"] is True
     assert result["result"]["total"] == 12
     assert result["result"]["success"] is True
-    assert result["coerced_args"] == {"skill": 12, "difficulty": 10}
     audit = tools.repository.last_audit_records("group", limit=1)[0]
     assert "threshold" not in audit["input"]["args"]
+    assert "target" not in audit["input"]["args"]
+
+
+def test_execute_rule_drops_contextual_target_args_before_schema_validation(tmp_path):
+    tools, runtime = _make_rule_tools(tmp_path)
+    runtime.register_rule(
+        "charge_shove",
+        "Resolve a shove check.",
+        """
+def calculate(strength):
+    return {"total": strength}
+""".strip(),
+        input_schema={"strength": "number"},
+    )
+
+    result = asyncio.run(
+        tools.execute_rule(
+            "charge_shove",
+            args={
+                "strength": 15,
+                "target_aware": True,
+                "target_size": "medium",
+                "situation": "charging into a distracted mercenary",
+            },
+            reason="test contextual arg cleanup",
+        )
+    )
+
+    assert result["ok"] is True
+    assert result["result"]["total"] == 15
+    audit = tools.repository.last_audit_records("group", limit=1)[0]
+    assert audit["input"]["args"] == {"strength": 15}

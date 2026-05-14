@@ -1,5 +1,6 @@
 import json
 
+from astrbot_plugin_auto_trpg_dm.core.models import GameSession
 from astrbot_plugin_auto_trpg_dm.storage.json_repository import JsonGameRepository
 
 
@@ -58,3 +59,16 @@ def test_last_audit_records_skips_malformed_lines_across_rotated_files(tmp_path)
     records = repository.last_audit_records("group", limit=3)
 
     assert [record["message"] for record in records] == ["rotated", "current"]
+
+
+def test_load_session_tolerates_utf8_bom(tmp_path):
+    repository = JsonGameRepository(tmp_path / "data")
+    session = GameSession.new("group")
+    session.scene["summary"] = "current scene"
+    path = repository.save_path("group")
+    path.write_text(json.dumps(session.to_dict(), ensure_ascii=False), encoding="utf-8-sig")
+
+    loaded = repository.load_session("group")
+
+    assert loaded.session_id == "group"
+    assert loaded.scene["summary"] == "current scene"

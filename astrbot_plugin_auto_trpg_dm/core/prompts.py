@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 
 from .combat_lifecycle import combat_lifecycle_active
@@ -232,7 +233,14 @@ def _looks_like_fact_check_request(message: str) -> bool:
     text = str(message or "").strip().lower()
     if not text:
         return False
+    if _contains_any(text, FACT_CHECK_EXTRA_STRONG_REQUEST_TERMS):
+        return True
     if _contains_any(text, FACT_CHECK_STRONG_REQUEST_TERMS):
+        return True
+    if _contains_any(text, FACT_CHECK_EXTRA_WEAK_REQUEST_TERMS) and _contains_any(
+        text,
+        FACT_CHECK_EXTRA_CONTEXT_TERMS,
+    ):
         return True
     return _contains_any(text, FACT_CHECK_WEAK_REQUEST_TERMS) and _contains_any(
         text,
@@ -277,10 +285,19 @@ def _project_scene(scene: Any, profile: str) -> Any:
     if not isinstance(scene, dict):
         return {}
     projected: dict[str, Any] = {}
+    recent_limit = 3 if profile in {"state_query", "character_profile"} else 6
+    recent_events = _project_recent_events(scene.get("_recent_narrative_events"), recent_limit)
+    continuity_anchor = _project_continuity_anchor(scene, recent_events, profile)
+    if continuity_anchor:
+        projected["continuity_anchor"] = continuity_anchor
+    if recent_events:
+        projected["recent_events"] = recent_events
     for key, value in scene.items():
         if value in (None, "", [], {}):
             continue
         if key in SCENE_PROJECTION_DROP_KEYS or key.startswith(SCENE_PROJECTION_DROP_PREFIXES):
+            continue
+        if key == "last_resolution" and _is_fact_check_resolution(value):
             continue
         projected_value = _project_scene_value(key, value, profile)
         if projected_value not in ({}, [], "", None):
@@ -292,10 +309,6 @@ def _project_scene(scene: Any, profile: str) -> Any:
             projected["active_scene_thread_id"] = active_thread_id
     if scene.get("last_map_svg"):
         projected["last_map_svg"] = _project_map_ref(scene.get("last_map_svg"))
-    recent_limit = 2 if profile in {"state_query", "character_profile"} else 4
-    recent_events = _project_recent_events(scene.get("_recent_narrative_events"), recent_limit)
-    if recent_events:
-        projected["recent_events"] = recent_events
     if scene.get("_dm_paused"):
         projected["_dm_paused"] = True
         if scene.get("_dm_pause_reason"):
@@ -364,6 +377,10 @@ def _project_scene_threads(value: Any, active_thread_id: str, profile: str) -> A
     ):
         if thread_id == active_thread_id or not isinstance(thread, dict):
             continue
+        if str(thread.get("status") or "").strip().lower() in {"archived", "closed", "resolved"}:
+            continue
+        if _is_stale_scene_thread(thread, active) or _has_newer_related_scene_thread(thread_id, thread, value):
+            continue
         projected_thread = _project_scene_thread(thread, profile, active=False)
         if projected_thread:
             projected_thread["scene_thread_id"] = str(thread_id)
@@ -373,6 +390,49 @@ def _project_scene_threads(value: Any, active_thread_id: str, profile: str) -> A
     if others:
         projected["other_recent"] = others
     return projected
+
+
+def _is_stale_scene_thread(thread: dict[str, Any], active: Any) -> bool:
+    if not isinstance(active, dict):
+        return False
+    return _scene_thread_is_older_conflicting_related(thread, active)
+
+
+def _has_newer_related_scene_thread(
+    thread_id: str,
+    thread: dict[str, Any],
+    threads: dict[str, Any],
+) -> bool:
+    for other_id, other in threads.items():
+        if other_id == thread_id or not isinstance(other, dict):
+            continue
+        if _scene_thread_is_older_conflicting_related(thread, other):
+            return True
+    return False
+
+
+def _scene_thread_is_older_conflicting_related(thread: dict[str, Any], newer: dict[str, Any]) -> bool:
+    thread_updated = str(thread.get("updated_at") or "")
+    newer_updated = str(newer.get("updated_at") or "")
+    if not thread_updated or not newer_updated or thread_updated >= newer_updated:
+        return False
+    thread_actor = str(thread.get("active_character_id") or "").strip()
+    newer_actor = str(newer.get("active_character_id") or "").strip()
+    same_actor = bool(thread_actor and newer_actor and thread_actor == newer_actor)
+    thread_participants = {str(item) for item in thread.get("participants") or [] if str(item)}
+    newer_participants = {str(item) for item in newer.get("participants") or [] if str(item)}
+    same_thread_party = bool(thread_participants and newer_participants and thread_participants & newer_participants)
+    if not same_actor and not same_thread_party:
+        return False
+    thread_location = _normalized_projection_text(thread.get("location"))
+    newer_location = _normalized_projection_text(newer.get("location"))
+    if thread_location and newer_location and thread_location != newer_location:
+        return True
+    if same_actor or same_thread_party:
+        thread_summary = _normalized_projection_text(thread.get("summary"))
+        newer_summary = _normalized_projection_text(newer.get("summary"))
+        return bool(thread_summary and newer_summary and thread_summary != newer_summary)
+    return False
 
 
 def _project_scene_thread(thread: dict[str, Any], profile: str, *, active: bool) -> dict[str, Any]:
@@ -420,6 +480,35 @@ def _project_scene_thread(thread: dict[str, Any], profile: str, *, active: bool)
     return projected
 
 
+def _project_continuity_anchor(
+    scene: dict[str, Any],
+    recent_events: list[dict[str, Any]],
+    profile: str,
+) -> dict[str, Any]:
+    anchor: dict[str, Any] = {}
+    if recent_events:
+        latest = recent_events[-1]
+        anchor["latest_player_message"] = latest.get("message", "")
+        anchor["latest_outcome"] = latest.get("outcome", "")
+        if latest.get("character_id"):
+            anchor["latest_character_id"] = latest.get("character_id")
+        anchor["source"] = "recent_events"
+    if scene.get("last_resolution") and not _is_fact_check_resolution(scene.get("last_resolution")):
+        anchor["last_resolution"] = _project_scene_value("last_resolution", scene.get("last_resolution"), profile)
+    active_thread_id = str(scene.get("active_scene_thread_id") or "").strip()
+    threads = scene.get("scene_threads")
+    active_thread = threads.get(active_thread_id) if isinstance(threads, dict) and active_thread_id else None
+    if isinstance(active_thread, dict):
+        for key in ("location", "summary", "current_conflict", "current_objective", "scene_time_label", "scene_time_of_day"):
+            value = active_thread.get(key)
+            if value in (None, "", [], {}):
+                continue
+            projected_value = _project_scene_value(key, value, profile)
+            if projected_value not in ({}, [], "", None):
+                anchor[f"active_thread_{key}"] = projected_value
+    return {key: value for key, value in anchor.items() if value not in ({}, [], "", None)}
+
+
 def _project_world_tags(world_tags: Any, profile: str) -> Any:
     if not isinstance(world_tags, dict):
         return world_tags
@@ -464,19 +553,53 @@ def _project_recent_events(value: Any, limit: int) -> list[dict[str, Any]]:
     if not isinstance(value, list):
         return []
     events: list[dict[str, Any]] = []
-    for item in value[-max(0, limit) :]:
+    for item in reversed(value):
         if not isinstance(item, dict):
+            continue
+        player_id = str(item.get("player_id") or "")
+        if player_id.startswith("__"):
+            continue
+        if _is_fact_check_resolution(item):
             continue
         events.append(
             {
                 "at": item.get("at", ""),
-                "player_id": item.get("player_id", ""),
+                "player_id": player_id,
                 "character_id": item.get("character_id", ""),
                 "message": _short_text(item.get("message", ""), 100),
                 "outcome": _short_text(item.get("outcome", ""), 140),
             }
         )
-    return events
+        if len(events) >= max(0, limit):
+            break
+    return list(reversed(events))
+
+
+def _is_fact_check_resolution(value: Any) -> bool:
+    if isinstance(value, dict):
+        text = " ".join(
+            str(value.get(key) or "")
+            for key in ("message", "player_message", "outcome", "summary")
+            if value.get(key)
+        )
+    else:
+        text = str(value or "")
+    return _looks_like_fact_check_request(text)
+
+
+def _normalized_projection_text(value: Any) -> str:
+    if isinstance(value, dict):
+        parts = [
+            str(value.get(key) or "")
+            for key in ("name", "title", "id", "text", "summary")
+            if value.get(key)
+        ]
+        text = " ".join(parts) if parts else _compact_json(value)
+    elif isinstance(value, list):
+        text = " ".join(_normalized_projection_text(item) for item in value[:4])
+    else:
+        text = str(value or "")
+    return re.sub(r"\s+", " ", text).strip().lower()
 
 
 def _project_characters(
@@ -718,6 +841,38 @@ def _rough_token_estimate(chars: int) -> dict[str, int]:
 
 def _contains_any(text: str, terms: tuple[str, ...]) -> bool:
     return any(term and term in text for term in terms)
+
+
+FACT_CHECK_EXTRA_STRONG_REQUEST_TERMS = (
+    "不一致",
+    "核对",
+    "复核",
+    "翻看",
+    "查记录",
+    "查一下记录",
+    "统计不一致",
+    "收获不一致",
+    "剧情错乱",
+    "记错",
+    "丢事实",
+)
+FACT_CHECK_EXTRA_WEAK_REQUEST_TERMS = (
+    "不对",
+    "不是",
+    "错了",
+)
+FACT_CHECK_EXTRA_CONTEXT_TERMS = (
+    "dm",
+    "前面",
+    "之前",
+    "刚才",
+    "记录",
+    "日志",
+    "对话",
+    "剧情",
+    "收获",
+    "统计",
+)
 
 
 FACT_CHECK_STRONG_REQUEST_TERMS = (
