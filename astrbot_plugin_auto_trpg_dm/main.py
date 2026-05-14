@@ -43,7 +43,7 @@ from .tools.registry import ToolRegistry
 from .tools.turn_tools import TurnTools
 
 
-PLUGIN_VERSION = "0.1.96"
+PLUGIN_VERSION = "0.1.97"
 
 DEFAULT_REASSURANCE_PHRASES = (
     "正在翻找合适的骰子。",
@@ -278,6 +278,9 @@ class AutoTrpgDmPlugin(Star):
             ra_enabled=self._config_bool("ra_enabled", False),
             ra_model_provider=self._config_str("ra_model_provider", "default") or "default",
             ra_max_tokens=self._config_int("ra_max_tokens", 2048),
+            continuity_auditor_enabled=self._config_bool("continuity_auditor_enabled", True),
+            continuity_auditor_model_provider=self._config_str("continuity_auditor_model_provider", "default") or "default",
+            continuity_auditor_max_tokens=self._config_int("continuity_auditor_max_tokens", 1200),
             prompt_snapshot_projection_enabled=prompt_snapshot_projection_enabled,
         )
         migrated = self._migrate_legacy_turn_fields()
@@ -293,7 +296,7 @@ class AutoTrpgDmPlugin(Star):
         self._heartbeat_idle_ticks = 0
         self._start_heartbeat_task()
         self.plugin_logger.info(
-            "plugin_initialized version=%s data_dir=%s honcho_enabled=%s honcho_workspace=%s ambient_image_enabled=%s ambient_image_mode=%s prompt_snapshot_projection_enabled=%s heartbeat_idle_log_interval=%s",
+            "plugin_initialized version=%s data_dir=%s honcho_enabled=%s honcho_workspace=%s ambient_image_enabled=%s ambient_image_mode=%s prompt_snapshot_projection_enabled=%s continuity_auditor_enabled=%s heartbeat_idle_log_interval=%s",
             PLUGIN_VERSION,
             data_dir,
             honcho_config.enabled,
@@ -301,6 +304,7 @@ class AutoTrpgDmPlugin(Star):
             ambient_image_config.enabled,
             ambient_image_config.api_mode,
             prompt_snapshot_projection_enabled,
+            self._config_bool("continuity_auditor_enabled", True),
             heartbeat_idle_log_interval,
         )
         logger.info("Auto TRPG DM plugin initialized.")

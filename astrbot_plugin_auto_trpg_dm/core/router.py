@@ -8,6 +8,13 @@ from collections.abc import Awaitable, Callable, Mapping
 from typing import Any
 
 from .ambient_image import AmbientImageConfig, AmbientImageProvider
+from .continuity_auditor import (
+    ContinuityAuditor,
+    apply_continuity_audit_patches,
+    apply_deterministic_continuity_repairs,
+    continuity_audit_should_run,
+    safe_player_correction,
+)
 from .cycle_buffer import append_cycle_action, complete_cycle_without_ra, cycle_end_requested
 from .environment_agent import RecorderAgent, complete_cycle_with_ra, recover_cycle_after_ra_failure
 from .external_memory import (
@@ -369,6 +376,9 @@ class IntentRouter:
         ra_enabled: bool = False,
         ra_model_provider: str = "default",
         ra_max_tokens: int = 2048,
+        continuity_auditor_enabled: bool = True,
+        continuity_auditor_model_provider: str = "default",
+        continuity_auditor_max_tokens: int = 1200,
         prompt_snapshot_projection_enabled: bool = True,
     ):
         self.astr_context = astr_context
@@ -384,6 +394,9 @@ class IntentRouter:
         self.ra_enabled = ra_enabled
         self.ra_model_provider = ra_model_provider
         self.ra_max_tokens = ra_max_tokens
+        self.continuity_auditor_enabled = continuity_auditor_enabled
+        self.continuity_auditor_model_provider = continuity_auditor_model_provider
+        self.continuity_auditor_max_tokens = continuity_auditor_max_tokens
         self.prompt_snapshot_projection_enabled = prompt_snapshot_projection_enabled
         self._session_locks: dict[str, asyncio.Lock] = {}
         self._session_turn_locks: dict[str, asyncio.Lock] = {}
@@ -849,6 +862,106 @@ class IntentRouter:
                     semantic_review.get("parse_ok", False),
                     len(cleanup.semantic_candidate.text),
                 )
+            deterministic_repair = apply_deterministic_continuity_repairs(
+                latest_session,
+                actor=actor,
+                player_message=message,
+                completion=completion,
+                tool_results=tool_trace,
+            )
+            if deterministic_repair.get("applied") or deterministic_repair.get("rejected"):
+                self.repository.save_session(latest_session)
+                self.repository.append_audit(
+                    session_id,
+                    {
+                        "type": "continuity_deterministic_repair",
+                        "actor": actor,
+                        "player_message": message,
+                        **deterministic_repair,
+                    },
+                )
+                get_plugin_logger().info(
+                    "continuity_deterministic_repair session=%s actor=%s applied=%s rejected=%s",
+                    session_id,
+                    actor.get("player_id", ""),
+                    len(deterministic_repair.get("applied", [])),
+                    len(deterministic_repair.get("rejected", [])),
+                )
+            continuity_audit_result = None
+            continuity_apply_result = None
+            if self.continuity_auditor_enabled and continuity_audit_should_run(
+                latest_session,
+                player_message=message,
+                completion=completion,
+                tool_results=tool_trace,
+            ):
+                audit_provider = (
+                    provider_id
+                    if (self.continuity_auditor_model_provider or "default") == "default"
+                    else self.continuity_auditor_model_provider
+                )
+                continuity_audit_result = await ContinuityAuditor(
+                    self._llm_generate,
+                    audit_provider,
+                    max_tokens=self.continuity_auditor_max_tokens,
+                ).run(
+                    latest_session,
+                    actor=actor,
+                    player_message=message,
+                    completion=completion,
+                    tool_results=tool_trace,
+                )
+                if continuity_audit_result.get("ok"):
+                    payload = continuity_audit_result.get("payload", {})
+                    continuity_apply_result = apply_continuity_audit_patches(
+                        latest_session,
+                        payload,
+                        actor=actor,
+                        player_message=message,
+                        completion=completion,
+                        tool_results=tool_trace,
+                    )
+                    correction = safe_player_correction(payload, continuity_apply_result)
+                    if correction and correction not in completion:
+                        completion = self._limit_completion(
+                            f"{completion}\n\n【连续性校正】{correction}".strip(),
+                            latest_session,
+                            raw_player_message=message,
+                        )
+                        completion = self._sanitize_completion_text(completion)
+                    if continuity_apply_result.get("applied"):
+                        self.repository.save_session(latest_session)
+                    self.repository.append_audit(
+                        session_id,
+                        {
+                            "type": "continuity_audit_reviewed",
+                            "actor": actor,
+                            "player_message": message,
+                            "payload": payload,
+                            "apply_result": continuity_apply_result,
+                            "prompt_chars": continuity_audit_result.get("prompt_chars", 0),
+                            "output_chars": continuity_audit_result.get("output_chars", 0),
+                        },
+                    )
+                    get_plugin_logger().info(
+                        "continuity_audit_reviewed session=%s actor=%s issues=%s applied=%s",
+                        session_id,
+                        actor.get("player_id", ""),
+                        len(payload.get("issues", [])) if isinstance(payload, dict) else 0,
+                        len((continuity_apply_result or {}).get("applied", [])),
+                    )
+                else:
+                    self.repository.append_audit(
+                        session_id,
+                        {
+                            "type": "continuity_audit_failed",
+                            "actor": actor,
+                            "player_message": message,
+                            "error": continuity_audit_result.get("error", "continuity_audit_failed"),
+                            "message": continuity_audit_result.get("message", ""),
+                            "output_excerpt": continuity_audit_result.get("output_excerpt", ""),
+                        },
+                    )
             trace_record = self._persist_narrative_trace(
                 latest_session,
                 actor=actor,

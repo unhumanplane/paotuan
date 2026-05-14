@@ -1,6 +1,6 @@
 # AstrBot Auto TRPG DM
 
-全自然语言 TRPG DM 插件，基于 AstrBot v4.5.7+。当前插件版本：`v0.1.96`。
+全自然语言 TRPG DM 插件，基于 AstrBot v4.5.7+。当前插件版本：`v0.1.97`。
 
 这个插件把 AstrBot 变成一个可长期跑团的小型 TRPG runtime。玩家只需要像聊天一样说“我靠墙潜行过去，再射最近的敌人”，插件会结合当前场景、角色状态、战棋事实、本地规则和 LLM 裁定完成回应。
 
@@ -72,6 +72,16 @@ Recorder Agent，简称 RA，是可选的周期结算/记录 agent，默认关�
 - `ra_max_tokens`
 
 如果底层 LLM provider 不支持透传 `max_tokens`，插件会自动重试一次不带 `max_tokens` 的调用，避免因为 provider 兼容性导致整轮流程失败。
+
+### 独立连续性审计
+
+连续性审计器默认启用。它只在高风险轮次触发，例如玩家指出事实丢失、角色退场、场景状态被工具更新、或 DM 回复疑似否认已发生事实时，使用独立上下文再跑一次轻量 LLM 检查。审计器只接收精简存档、本轮工具轨迹、玩家消息和 DM 回复，不继承主 DM 的长 prompt；框架只自动应用白名单内的安全修补，例如关闭退场线程、把误切的全局建卡模式拉回叙事模式、规范 active scene thread。无法安全自动修的内容只写入审计记录。
+
+相关配置：
+
+- `continuity_auditor_enabled`
+- `continuity_auditor_model_provider`
+- `continuity_auditor_max_tokens`
 
 ### 可选氛围图片
 
@@ -192,6 +202,9 @@ pip install honcho
 | `ra_enabled` | `false` | 是否启用 Recorder Agent。 |
 | `ra_model_provider` | `default` | RA 使用的模型 provider。 |
 | `ra_max_tokens` | `2048` | RA 输出 token 上限建议值。 |
+| `continuity_auditor_enabled` | `true` | 是否启用独立上下文连续性审计器。 |
+| `continuity_auditor_model_provider` | `default` | 连续性审计器使用的模型 provider。 |
+| `continuity_auditor_max_tokens` | `1200` | 连续性审计器输出 token 上限建议值。 |
 | `ambient_image_enabled` | `false` | 是否启用 TRPG 氛围图片。 |
 | `ambient_image_api_mode` | `images` | 图片 API 路径：`images` 或 `chat_completions`。 |
 | `ambient_image_base_url` | `https://www.packyapi.com` | 图片 API base URL。 |
