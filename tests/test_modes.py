@@ -93,3 +93,28 @@ def test_retired_character_message_does_not_switch_live_campaign_to_character_cr
 
     assert mode == GameMode.NARRATIVE
 
+
+def test_retirement_backstory_stays_resolution_in_live_campaign():
+    session = GameSession.new("s")
+    session.scene["_game_started"] = True
+    session.characters["pc_zhagu"] = object()
+    session.player_character_map = {"p1": "pc_zhagu"}
+
+    mode = GameModeStateMachine().detect(
+        session,
+        "讲述自己在海上的经历，提前“退休”后的渔夫生活，同时打听这趟探险情况",
+    )
+
+    assert mode == GameMode.RESOLUTION
+
+
+def test_explicit_retirement_message_still_stays_narrative_in_live_campaign():
+    session = GameSession.new("s")
+    session.scene["_game_started"] = True
+    session.characters["pc_zhagu"] = object()
+    session.player_character_map = {"p1": "pc_zhagu"}
+
+    mode = GameModeStateMachine().detect(session, "扎古，退休")
+
+    assert mode == GameMode.NARRATIVE
+

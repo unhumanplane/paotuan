@@ -96,6 +96,152 @@ def test_deterministic_repair_does_not_retire_actor_from_policy_completion():
     assert not session.characters["pc_yaka"].tags
 
 
+def test_deterministic_repair_does_not_retire_actor_from_retirement_backstory():
+    session = GameSession.new("group")
+    session.mode = GameMode.NARRATIVE
+    session.scene["_game_started"] = True
+    session.characters["pc_zhagu"] = Character(id="pc_zhagu", name="扎古", player_id="p1")
+    session.player_character_map = {"p1": "pc_zhagu"}
+    session.scene["active_scene_thread_id"] = "character:pc_zhagu"
+    session.scene["scene_threads"] = {
+        "character:pc_zhagu": {
+            "summary": "扎古正在餐厅和水手喝酒聊天。",
+            "current_objective": "与马驼子、秦海生等机舱水手喝酒聊天",
+            "participants": ["pc_zhagu"],
+            "active_character_id": "pc_zhagu",
+        }
+    }
+
+    player_message = "讲述自己在海上的经历，极地，热带，现代海盗，提前“退休”后的渔夫生活，为什么复出，在海上漂泊的人都是迷失的灵魂"
+    completion = "扎古靠在吧台边，讲起跑远洋、买旧渔船和为什么接受史东邀请复出的往事。"
+    rejected_backstory_tool = [
+        {
+            "tool": "update_character_tags",
+            "args": {
+                "character_id": "pc_zhagu",
+                "tags": [{"key": "退役生活", "value": "买旧渔船在近海打渔", "layer": "notes"}],
+            },
+            "result": {"ok": False, "error": "character_card_locked_after_start"},
+        }
+    ]
+
+    assert not continuity_audit_should_run(
+        session,
+        player_message=player_message,
+        completion=completion,
+        tool_results=[],
+    )
+
+    result = apply_deterministic_continuity_repairs(
+        session,
+        actor={"player_id": "p1"},
+        player_message=player_message,
+        completion=completion,
+        tool_results=rejected_backstory_tool,
+    )
+
+    assert not any(item["type"] == "character_terminal_tags" for item in result["applied"])
+    assert not any(item["type"] == "closed_character_scene_threads" for item in result["applied"])
+    assert "status" not in session.scene["scene_threads"]["character:pc_zhagu"]
+    assert not session.characters["pc_zhagu"].tags
+
+
+def test_named_actor_comma_retire_message_still_marks_terminal():
+    session = GameSession.new("group")
+    session.mode = GameMode.NARRATIVE
+    session.scene["_game_started"] = True
+    session.characters["pc_zhagu"] = Character(id="pc_zhagu", name="扎古", player_id="p1")
+    session.player_character_map = {"p1": "pc_zhagu"}
+    session.scene["scene_threads"] = {
+        "character:pc_zhagu": {
+            "summary": "扎古在餐厅和水手喝酒聊天。",
+            "participants": ["pc_zhagu"],
+            "active_character_id": "pc_zhagu",
+        }
+    }
+
+    result = apply_deterministic_continuity_repairs(
+        session,
+        actor={"player_id": "p1"},
+        player_message="扎古，退场",
+        completion="扎古已退场。",
+        tool_results=[],
+    )
+
+    assert any(item["type"] == "character_terminal_tags" for item in result["applied"])
+    assert session.scene["scene_threads"]["character:pc_zhagu"]["status"] == "closed"
+    tags = {(tag.layer, tag.key): tag.value for tag in session.characters["pc_zhagu"].tags}
+    assert "已退场" in tags[("status", "退场状态")]
+
+
+def test_named_actor_comma_retirement_message_still_marks_terminal():
+    session = GameSession.new("group")
+    session.mode = GameMode.NARRATIVE
+    session.scene["_game_started"] = True
+    session.characters["pc_zhagu"] = Character(id="pc_zhagu", name="扎古", player_id="p1")
+    session.player_character_map = {"p1": "pc_zhagu"}
+    session.scene["scene_threads"] = {
+        "character:pc_zhagu": {
+            "summary": "扎古在餐厅和水手喝酒聊天。",
+            "participants": ["pc_zhagu"],
+            "active_character_id": "pc_zhagu",
+        }
+    }
+
+    result = apply_deterministic_continuity_repairs(
+        session,
+        actor={"player_id": "p1"},
+        player_message="扎古，退休",
+        completion="扎古正式退休，离开这趟探险。",
+        tool_results=[],
+    )
+
+    assert any(item["type"] == "character_terminal_tags" for item in result["applied"])
+    assert session.scene["scene_threads"]["character:pc_zhagu"]["status"] == "closed"
+
+
+def test_audit_patch_does_not_retire_actor_from_retirement_backstory():
+    session = GameSession.new("group")
+    session.mode = GameMode.NARRATIVE
+    session.scene["_game_started"] = True
+    session.characters["pc_zhagu"] = Character(id="pc_zhagu", name="扎古", player_id="p1")
+    session.player_character_map = {"p1": "pc_zhagu"}
+    session.scene["scene_threads"] = {
+        "character:pc_zhagu": {
+            "summary": "扎古正在餐厅和水手喝酒聊天。",
+            "participants": ["pc_zhagu"],
+            "active_character_id": "pc_zhagu",
+        }
+    }
+    payload = {
+        "safe_patches": {
+            "character_tags": [
+                {
+                    "character_id": "pc_zhagu",
+                    "tags": [{"key": "退场状态", "value": "已退场", "layer": "status"}],
+                }
+            ],
+            "scene_threads": [
+                {"thread_id": "character:pc_zhagu", "patch": {"status": "closed", "summary": "扎古已退场。"}}
+            ],
+        }
+    }
+
+    result = apply_continuity_audit_patches(
+        session,
+        payload,
+        actor={"player_id": "p1"},
+        player_message="讲述自己在海上的经历，提前“退休”后的渔夫生活，为什么复出",
+        completion="扎古讲起自己退休后又复出的经历。",
+        tool_results=[],
+    )
+
+    assert not any(item.get("type") in {"character_tags", "scene_thread"} for item in result["applied"])
+    assert {item["reason"] for item in result["rejected"]} == {"missing_terminal_evidence"}
+    assert "status" not in session.scene["scene_threads"]["character:pc_zhagu"]
+    assert not session.characters["pc_zhagu"].tags
+
+
 def test_reactivation_request_reopens_false_retired_actor_threads():
     session = GameSession.new("group")
     session.scene["_game_started"] = True

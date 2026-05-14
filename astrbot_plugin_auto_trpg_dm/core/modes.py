@@ -100,7 +100,36 @@ class GameModeStateMachine:
             return False
         terminal_terms = ("退场", "退休", "离队", "不再扮演", "角色结束", "角色结局")
         rejoin_terms = ("新角色", "建卡", "创建人物", "创建角色", "绑定角色", "换新角色", "重新加入", "重新进团")
-        return any(term in text for term in terminal_terms) and not any(term in text for term in rejoin_terms)
+        background_terms = (
+            "背景",
+            "经历",
+            "往事",
+            "生活",
+            "复出",
+            "退役",
+            "退休后",
+            "退休后的",
+            "提前退休",
+            "提前“退休”",
+            '提前"退休"',
+            "渔夫生活",
+            "讲述",
+            "聊",
+            "回忆",
+            "曾经",
+            "以前",
+            "过去",
+        )
+        if any(term in text for term in rejoin_terms):
+            return False
+        explicit_terms = ("退场", "退休", "离队", "角色退场", "角色结束", "角色结局", "不再扮演")
+        if text.strip(" ，,。.!！?？:：;；").endswith(explicit_terms) or "算是角色退场" in text:
+            return True
+        if any(term in text for term in background_terms) and not any(
+            term in text for term in ("已退场", "确认退场", "永久退场", "角色已退场")
+        ):
+            return False
+        return any(term in text for term in terminal_terms)
 
     @staticmethod
     def _looks_like_start_request(text: str) -> bool:

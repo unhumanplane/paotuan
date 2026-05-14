@@ -114,6 +114,40 @@ TERMINAL_REJOIN_TERMS = (
     "撤销退场",
     "继续参与",
 )
+TERMINAL_BACKGROUND_CONTEXT_TERMS = (
+    "背景",
+    "经历",
+    "往事",
+    "来历",
+    "生活",
+    "复出",
+    "为什么复出",
+    "退役",
+    "退休后",
+    "退休后的",
+    "提前退休",
+    "提前“退休”",
+    "提前\"退休\"",
+    "水手长",
+    "渔夫生活",
+    "讲述",
+    "聊",
+    "聊天",
+    "家常",
+    "回忆",
+    "曾经",
+    "以前",
+    "过去",
+    "海上漂泊",
+)
+EXPLICIT_TERMINAL_EXIT_PATTERNS = (
+    re.compile(r"^(?:我|俺|咱|本角色|当前角色|[A-Za-z0-9_\-\u4e00-\u9fff]{1,16})?[，,：:\s]*(?:确认|正式|主动)?(?:永久)?退场(?:了|吧|。|！|!|$)"),
+    re.compile(r"^(?:我|俺|咱|本角色|当前角色|[A-Za-z0-9_\-\u4e00-\u9fff]{1,16})?[，,：:\s]*(?:确认|正式|主动)?(?:永久)?退休(?:了|吧|。|！|!|$)"),
+    re.compile(r"^(?:我|俺|咱|本角色|当前角色|[A-Za-z0-9_\-\u4e00-\u9fff]{1,16})?[，,：:\s]*(?:确认|正式|主动)?(?:永久)?离队(?:了|吧|。|！|!|$)"),
+    re.compile(r"^(?:我的|当前)?角色退场(?:了|吧|。|！|!|$)"),
+    re.compile(r"^(?:我|俺|咱|本角色|当前角色)?[，,：:\s]*(?:不再扮演|角色结束|角色结局)(?:了|吧|。|！|!|$)"),
+    re.compile(r"算是(?:我的|当前)?角色退场(?:了|吧|。|！|!|$)"),
+)
 STATE_QUERY_TERMS = (
     "当前我的状态",
     "我的状态",
@@ -1171,11 +1205,46 @@ def _looks_like_terminal_exit(text: str) -> bool:
     normalized = str(text or "").strip().lower()
     if not normalized:
         return False
-    return (
-        _contains_any(normalized, TERMINAL_TERMS)
-        and not _contains_any(normalized, TERMINAL_REJOIN_TERMS)
-        and not _terminal_text_is_policy_or_conditional(normalized)
+    if not _contains_any(normalized, TERMINAL_TERMS):
+        return False
+    if _contains_any(normalized, TERMINAL_REJOIN_TERMS):
+        return False
+    if _terminal_text_is_policy_or_conditional(normalized):
+        return False
+    if _looks_like_terminal_background_context(normalized):
+        return False
+    if _explicit_terminal_exit_statement(normalized):
+        return True
+    return _contains_any(
+        normalized,
+        (
+            "已退场",
+            "确认退场",
+            "永久退场",
+            "角色已退场",
+            "已离开当前故事",
+            "不再参与当前故事",
+            "out of play",
+        ),
     )
+
+
+def _explicit_terminal_exit_statement(text: str) -> bool:
+    normalized = str(text or "").strip().lower()
+    if not normalized:
+        return False
+    return any(pattern.search(normalized) for pattern in EXPLICIT_TERMINAL_EXIT_PATTERNS)
+
+
+def _looks_like_terminal_background_context(text: str) -> bool:
+    normalized = str(text or "").strip().lower()
+    if not normalized:
+        return False
+    if _contains_any(normalized, ("退场状态", "已退场", "确认退场", "永久退场", "角色已退场")):
+        return False
+    if _explicit_terminal_exit_statement(normalized):
+        return False
+    return _contains_any(normalized, TERMINAL_BACKGROUND_CONTEXT_TERMS)
 
 
 def _looks_like_reactivation_request(text: str) -> bool:
