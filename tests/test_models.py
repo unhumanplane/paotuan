@@ -94,6 +94,16 @@ def test_config_schema_defines_ra_enabled_default_off():
     assert schema["ra_enabled"]["hint"] == "false"
 
 
+def test_config_schema_defines_continuity_auditor_defaults_on():
+    schema_path = Path(__file__).parents[1] / "astrbot_plugin_auto_trpg_dm" / "_conf_schema.json"
+    schema = json.loads(schema_path.read_text(encoding="utf-8"))
+
+    assert schema["continuity_auditor_enabled"]["type"] == "bool"
+    assert schema["continuity_auditor_enabled"]["default"] is True
+    assert schema["continuity_auditor_model_provider"]["default"] == "default"
+    assert schema["continuity_auditor_max_tokens"]["default"] == 1200
+
+
 def test_relationship_tag_layer_inference_and_public_compaction():
     assert infer_tag_layer("attitude_to_watch_captain") == "relations"
     assert infer_tag_layer("阵营关系") == "relations"
