@@ -56,6 +56,8 @@ class GameModeStateMachine:
             return GameMode.TACTICAL
         if any(hint in text for hint in self.BATTLE_HINTS):
             return GameMode.TACTICAL
+        if self._campaign_started(session) and self._looks_like_terminal_exit_statement(text):
+            return GameMode.NARRATIVE
         if self._campaign_started(session) and self._looks_like_live_action(text):
             return GameMode.RESOLUTION
         if self._looks_like_character_request(text):
@@ -91,6 +93,14 @@ class GameModeStateMachine:
         ):
             return True
         return False
+
+    @staticmethod
+    def _looks_like_terminal_exit_statement(text: str) -> bool:
+        if not text:
+            return False
+        terminal_terms = ("退场", "退休", "离队", "不再扮演", "角色结束", "角色结局")
+        rejoin_terms = ("新角色", "建卡", "创建人物", "创建角色", "绑定角色", "换新角色", "重新加入", "重新进团")
+        return any(term in text for term in terminal_terms) and not any(term in text for term in rejoin_terms)
 
     @staticmethod
     def _looks_like_start_request(text: str) -> bool:

@@ -81,3 +81,15 @@ def test_character_hint_enters_character_creation():
 
     assert mode == GameMode.CHARACTER_CREATION
 
+
+def test_retired_character_message_does_not_switch_live_campaign_to_character_creation():
+    session = GameSession.new("s")
+    session.scene["_game_started"] = True
+    session.characters["pc_latatos"] = object()
+    session.characters["pc_laofei"] = object()
+    session.player_character_map = {"p1": "pc_latatos", "p2": "pc_laofei"}
+
+    mode = GameModeStateMachine().detect(session, "去哪里不重要，算是角色退场了")
+
+    assert mode == GameMode.NARRATIVE
+

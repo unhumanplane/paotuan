@@ -105,6 +105,21 @@ SCENE_THREAD_MIRROR_KEYS = {
     "factions",
     "relations",
 }
+SCENE_THREAD_CLOSED_STATUSES = {"archived", "closed", "resolved", "retired"}
+SCENE_THREAD_TERMINAL_TERMS = (
+    "永久退场",
+    "确认退场",
+    "已退场",
+    "退场",
+    "退休",
+    "永久离队",
+    "离开本地故事",
+    "不再与本地故事交织",
+    "不再与这座小镇交织",
+    "不再参与当前故事",
+    "retired",
+    "out of play",
+)
 
 
 class UpdateWorldTagsArgs(BaseModel):
@@ -3731,6 +3746,8 @@ def _merge_scene_thread(
 ) -> Dict[str, Any]:
     merged = dict(current or {})
     merged.update(patch)
+    if _scene_thread_patch_is_terminal(merged, patch):
+        merged["status"] = "closed"
     merged["updated_at"] = utc_now_iso()
     scene_time_label = _scene_thread_time_label(patch)
     if scene_time_label:
@@ -3776,12 +3793,59 @@ def _write_scene_mirror(
     scene_thread: Dict[str, Any],
     patch: Dict[str, Any],
 ) -> None:
+    if _scene_thread_is_closed(scene_thread):
+        if scene.get("active_scene_thread_id") == thread_id:
+            replacement_id = _find_replacement_scene_thread_id(scene, exclude_thread_id=thread_id)
+            if replacement_id:
+                scene["active_scene_thread_id"] = replacement_id
+                replacement_thread = dict(_scene_threads(scene).get(replacement_id) or {})
+                _mirror_scene_thread_fields(scene, replacement_thread)
+            else:
+                scene.pop("active_scene_thread_id", None)
+        return
     scene["active_scene_thread_id"] = thread_id
+    _mirror_scene_thread_fields(scene, scene_thread)
+
+
+def _mirror_scene_thread_fields(scene: Dict[str, Any], scene_thread: Dict[str, Any]) -> None:
     for key in SCENE_THREAD_MIRROR_KEYS:
         if key in scene_thread:
             scene[key] = scene_thread[key]
         else:
             scene.pop(key, None)
+
+
+def _scene_thread_is_closed(thread: Dict[str, Any]) -> bool:
+    status = str((thread or {}).get("status") or "").strip().lower()
+    return status in SCENE_THREAD_CLOSED_STATUSES
+
+
+def _scene_thread_patch_is_terminal(thread: Dict[str, Any], patch: Dict[str, Any]) -> bool:
+    status = str((patch or {}).get("status") or "").strip().lower()
+    if status in SCENE_THREAD_CLOSED_STATUSES:
+        return True
+    text = _flatten_text(
+        {
+            key: (patch or thread or {}).get(key)
+            for key in ("summary", "current_objective", "current_conflict", "stakes", "status")
+        }
+    )
+    return _contains_any_text(text, SCENE_THREAD_TERMINAL_TERMS)
+
+
+def _find_replacement_scene_thread_id(scene: Dict[str, Any], *, exclude_thread_id: str) -> str:
+    threads = _scene_threads(scene)
+    candidates = []
+    for candidate_id, thread in threads.items():
+        if candidate_id == exclude_thread_id or not isinstance(thread, dict):
+            continue
+        if _scene_thread_is_closed(thread):
+            continue
+        candidates.append((str(thread.get("updated_at") or ""), str(candidate_id)))
+    if not candidates:
+        return ""
+    candidates.sort(reverse=True)
+    return candidates[0][1]
 
 
 def _clean_tag_text(text: str) -> str:

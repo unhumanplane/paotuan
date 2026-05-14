@@ -691,6 +691,77 @@ def test_prompt_snapshot_projection_skips_stale_same_character_threads():
     assert "settled the shop" in rendered
 
 
+def test_prompt_snapshot_projection_does_not_project_closed_active_thread_as_active():
+    session = GameSession.new("group")
+    session.scene["active_scene_thread_id"] = "character:pc_esmeralda"
+    session.scene["scene_threads"] = {
+        "character:pc_esmeralda": {
+            "summary": "艾斯米拉达已退场，离开小镇。",
+            "status": "closed",
+            "participants": ["pc_esmeralda"],
+            "active_character_id": "pc_esmeralda",
+            "updated_at": "2026-05-14T03:58:00+00:00",
+        },
+        "character:pc_laofei": {
+            "summary": "老肥在酒馆等天亮。",
+            "location": "酒馆",
+            "participants": ["pc_laofei"],
+            "active_character_id": "pc_laofei",
+            "updated_at": "2026-05-14T03:21:00+00:00",
+        },
+    }
+
+    projected_snapshot, _stats = prompt_snapshot_data(
+        session,
+        GameMode.NARRATIVE,
+        "Continue.",
+        snapshot_projection_enabled=True,
+    )
+    threads = projected_snapshot["scene"]["scene_threads"]
+    rendered = json.dumps(threads, ensure_ascii=False)
+
+    assert "艾斯米拉达已退场" not in json.dumps(threads.get("active", {}), ensure_ascii=False)
+    assert "老肥在酒馆等天亮" in rendered
+
+
+def test_prompt_snapshot_projection_keeps_recent_tool_backed_ritual_completion_anchor():
+    session = GameSession.new("group")
+    session.scene["summary"] = "旧摘要：仪式还没开始，需要先准备。"
+    session.scene["current_conflict"] = "黑暗仪式完成——部分成功；小地主被诅咒标记。"
+    session.scene["current_objective"] = "解读仪式揭示的碎片信息 / 决定小地主后续处置"
+    session.scene["active_scene_thread_id"] = "character:pc_latatos"
+    session.scene["scene_threads"] = {
+        "character:pc_latatos": {
+            "summary": "黑暗仪式完成——部分成功；小地主被诅咒标记，控制权与标记掌握归龙娘。",
+            "current_conflict": "仪式完成，代价未明",
+            "participants": ["pc_latatos", "pc_esmeralda"],
+            "active_character_id": "pc_latatos",
+            "updated_at": "2026-05-14T03:41:56+00:00",
+        }
+    }
+    session.scene["_recent_narrative_events"] = [
+        {
+            "at": "2026-05-14T03:41:56+00:00",
+            "player_id": "p1",
+            "character_id": "pc_latatos",
+            "message": "开始仪式",
+            "outcome": "黑暗仪式完成——部分成功；小地主被诅咒标记。",
+        }
+    ]
+
+    projected_snapshot, _stats = prompt_snapshot_data(
+        session,
+        GameMode.NARRATIVE,
+        "集中精神试一下诅咒中感知位置的能力",
+        snapshot_projection_enabled=True,
+    )
+    anchor = projected_snapshot["scene"]["continuity_anchor"]
+    rendered = json.dumps(anchor, ensure_ascii=False)
+
+    assert "黑暗仪式完成" in rendered
+    assert "小地主被诅咒标记" in rendered
+
+
 def test_prompt_snapshot_projection_skips_stale_thread_even_when_other_thread_active():
     session = GameSession.new("group")
     session.scene["active_scene_thread_id"] = "pc_laofei:alley"

@@ -370,7 +370,8 @@ class ToolRegistry:
                 description=(
                     '显式结束当前叙事周期。MVP 仅支持 action="end_cycle"；不要用完成文本或猜测来结束周期。'
                     "如需跨日、入夜、天亮、长休或跳到下一时段，必须传全局 timeline_patch；"
-                    "工具会拒绝按玩家/角色分叉的时间线。"
+                    "工具会拒绝按玩家/角色分叉的时间线。默认 sync_policy=strict；"
+                    "安全 AFK 玩家不应卡死全团时可用 sync_policy=timeout/quorum 托管推进，危险或战斗 AFK 会被拒绝。"
                 ),
                 model=CycleControlArgs,
                 handler=cycle_tools.cycle_control,

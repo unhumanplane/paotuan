@@ -281,6 +281,8 @@ def _project_scene(scene: Any, profile: str) -> Any:
     if not isinstance(scene, dict):
         return scene
     active_thread_id = str(scene.get("active_scene_thread_id") or "").strip()
+    raw_threads = scene.get("scene_threads")
+    active_thread_id = _effective_active_scene_thread_id(raw_threads, active_thread_id)
     scene = project_visible_scene_value(scene, depth=4, text_limit=500, item_limit=24)
     if not isinstance(scene, dict):
         return {}
@@ -302,7 +304,7 @@ def _project_scene(scene: Any, profile: str) -> Any:
         projected_value = _project_scene_value(key, value, profile)
         if projected_value not in ({}, [], "", None):
             projected[key] = projected_value
-    threads = _project_scene_threads(scene.get("scene_threads"), active_thread_id, profile)
+    threads = _project_scene_threads(raw_threads, active_thread_id, profile)
     if threads:
         projected["scene_threads"] = threads
         if active_thread_id:
@@ -367,7 +369,7 @@ def _project_scene_threads(value: Any, active_thread_id: str, profile: str) -> A
         return {}
     projected: dict[str, Any] = {}
     active = value.get(active_thread_id) if active_thread_id else None
-    if isinstance(active, dict):
+    if isinstance(active, dict) and not _scene_thread_is_closed(active):
         projected["active"] = _project_scene_thread(active, profile, active=True)
     others: list[dict[str, Any]] = []
     for thread_id, thread in sorted(
@@ -377,7 +379,7 @@ def _project_scene_threads(value: Any, active_thread_id: str, profile: str) -> A
     ):
         if thread_id == active_thread_id or not isinstance(thread, dict):
             continue
-        if str(thread.get("status") or "").strip().lower() in {"archived", "closed", "resolved"}:
+        if _scene_thread_is_closed(thread):
             continue
         if _is_stale_scene_thread(thread, active) or _has_newer_related_scene_thread(thread_id, thread, value):
             continue
@@ -393,7 +395,7 @@ def _project_scene_threads(value: Any, active_thread_id: str, profile: str) -> A
 
 
 def _is_stale_scene_thread(thread: dict[str, Any], active: Any) -> bool:
-    if not isinstance(active, dict):
+    if not isinstance(active, dict) or _scene_thread_is_closed(active):
         return False
     return _scene_thread_is_older_conflicting_related(thread, active)
 
@@ -480,6 +482,27 @@ def _project_scene_thread(thread: dict[str, Any], profile: str, *, active: bool)
     return projected
 
 
+def _scene_thread_is_closed(thread: dict[str, Any]) -> bool:
+    return str((thread or {}).get("status") or "").strip().lower() in {"archived", "closed", "resolved", "retired"}
+
+
+def _effective_active_scene_thread_id(threads: Any, active_thread_id: str) -> str:
+    if not isinstance(threads, dict) or not threads:
+        return active_thread_id
+    active = threads.get(active_thread_id) if active_thread_id else None
+    if isinstance(active, dict) and not _scene_thread_is_closed(active):
+        return active_thread_id
+    candidates: list[tuple[str, str]] = []
+    for thread_id, thread in threads.items():
+        if not isinstance(thread, dict) or _scene_thread_is_closed(thread):
+            continue
+        candidates.append((str(thread.get("updated_at") or ""), str(thread_id)))
+    if not candidates:
+        return ""
+    candidates.sort(reverse=True)
+    return candidates[0][1]
+
+
 def _project_continuity_anchor(
     scene: dict[str, Any],
     recent_events: list[dict[str, Any]],
@@ -495,10 +518,10 @@ def _project_continuity_anchor(
         anchor["source"] = "recent_events"
     if scene.get("last_resolution") and not _is_fact_check_resolution(scene.get("last_resolution")):
         anchor["last_resolution"] = _project_scene_value("last_resolution", scene.get("last_resolution"), profile)
-    active_thread_id = str(scene.get("active_scene_thread_id") or "").strip()
     threads = scene.get("scene_threads")
+    active_thread_id = _effective_active_scene_thread_id(threads, str(scene.get("active_scene_thread_id") or "").strip())
     active_thread = threads.get(active_thread_id) if isinstance(threads, dict) and active_thread_id else None
-    if isinstance(active_thread, dict):
+    if isinstance(active_thread, dict) and not _scene_thread_is_closed(active_thread):
         for key in ("location", "summary", "current_conflict", "current_objective", "scene_time_label", "scene_time_of_day"):
             value = active_thread.get(key)
             if value in (None, "", [], {}):
@@ -1043,6 +1066,7 @@ BASE_RULES = """共享基础规则：
 - 已开场跑团必须持续维护玩家可感知的目标与线索：scene.current_objective、open_hooks、clues、mysteries、stakes、pressure_clock 只写角色已能观察、合理怀疑或确认的信息；不要把 hidden_truth、幕后黑手、秘密地点、真实动机写进普通 DM prompt 或玩家输出。
 - 周期结束只能通过 `cycle_control(action="end_cycle")` 显式工具调用；不要使用完成文本、暗号或启发式猜测来结束周期。
 - 时间线是全团共享权威状态；不能让一部分玩家进入第二天、天亮或夜晚，而另一部分玩家还停留在上一时段。跨日、入夜、天亮、长休或长时间跳转必须在周期边界通过 `cycle_control` 的全局 timeline_patch 同步推进。
+- 安全 AFK 玩家不能永久卡死全团时间；跨时段仍统一推进全团 timeline，但可用 `sync_policy="timeout"` 或 `"quorum"` 让工具审计式托管安全缺席角色。危险、战斗、关键选择中的 AFK 不能跨时段跳过。
 - RA 只读取 `ra_cycle_input` 过滤投影和清洗后的权威字段快照，不读取完整 `GameSession`、原始玩家输入、prompt、诊断字段或 raw audit。
 - RA 输出的状态字段只是补丁候选；框架只应用 allowlisted、tool-backed、validator 通过的权威字段。"""
 
@@ -1140,6 +1164,7 @@ def build_system_prompt(
     你必须把它们当自然语言意图理解，并通过当前允许工具完成。
 11. 查询状态、重开当前团、手动压缩记忆、查看最近调试记录，都调用 session_control。
     查询上下文大小、token 消耗、压缩状态、audit 体积时，调用 estimate_token_usage。
+    玩家只是问“当前我的状态/现在什么情况/还有谁没睡/几个人才能进第二天”等状态问题时，只回答状态，不要当作剧情推进、行动声明或周期响应。
     玩家要求“备份存档/备份列表/查看上一个存档”时，调用 session_control 的 create_backup/list_backups/preview_latest_backup。
     玩家要求“恢复上一个存档/恢复之前的跑团”时，调用 restore_latest_backup；恢复只允许当前存档为空或刚被清空时执行。
     玩家要求“重新开/重置到上一个故事的开头/不包括角色卡”时，调用 restart_latest_backup_story；这只抽取旧故事开头，不复制旧角色卡、玩家绑定、战斗、地图或中途进度。
@@ -1149,7 +1174,7 @@ def build_system_prompt(
 12a. 同一个团只有一条全局时间线：当前日期、昼夜/时段、长休/跨日推进都以快照中的 timeline 为准。
     不得在 scene、角色 Tag、world_tags 或叙事里写出“玩家 A 已到第二天、玩家 B 还在前一晚”这类分叉时间。
     单个玩家可以短暂离队或异步行动，但结算时仍处在同一全局 day/time_of_day；如果需要等待其他玩家、扎营、长休、天亮、入夜或跳到第二天，先收束当前周期，并用 cycle_control(action="end_cycle", timeline_patch={...}) 统一推进。
-    如果同步条件不足，工具会拒绝推进；此时只说明还不能跳时段，继续处理当前时段内的行动或等待缺席玩家确认。
+    如果同步条件不足，先区分真正阻塞者与安全 AFK：战斗、危险、关键谈判、濒死、被追击或刚被明确等待选择的角色会阻塞；已休息、已退场、在安全地点待命或长时间无回应且无风险的角色可用 sync_policy="timeout"/"quorum" 默认随队休息/待命。工具返回 unsafe_afk_advance 时不得跨时段。
     update_scene 可以区分并行 scene_threads 的地点、摘要和当前角色，但不能用 summary/current_conflict 把单个角色私自推进到第二天、天亮或入夜；这类时间跳转必须走全局 timeline_patch。
 13. 多人游戏时必须区分“当前发言人”。当玩家说“我加入”“我是某角色”“帮我建卡”时，
     用 bind_player_character 或 create_character 记录当前发言人与角色的绑定；之后“我”默认指当前发言人绑定的角色。

@@ -2909,6 +2909,8 @@ def _looks_like_stateful_player_message(message: str) -> bool:
     text = str(message or "").strip().lower()
     if not text:
         return False
+    if _looks_like_status_query_message(text):
+        return False
     non_stateful_terms = (
         "status",
         "token",
@@ -2978,6 +2980,64 @@ def _looks_like_stateful_player_message(message: str) -> bool:
         "注意",
     )
     return any(term in text for term in action_terms)
+
+
+def _looks_like_status_query_message(text: str) -> bool:
+    source = str(text or "").strip().lower()
+    if not source:
+        return False
+    action_terms = (
+        "继续",
+        "然后",
+        "接着",
+        "顺便",
+        "之后",
+        "后继续",
+        "再去",
+        "去搜",
+        "搜索",
+        "调查",
+        "攻击",
+        "移动",
+        "施法",
+        "回家",
+        "离开",
+        "取走",
+        "拿走",
+    )
+    if any(term in source for term in action_terms):
+        return False
+    explicit_state_queries = (
+        "当前我的状态",
+        "我的当前状态",
+        "我现在状态",
+        "当前状态",
+        "现在状态",
+        "状态如何",
+        "汇报状态",
+        "我现在在哪",
+        "我在哪",
+        "我的位置",
+        "我身上有什么",
+        "身上有什么",
+        "当前局势",
+        "当前场景",
+        "当前任务",
+        "现在什么情况",
+        "现在啥情况",
+        "目前什么情况",
+        "还有几个人",
+        "还有谁",
+        "谁没睡",
+        "谁还没睡",
+        "才能进入第二天",
+        "能不能进入第二天",
+    )
+    if any(term in source for term in explicit_state_queries):
+        return True
+    query_terms = ("吗", "？", "?", "多少", "几个", "谁", "在哪", "什么情况")
+    state_terms = ("状态", "位置", "局势", "场景", "任务", "睡觉", "休息", "第二天", "天亮", "回合", "轮次")
+    return any(term in source for term in query_terms) and any(term in source for term in state_terms)
 
 
 def _looks_like_turn_consuming_player_action(message: str) -> bool:

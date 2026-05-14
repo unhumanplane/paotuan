@@ -232,6 +232,49 @@ def test_update_scene_isolates_parallel_character_threads(tmp_path):
     assert "stakes" not in saved.scene
 
 
+def test_update_scene_closes_retired_thread_without_mirroring_active_scene(tmp_path):
+    repository = JsonGameRepository(tmp_path / "data")
+    session = GameSession.new("group")
+    session.world_tags["_background_ready"] = True
+    session.characters["pc_esmeralda"] = Character(id="pc_esmeralda", name="艾斯米拉达", player_id="p1")
+    session.characters["pc_laofei"] = Character(id="pc_laofei", name="老肥", player_id="p2")
+    session.player_character_map["p1"] = "pc_esmeralda"
+    session.player_character_map["p2"] = "pc_laofei"
+    session.scene["active_scene_thread_id"] = "character:pc_laofei"
+    session.scene["summary"] = "老肥在酒馆等天亮。"
+    session.scene["location"] = "酒馆"
+    session.scene["scene_threads"] = {
+        "character:pc_laofei": {
+            "summary": "老肥在酒馆等天亮。",
+            "location": "酒馆",
+            "active_character_id": "pc_laofei",
+            "participants": ["pc_laofei"],
+            "updated_at": "2026-05-14T03:20:00+00:00",
+        }
+    }
+    repository.save_session(session)
+
+    tools = MemoryTools(repository, "group", actor={"player_id": "p1"}, message="艾斯米拉达退场离开小镇")
+    result = asyncio.run(
+        tools.update_scene(
+            {
+                "summary": "艾斯米拉达已退场，离开小镇，不再与本地故事交织。",
+                "current_objective": "无活跃主线目标——艾斯米拉达已退场",
+                "participants": [],
+                "scene_thread_id": "character:pc_esmeralda",
+            }
+        )
+    )
+
+    assert result["ok"] is True
+    saved = repository.load_session("group")
+    retired = saved.scene["scene_threads"]["character:pc_esmeralda"]
+    assert retired["status"] == "closed"
+    assert saved.scene["active_scene_thread_id"] == "character:pc_laofei"
+    assert saved.scene["summary"] == "老肥在酒馆等天亮。"
+    assert saved.scene["location"] == "酒馆"
+
+
 def test_update_scene_rejects_implicit_thread_timeline_advance(tmp_path):
     repository = JsonGameRepository(tmp_path / "data")
     session = GameSession.new("group")

@@ -364,7 +364,41 @@ def active_player_ids(session: Any) -> set[str]:
             player_id = str(getattr(character, "player_id", "") or "")
             if player_id:
                 ids.add(player_id)
-    return ids
+    return {player_id for player_id in ids if not _player_bound_character_is_terminal(session, player_id)}
+
+
+def _player_bound_character_is_terminal(session: Any, player_id: str) -> bool:
+    character_id = str((getattr(session, "player_character_map", {}) or {}).get(player_id) or "")
+    if not character_id:
+        return False
+    characters = getattr(session, "characters", {}) or {}
+    character = characters.get(character_id) if isinstance(characters, Mapping) else None
+    if not character:
+        return False
+    for tag in getattr(character, "tags", []) or []:
+        key = str(getattr(tag, "key", "") or "").lower()
+        value = str(getattr(tag, "value", "") or "").lower()
+        layer = str(getattr(tag, "layer", "") or "").lower()
+        text = f"{key} {value}"
+        if layer == "status" and any(
+            term in text
+            for term in (
+                "死亡",
+                "阵亡",
+                "永久退场",
+                "确认退场",
+                "已退场",
+                "退场",
+                "退休",
+                "dead",
+                "deceased",
+                "retired",
+                "out_of_play",
+                "out of play",
+            )
+        ):
+            return True
+    return False
 
 
 def timeline_sync_status(session: Any, additional_player_ids: set[str] | None = None) -> dict[str, Any]:

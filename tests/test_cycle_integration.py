@@ -179,6 +179,12 @@ class TestLooksLikeStatefulPlayerMessage:
         assert _looks_like_stateful_player_message("token") is False
         assert _looks_like_stateful_player_message("当前轮次") is False
         assert _looks_like_stateful_player_message("规则列表") is False
+        assert _looks_like_stateful_player_message("当前我的状态") is False
+        assert _looks_like_stateful_player_message("现在还有几个人进去睡觉状态才能进入第二天？") is False
+        assert _looks_like_stateful_player_message("我现在在哪，身上有什么？") is False
+
+    def test_mixed_query_and_action_remains_stateful(self):
+        assert _looks_like_stateful_player_message("我检查自己状态后继续搜银库") is True
 
     def test_empty_message_is_not_stateful(self):
         assert _looks_like_stateful_player_message("") is False
