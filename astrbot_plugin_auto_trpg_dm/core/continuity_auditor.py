@@ -1039,6 +1039,8 @@ def _reactivation_evidence_for_thread(
         participants = [str(item) for item in thread.get("participants") or [] if str(item)]
         active_character_id = participants[0] if participants else ""
     actor_character_id = _actor_character_id(session, actor)
+    if active_character_id and _character_has_terminal_status(session, active_character_id):
+        return actor_character_id == active_character_id and _looks_like_reactivation_request(player_message)
     if _looks_like_reactivation_request(player_message):
         return True
     if active_character_id and _has_successful_active_tool_evidence(tool_results, active_character_id):
@@ -1075,6 +1077,19 @@ def _character_has_active_status(session: GameSession, character_id: str) -> boo
             continue
         text = f"{tag.key} {tag.value}"
         if _contains_any(text, ("活跃", "恢复", "参团", "当前所在", "最近行动")) and not _terminal_text_match(text):
+            return True
+    return False
+
+
+def _character_has_terminal_status(session: GameSession, character_id: str) -> bool:
+    character = session.characters.get(character_id)
+    if not character:
+        return False
+    for tag in character.tags or []:
+        if str(tag.layer or infer_tag_layer(tag.key)) != "status":
+            continue
+        text = f"{tag.key} {tag.value}"
+        if _terminal_text_match(text):
             return True
     return False
 

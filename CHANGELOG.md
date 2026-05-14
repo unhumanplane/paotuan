@@ -2,6 +2,16 @@
 
 所有已经合入 `main` 的用户可见变更都记录在这里。日期使用香港时区对应的开发日期。
 
+## [0.1.102] - 2026-05-14
+
+### Fixed
+
+- 已有退场状态的角色不再因为旧的“当前所在/最近行动”标签或普通工具结果被 scene thread 自动重新打开；只有角色本人明确要求恢复活跃时才允许 reopen。
+
+### Verified
+
+- `python -m pytest tests/test_continuity_auditor.py tests/test_modes.py -q`
+
 ## [0.1.101] - 2026-05-14
 
 ### Fixed

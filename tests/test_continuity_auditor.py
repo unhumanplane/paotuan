@@ -242,6 +242,108 @@ def test_audit_patch_does_not_retire_actor_from_retirement_backstory():
     assert not session.characters["pc_zhagu"].tags
 
 
+def test_terminal_character_thread_cannot_reopen_from_stale_active_status_tags():
+    session = GameSession.new("group")
+    session.mode = GameMode.NARRATIVE
+    session.scene["_game_started"] = True
+    session.characters["pc_feng"] = Character(id="pc_feng", name="风", player_id="p1")
+    session.characters["pc_feng"].upsert_tags(
+        [
+            {"key": "当前所在", "value": "音速号餐厅", "layer": "status"},
+            {"key": "最近行动", "value": "与贺远征交谈", "layer": "status"},
+            {"key": "退场状态", "value": "已退场", "layer": "status"},
+        ]
+    )
+    session.player_character_map = {"p1": "pc_feng"}
+    session.scene["scene_threads"] = {
+        "character:pc_feng": {
+            "summary": "风已下船退场。",
+            "status": "closed",
+            "participants": ["pc_feng"],
+            "active_character_id": "pc_feng",
+        }
+    }
+    payload = {
+        "safe_patches": {
+            "scene_threads": [
+                {
+                    "thread_id": "character:pc_feng",
+                    "patch": {
+                        "status": "",
+                        "summary": "风在餐厅继续与贺远征交谈。",
+                    },
+                }
+            ]
+        }
+    }
+
+    result = apply_continuity_audit_patches(
+        session,
+        payload,
+        actor={"player_id": "p2"},
+        player_message="继续推进剧情",
+        completion="风在餐厅继续与贺远征交谈。",
+        tool_results=[
+            {
+                "tool": "update_character_tags",
+                "args": {"character_id": "pc_feng", "tags": [{"key": "最近行动", "value": "继续交谈"}]},
+                "result": {"ok": True},
+            }
+        ],
+    )
+
+    assert not any(item.get("type") == "scene_thread" for item in result["applied"])
+    assert result["rejected"][0]["reason"] == "missing_reactivation_evidence"
+    assert session.scene["scene_threads"]["character:pc_feng"]["status"] == "closed"
+
+
+def test_terminal_character_thread_reopens_only_on_actor_reactivation_request():
+    session = GameSession.new("group")
+    session.mode = GameMode.NARRATIVE
+    session.scene["_game_started"] = True
+    session.characters["pc_feng"] = Character(id="pc_feng", name="风", player_id="p1")
+    session.characters["pc_feng"].upsert_tags(
+        [
+            {"key": "当前所在", "value": "音速号餐厅", "layer": "status"},
+            {"key": "退场状态", "value": "已退场", "layer": "status"},
+        ]
+    )
+    session.player_character_map = {"p1": "pc_feng"}
+    session.scene["scene_threads"] = {
+        "character:pc_feng": {
+            "summary": "风已下船退场。",
+            "status": "closed",
+            "participants": ["pc_feng"],
+            "active_character_id": "pc_feng",
+        }
+    }
+    payload = {
+        "safe_patches": {
+            "scene_threads": [
+                {
+                    "thread_id": "character:pc_feng",
+                    "patch": {
+                        "status": "",
+                        "summary": "风恢复活跃，继续参与当前故事。",
+                    },
+                }
+            ]
+        }
+    }
+
+    result = apply_continuity_audit_patches(
+        session,
+        payload,
+        actor={"player_id": "p1"},
+        player_message="我没退场，恢复活跃状态",
+        completion="风恢复活跃，继续参与当前故事。",
+        tool_results=[],
+    )
+
+    assert any(item.get("type") == "scene_thread" for item in result["applied"])
+    assert "status" not in session.scene["scene_threads"]["character:pc_feng"]
+
+
 def test_reactivation_request_reopens_false_retired_actor_threads():
     session = GameSession.new("group")
     session.scene["_game_started"] = True
