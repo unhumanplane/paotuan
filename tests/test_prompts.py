@@ -41,6 +41,8 @@ def test_system_prompt_includes_shared_cycle_contract():
     assert "RA 只读取 `ra_cycle_input`" in prompt
     assert "时间线是全团共享权威状态" in prompt
     assert "不能用 summary/current_conflict 把单个角色私自推进到第二天" in prompt
+    assert "已声明的物理环境和设备能力是连续性事实" in prompt
+    assert "不能为了圆场临时新增未记录的设备能力" in prompt
     assert "完整 `GameSession`" in prompt
     assert "结束当前叙事周期" not in prompt
 

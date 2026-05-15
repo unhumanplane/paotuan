@@ -673,6 +673,10 @@ class MemoryTools:
             self._audit("update_world_tags", {"patch": patch}, result)
             return result
         session = self.repository.load_session(self.session_id)
+        locked_world = plot_locked_world_tags_result(session, patch, "update_world_tags")
+        if locked_world:
+            self._audit("update_world_tags", {"patch": patch}, locked_world)
+            return locked_world
         locked = plot_locked_result(session, self.message, "update_world_tags")
         if locked and patch_touches_plot_state(patch):
             self._audit("update_world_tags", {"patch": patch}, locked)
@@ -3297,6 +3301,40 @@ PLOT_LOCKED_KEYS = {
 }
 
 
+POST_START_WORLD_TAG_LOCKED_KEYS = {
+    "background",
+    "campaign_background",
+    "campaign_contract",
+    "campaign_outline",
+    "central_conflict",
+    "conflict",
+    "era",
+    "genre",
+    "location",
+    "main_plot",
+    "mystery",
+    "opening",
+    "plot",
+    "premise",
+    "ruleset",
+    "setting",
+    "starting_premise",
+    "theme",
+    "title",
+    "tone",
+    "world",
+    "world_premise",
+    "world_rules",
+    "背景",
+    "世界观",
+    "剧情",
+    "剧本",
+    "主线",
+    "题材",
+    "设定",
+}
+
+
 def campaign_start_missing_requirements(
     session: GameSession,
     opening_intro: str,
@@ -3327,6 +3365,34 @@ def compact_campaign_outline(outline: Dict[str, Any]) -> Dict[str, Any]:
         "outline": _short_tag_value(str(compacted), 500),
         "_locked_after_opening": True,
         "_dynamic_adjustment_policy": "只允许 DM 根据玩家行动结果微调推进；不接受玩家开场后直接改背景、题材或主线。",
+    }
+
+
+def plot_locked_world_tags_result(session: GameSession, patch: Dict[str, Any], tool_name: str) -> Dict[str, Any] | None:
+    if not _campaign_plot_locked(session):
+        return None
+    locked_keys = [
+        str(key)
+        for key in patch.keys()
+        if str(key).lower() in POST_START_WORLD_TAG_LOCKED_KEYS or str(key) in POST_START_WORLD_TAG_LOCKED_KEYS
+    ]
+    if not locked_keys:
+        return None
+    return {
+        "ok": False,
+        "error": "world_tags_locked_after_start",
+        "tool": tool_name,
+        "phase": "post_opening",
+        "locked_keys": locked_keys,
+        "message": (
+            "游戏已经开场，核心世界观、题材、基调、规则框架和开场前提不能再通过 update_world_tags 改写。"
+            "如果玩家对既有设定提出异议，应先核对审计/存档；只有确认是误写或经玩家共识后，才通过人工受控修正或新团重开处理。"
+        ),
+        "allowed_after_start": [
+            "adjudication/裁定风格等运行参数",
+            "由场内行动产生且可审计的势力关系变化",
+            "不改写核心世界观的公开记录整理",
+        ],
     }
 
 

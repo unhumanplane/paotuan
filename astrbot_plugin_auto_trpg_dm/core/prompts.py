@@ -1135,6 +1135,7 @@ BASE_RULES = """共享基础规则：
 - 安全 AFK 玩家不能永久卡死全团时间；跨时段仍统一推进全团 timeline，但可用 `sync_policy="timeout"` 或 `"quorum"` 让工具审计式托管安全缺席角色。危险、战斗、关键选择中的 AFK 不能跨时段跳过。
 - 关键词不是状态写入授权：不要只因为玩家或叙事文本里出现“退场、退休、被驱逐、结局、终幕、天亮、第二天”等词，就改变角色状态、关闭 scene thread、结束战斗或推进时间线。状态变化必须来自显式工具参数、结构化补丁、规则/回合工具结果或独立审计证据。
 - `update_scene` 的 summary/current_objective/current_conflict/stakes 只是叙事记录；关闭线程必须显式写 `status="closed"/"resolved"/"retired"/"archived"`，跨时段必须显式写全局 `timeline_patch` 或调用 `cycle_control`。
+- 已声明的物理环境和设备能力是连续性事实：水下/干燥、封闭/开口、重力/浮力、压力密封、载具是否能飞行或悬停等不能在相邻回复里反复反转。玩家指出物理矛盾时，先核对当前 scene、scene_threads 和最近审计；若确实矛盾，明确承认并以最新权威状态修正，不能为了圆场临时新增未记录的设备能力。
 - RA 只读取 `ra_cycle_input` 过滤投影和清洗后的权威字段快照，不读取完整 `GameSession`、原始玩家输入、prompt、诊断字段或 raw audit。
 - RA 输出的状态字段只是补丁候选；框架只应用 allowlisted、tool-backed、validator 通过的权威字段。"""
 

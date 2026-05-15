@@ -2,6 +2,18 @@
 
 所有已经合入 `main` 的用户可见变更都记录在这里。日期使用香港时区对应的开发日期。
 
+## [0.1.107] - 2026-05-15
+
+### Fixed
+
+- 开场后 `update_world_tags` 会拒绝改写核心世界观字段，例如 `genre`、`tone`、`ruleset`、`world_rules`、`starting_premise` 和 `campaign_background`，避免单句场外设定被写成全团共识。
+- 系统提示新增物理环境和设备能力连续性约束；玩家指出水下/干燥、浮力/重力、载具能否飞行或悬停等矛盾时，必须先核对状态并承认修正，不能临时给设备补未记录能力来圆场。
+
+### Verified
+
+- `python -m pytest tests/test_memory_tools.py tests/test_prompts.py tests/test_router_usage.py -q`
+- `python -m pytest -q`
+
 ## [0.1.106] - 2026-05-15
 
 ### Fixed

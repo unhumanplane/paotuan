@@ -892,6 +892,70 @@ def test_update_world_tags_normalizes_faction_relationship_state(tmp_path):
     assert relation["secret_allegiance"] == "走私团"
 
 
+def test_update_world_tags_rejects_core_world_rewrite_after_start(tmp_path):
+    repository = JsonGameRepository(tmp_path / "data")
+    session = GameSession.new("group")
+    session.world_tags.update(
+        {
+            "_background_ready": True,
+            "_plot_locked": True,
+            "genre": "modern expedition",
+            "tone": "grounded mystery",
+            "starting_premise": "A polar survey finds an anomalous signal.",
+        }
+    )
+    session.scene["_game_started"] = True
+    session.scene["_plot_locked"] = True
+    repository.save_session(session)
+
+    tools = MemoryTools(repository, "group", actor={"player_id": "p1"}, message="/dm add WOD magic")
+    result = asyncio.run(
+        tools.update_world_tags(
+            {
+                "genre": "World of Darkness",
+                "ruleset": "Magic works when ordinary people cannot see it.",
+                "world_rules": "Consensus backlash applies to witnessed magic.",
+            }
+        )
+    )
+
+    saved = repository.load_session("group")
+    audit_records = repository.last_audit_records("group", limit=1)
+
+    assert result["ok"] is False
+    assert result["error"] == "world_tags_locked_after_start"
+    assert set(result["locked_keys"]) == {"genre", "ruleset", "world_rules"}
+    assert saved.world_tags["genre"] == "modern expedition"
+    assert "ruleset" not in saved.world_tags
+    assert "world_rules" not in saved.world_tags
+    assert audit_records[0]["result"]["error"] == "world_tags_locked_after_start"
+
+
+def test_update_world_tags_allows_runtime_adjudication_after_start(tmp_path):
+    repository = JsonGameRepository(tmp_path / "data")
+    session = GameSession.new("group")
+    session.world_tags.update(
+        {
+            "_background_ready": True,
+            "_plot_locked": True,
+            "genre": "modern expedition",
+            "tone": "grounded mystery",
+            "starting_premise": "A polar survey finds an anomalous signal.",
+        }
+    )
+    session.scene["_game_started"] = True
+    session.scene["_plot_locked"] = True
+    repository.save_session(session)
+
+    tools = MemoryTools(repository, "group", actor={"player_id": "p1"}, message="/dm 裁定严格一点")
+    result = asyncio.run(tools.update_world_tags({"adjudication": {"dice": "strict", "risk": "explicit"}}))
+
+    saved = repository.load_session("group")
+
+    assert result["ok"] is True
+    assert saved.world_tags["adjudication"]["dice"] == "strict"
+
+
 def test_update_character_tags_allows_runtime_relation_consequence_after_start(tmp_path):
     repository = JsonGameRepository(tmp_path / "data")
     session = GameSession.new("group")
