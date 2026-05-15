@@ -1741,7 +1741,7 @@ class IntentRouter:
                     args = {}
                 args = self._repair_tool_args(tool_name, args, raw_player_message)
                 guard_block: dict[str, Any] = {}
-                if tool_name in {"execute_rule", "update_scene", "update_character_tags"}:
+                if tool_name in {"resolve_check", "execute_rule", "update_scene", "update_character_tags"}:
                     try:
                         guard_session = self.repository.load_session(session_id)
                     except Exception:
@@ -1820,18 +1820,18 @@ class IntentRouter:
                 prompt = "同一个工具连续失败。请不要继续重复调用它，基于失败原因向玩家说明无法完成、给出可选行动，或提出一个必要的澄清问题。"
             elif _player_consent_guard_blocked(tool_results):
                 prompt = (
-                    "玩家同意边界守卫已拒绝本轮工具结算。不要继续调用 execute_rule 或状态写入把接触/骚扰/强制互动判成成功；"
+                    "玩家同意边界守卫已拒绝本轮工具结算。不要继续调用 resolve_check、execute_rule 或状态写入把接触/骚扰/强制互动判成成功；"
                     "请简短说明需要被影响玩家明确同意，或把行动改成不侵犯他人角色主权的尝试。"
                 )
             elif _modifier_review_guard_blocked(tool_results):
                 prompt = (
-                    "规则检定已被修正值复核守卫拒绝。不要继续用缺少装备/熟练/优势/加成说明的 execute_rule；"
+                    "规则检定已被修正值复核守卫拒绝。不要继续用缺少装备/熟练/优势/加成说明的 resolve_check 或 execute_rule；"
                     "请先说明会纳入哪些修正，必要时查询规则或让玩家确认，再重新检定。"
                 )
             elif _state_write_guard_blocked(tool_results):
                 prompt = (
                     "状态写入已被守卫拒绝。不要继续调用 update_scene 写入成功事实；"
-                    "请改用 execute_rule、战棋/回合工具完成客观结算，或向玩家说明这步仍未结算、需要确认目标和检定方式。"
+                    "请改用 resolve_check、execute_rule、战棋/回合工具完成客观结算，或向玩家说明这步仍未结算、需要确认目标和检定方式。"
                 )
             elif (
                 map_guard.visual_map_request
@@ -3550,6 +3550,7 @@ def _action_economy_guard_reply(session: Any, actor: dict[str, str], message: st
 
 
 OBJECTIVE_ADJUDICATION_TOOLS = {
+    "resolve_check",
     "execute_rule",
     "move_entity",
     "check_attack_vector",
@@ -3871,7 +3872,7 @@ def _adjudication_completeness_guard(
     if not _completion_claims_resolved_outcome(reply):
         return {}
 
-    has_roll_support = "execute_rule" in successful_tools
+    has_roll_support = bool(successful_tools.intersection({"resolve_check", "execute_rule"}))
     has_spatial_support = bool(successful_tools.intersection({"move_entity", "check_attack_vector", "create_grid", "place_entity"}))
     has_turn_support = "turn_control" in successful_tools
     has_state_support = bool(successful_tools.intersection({"update_scene", "update_character_tags", "start_game", "cycle_control"}))
@@ -3913,7 +3914,7 @@ def _guard_tool_call_before_execution(
     consent_block = _tool_call_requires_player_consent(player_message, tool_name=tool_name)
     if consent_block:
         return consent_block
-    if tool_name == "execute_rule":
+    if tool_name in {"resolve_check", "execute_rule"}:
         modifier_block = _tool_call_requires_modifier_review(player_message, args)
         if modifier_block:
             return modifier_block
@@ -3925,7 +3926,7 @@ def _guard_tool_call_before_execution(
 
 
 def _tool_call_requires_player_consent(player_message: str, *, tool_name: str) -> dict[str, Any]:
-    if tool_name not in {"execute_rule", "update_scene", "update_character_tags"}:
+    if tool_name not in {"resolve_check", "execute_rule", "update_scene", "update_character_tags"}:
         return {}
     text = str(player_message or "").strip().lower()
     if not text:
@@ -3957,7 +3958,7 @@ def _tool_call_requires_modifier_review(player_message: str, args: dict[str, Any
         "error": "modifier_review_required",
         "reason": "player_stated_modifier_not_declared",
         "message": (
-            "玩家原文提到了装备、熟练、优势、加成或修正来源；execute_rule 参数或 reason 未说明这些修正是否纳入。"
+            "玩家原文提到了装备、熟练、优势、加成或修正来源；resolve_check/execute_rule 参数、modifier_note 或 reason 未说明这些修正是否纳入。"
             "请先列明采用/不采用的修正，再进行检定。"
         ),
         "modifier_terms_detected": [
@@ -3977,7 +3978,7 @@ def _tool_call_requires_adjudication_support(
     text = str(player_message or "").strip().lower()
     if not text or _contains_any_term(text, LOW_RISK_DIRECT_TERMS):
         return {}
-    invalid_rule_result = _first_invalid_rule_argument_result(tool_results)
+    invalid_rule_result = _latest_invalid_rule_argument_result_without_later_success(tool_results)
     if invalid_rule_result:
         return _blocked_state_write_result(
             "invalid_rule_arguments_block_state_write",
@@ -4008,21 +4009,27 @@ def _objective_tool_support(tool_results: list[dict[str, Any]]) -> dict[str, boo
         if isinstance(item, dict) and _tool_result_ok(item.get("result"))
     }
     return {
-        "roll": "execute_rule" in successful_tools,
+        "roll": bool(successful_tools.intersection({"resolve_check", "execute_rule"})),
         "spatial": bool(successful_tools.intersection({"move_entity", "check_attack_vector", "create_grid", "place_entity"})),
         "turn": "turn_control" in successful_tools,
         "objective": bool(successful_tools.intersection(OBJECTIVE_ADJUDICATION_TOOLS)),
     }
 
 
-def _first_invalid_rule_argument_result(tool_results: list[dict[str, Any]]) -> dict[str, Any]:
+def _latest_invalid_rule_argument_result_without_later_success(tool_results: list[dict[str, Any]]) -> dict[str, Any]:
+    latest_invalid: dict[str, Any] = {}
     for item in tool_results:
-        if not isinstance(item, dict) or item.get("tool") != "execute_rule":
+        if not isinstance(item, dict) or item.get("tool") not in {"resolve_check", "execute_rule"}:
             continue
         result = item.get("result")
-        if isinstance(result, dict) and result.get("ok") is False and result.get("error") == "invalid_rule_arguments":
-            return result
-    return {}
+        if not isinstance(result, dict):
+            continue
+        if _tool_result_ok(result):
+            latest_invalid = {}
+            continue
+        if result.get("error") == "invalid_rule_arguments":
+            latest_invalid = result
+    return latest_invalid
 
 
 def _blocked_state_write_result(
@@ -4037,7 +4044,7 @@ def _blocked_state_write_result(
         "reason": reason,
         "message": (
             "这步涉及风险、对抗或客观状态变化，当前检定或规则参数未通过；没有写入场景。"
-            "请先用 execute_rule、战棋或回合工具完成结算。"
+            "请先用 resolve_check、execute_rule、战棋或回合工具完成结算。"
         ),
         "tool_names": [str(item.get("tool") or "") for item in tool_results if isinstance(item, dict)],
     }

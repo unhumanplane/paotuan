@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import random
 import re
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field
@@ -31,6 +33,31 @@ class ExecuteRuleArgs(BaseModel):
     args: Dict[str, Any] = Field(default_factory=dict, description="传给 calculate 的参数字典")
     version: Optional[int] = Field(default=None, description="可选规则版本；为空则使用最新版")
     reason: str = Field(default="", description="为什么进行这次检定/掷骰；不要放进 args，避免影响规则函数入参")
+
+
+class ResolveCheckArgs(BaseModel):
+    action: str = Field(..., description="Concrete action being attempted.")
+    actor_id: str = Field(default="", description="Character id when known, e.g. pc_yaka.")
+    actor_name: str = Field(default="", description="Character or NPC name when id is unknown.")
+    check_type: str = Field(default="skill", description="skill, ability, tool, social, stealth, perception, knowledge, mechanical, or custom.")
+    ability: str = Field(default="", description="Optional ability context.")
+    skill: str = Field(default="", description="Optional skill or tool context.")
+    dc: Optional[Any] = Field(default=None, description="Numeric DC when known.")
+    target_dc: Optional[Any] = Field(default=None, description="Alias for dc.")
+    difficulty: Optional[Any] = Field(default="", description="easy/medium/hard/very_hard/extreme, simple/moderate, or numeric DC.")
+    bonus: Optional[Any] = Field(default=None, description="Final total modifier; prefer this over separate fields.")
+    modifier: Optional[Any] = Field(default=None, description="Alias for final total modifier when bonus is not known.")
+    ability_modifier: Optional[Any] = Field(default=None, description="Ability modifier to add when bonus is not supplied.")
+    proficiency_bonus: Optional[Any] = Field(default=None, description="Proficiency modifier to add when bonus is not supplied.")
+    skill_bonus: Optional[Any] = Field(default=None, description="Skill/tool modifier to add when bonus is not supplied.")
+    item_bonus: Optional[Any] = Field(default=None, description="Equipment modifier to add when bonus is not supplied.")
+    situational_bonus: Optional[Any] = Field(default=None, description="Situational modifier to add when bonus is not supplied.")
+    penalty: Optional[Any] = Field(default=None, description="Penalty to subtract when bonus is not supplied.")
+    modifier_note: str = Field(default="", description="Explain bonuses, proficiency, gear, advantage, penalties, or exclusions.")
+    advantage: Any = Field(default="normal", description="normal, advantage, disadvantage, true, or false.")
+    disadvantage: Any = Field(default=None, description="Set true as an alias for advantage='disadvantage'.")
+    stakes: str = Field(default="", description="Success, partial success, and failure stakes.")
+    reason: str = Field(default="", description="Why this check is required.")
 
 
 class ListRulesArgs(BaseModel):
@@ -140,6 +167,170 @@ class RuleTools:
                 },
                 "result": result,
             },
+        )
+        return result
+
+    async def resolve_check(
+        self,
+        action: str = "",
+        actor_id: str = "",
+        actor_name: str = "",
+        check_type: str = "skill",
+        ability: str = "",
+        skill: str = "",
+        dc: Optional[Any] = None,
+        target_dc: Optional[Any] = None,
+        difficulty: Optional[Any] = "",
+        bonus: Optional[Any] = None,
+        modifier: Optional[Any] = None,
+        ability_modifier: Optional[Any] = None,
+        proficiency_bonus: Optional[Any] = None,
+        skill_bonus: Optional[Any] = None,
+        item_bonus: Optional[Any] = None,
+        situational_bonus: Optional[Any] = None,
+        penalty: Optional[Any] = None,
+        modifier_note: str = "",
+        advantage: Any = "normal",
+        disadvantage: Any = None,
+        stakes: str = "",
+        reason: str = "",
+        **extra_context: Any,
+    ) -> Dict[str, Any]:
+        action_text = str(action or "").strip()
+        numeric_context = {
+            "modifier": modifier,
+            "ability_modifier": ability_modifier,
+            "proficiency_bonus": proficiency_bonus,
+            "skill_bonus": skill_bonus,
+            "item_bonus": item_bonus,
+            "situational_bonus": situational_bonus,
+            "penalty": penalty,
+            **extra_context,
+        }
+        dc_source = dc if dc not in (None, "") else target_dc
+        advantage_context = dict(extra_context)
+        if disadvantage is not None:
+            advantage_context["disadvantage"] = disadvantage
+        input_payload = {
+            "action": action,
+            "actor_id": actor_id,
+            "actor_name": actor_name,
+            "check_type": check_type,
+            "ability": ability,
+            "skill": skill,
+            "dc": dc,
+            "target_dc": target_dc,
+            "difficulty": difficulty,
+            "bonus": bonus,
+            "modifier": modifier,
+            "ability_modifier": ability_modifier,
+            "proficiency_bonus": proficiency_bonus,
+            "skill_bonus": skill_bonus,
+            "item_bonus": item_bonus,
+            "situational_bonus": situational_bonus,
+            "penalty": penalty,
+            "modifier_note": modifier_note,
+            "advantage": advantage,
+            "disadvantage": disadvantage,
+            "stakes": stakes,
+            "reason": reason,
+            "extra_context": extra_context,
+        }
+        if not action_text:
+            result = {
+                "ok": False,
+                "error": "missing_check_action",
+                "message": "resolve_check requires a concrete action.",
+            }
+            self.repository.append_audit(
+                self.session_id,
+                {"type": "tool", "tool": "resolve_check", "input": input_payload, "result": result},
+            )
+            return result
+
+        dc_value, dc_warning = _resolve_check_dc(dc_source, difficulty)
+        bonus_value = _resolve_check_bonus(bonus, numeric_context)
+        advantage_mode = _normalize_advantage(advantage, advantage_context)
+        rolls = _roll_d20_for_advantage(advantage_mode)
+        kept_roll = max(rolls) if advantage_mode == "advantage" else min(rolls) if advantage_mode == "disadvantage" else rolls[0]
+        total = kept_roll + bonus_value
+        margin = total - dc_value
+        outcome = _check_outcome(kept_roll=kept_roll, total=total, dc=dc_value)
+        success = outcome in {"critical_success", "success"}
+        check_id = _new_check_id(actor_id=actor_id, actor_name=actor_name)
+        normalized_args = {
+            "actor_id": str(actor_id or "").strip(),
+            "actor_name": str(actor_name or "").strip(),
+            "action": action_text,
+            "check_type": str(check_type or "skill").strip() or "skill",
+            "ability": str(ability or "").strip(),
+            "skill": str(skill or "").strip(),
+            "dc": dc_value,
+            "bonus": bonus_value,
+            "advantage": advantage_mode,
+            "modifier_note": str(modifier_note or "").strip(),
+            "stakes": str(stakes or "").strip(),
+            "reason": str(reason or "").strip(),
+        }
+        roll_record = {
+            "expression": "2d20kh1" if advantage_mode == "advantage" else "2d20kl1" if advantage_mode == "disadvantage" else "1d20",
+            "rolls": rolls,
+            "modifier": bonus_value,
+            "total": total,
+        }
+        result_payload = {
+            "roll": kept_roll,
+            "total": total,
+            "modifier": bonus_value,
+            "dc": dc_value,
+            "success": success,
+            "outcome": outcome,
+            "margin": margin,
+        }
+        result: Dict[str, Any] = {
+            "ok": True,
+            "tool": "resolve_check",
+            "check_id": check_id,
+            "actor_id": normalized_args["actor_id"],
+            "actor_name": normalized_args["actor_name"],
+            "action": action_text,
+            "check_type": normalized_args["check_type"],
+            "ability": normalized_args["ability"],
+            "skill": normalized_args["skill"],
+            "dc": dc_value,
+            "bonus": bonus_value,
+            "advantage": advantage_mode,
+            "rolls": [roll_record],
+            "result": result_payload,
+            "check": {
+                "rule_name": "resolve_check",
+                "total": total,
+                "dc": dc_value,
+                "success": success,
+                "margin": margin,
+            },
+            "state_write_support": True,
+            "narrative_guidance": _narrative_guidance_for_outcome(outcome),
+            "normalized_args": {
+                key: value for key, value in normalized_args.items() if value not in ("", None)
+            },
+        }
+        if dc_warning:
+            result["warnings"] = [dc_warning]
+        if extra_context:
+            result["extra_context"] = _json_safe(extra_context)
+        self._queue_dice_check(
+            rule_name="resolve_check",
+            args=normalized_args,
+            version=None,
+            reason=reason or action_text,
+            result=result,
+        )
+        result["dice_check_note_queued"] = True
+        input_payload["normalized_args"] = normalized_args
+        self.repository.append_audit(
+            self.session_id,
+            {"type": "tool", "tool": "resolve_check", "input": input_payload, "result": result},
         )
         return result
 
@@ -299,8 +490,29 @@ def _normalize_execute_rule_args(rule_name: str, args: Dict[str, Any]) -> Dict[s
     normalized = _drop_contextual_rule_args(normalized)
     if not _is_d20_like_rule(rule_name):
         return normalized
+    normalized = _normalize_d20_rule_args(normalized)
+    return {
+        key: value
+        for key, value in normalized.items()
+        if str(key) not in D20_CONTEXTUAL_RULE_ARGS
+    }
+
+
+def _normalize_d20_rule_args(args: Dict[str, Any]) -> Dict[str, Any]:
+    normalized = dict(args or {})
+    has_dc_like = any(
+        key in normalized
+        for key in ("dc", "target_dc", "difficulty_class", "target_number", "threshold", "difficulty")
+    )
+    if has_dc_like:
+        dc_value, _warning = _resolve_check_dc(
+            _first_existing_value(normalized, ("dc", "target_dc", "difficulty_class", "target_number", "threshold")),
+            normalized.get("difficulty"),
+        )
+        normalized["dc"] = dc_value
+    for key in ("target_dc", "difficulty_class", "target_number", "threshold", "difficulty"):
+        normalized.pop(key, None)
     bonus_terms = (
-        "bonus",
         "skill_bonus",
         "ability_bonus",
         "ability_modifier",
@@ -313,19 +525,24 @@ def _normalize_execute_rule_args(rule_name: str, args: Dict[str, Any]) -> Dict[s
         "long_term_bonus",
         "longterm_bonus",
     )
-    modifier = _number_or_none(normalized.get("modifier"))
-    modifier_was_missing = modifier is None
-    if modifier is None:
-        modifier = 0
-    for key in bonus_terms:
-        value = _number_or_none(normalized.get(key))
-        if value is not None:
-            modifier += value
+    explicit_bonus = _number_or_none(normalized.get("bonus"))
+    if explicit_bonus is not None:
+        modifier = explicit_bonus
+    else:
+        modifier = _number_or_none(normalized.get("modifier"))
+        if modifier is None:
+            modifier = 0
+        for key in bonus_terms:
+            value = _number_or_none(normalized.get(key))
+            if value is not None:
+                modifier += value
     penalty = _number_or_none(normalized.get("penalty"))
     if penalty is not None:
         modifier -= abs(penalty)
-    if modifier or modifier_was_missing:
-        normalized["modifier"] = int(modifier) if float(modifier).is_integer() else modifier
+    normalized["bonus"] = int(modifier) if float(modifier).is_integer() else modifier
+    normalized.pop("modifier", None)
+    for key in bonus_terms + ("penalty",):
+        normalized.pop(key, None)
     return normalized
 
 
@@ -347,6 +564,21 @@ CONTEXTUAL_EXECUTE_RULE_ARGS = {
     "target_position",
     "target_size",
     "terrain",
+}
+
+
+D20_CONTEXTUAL_RULE_ARGS = CONTEXTUAL_EXECUTE_RULE_ARGS | {
+    "ability",
+    "advantage",
+    "character_name",
+    "check_type",
+    "description",
+    "disadvantage",
+    "modifier_note",
+    "proficiency",
+    "proficient",
+    "skill",
+    "stakes",
 }
 
 
@@ -430,6 +662,130 @@ def _number_or_none(value: Any) -> float | None:
         return float(text)
     except ValueError:
         return None
+
+
+def _first_existing_value(mapping: Dict[str, Any], keys: tuple[str, ...]) -> Any:
+    for key in keys:
+        if key in mapping and mapping.get(key) not in (None, ""):
+            return mapping.get(key)
+    return None
+
+
+DIFFICULTY_DC_MAP = {
+    "trivial": 5,
+    "very_easy": 8,
+    "very easy": 8,
+    "easy": 10,
+    "medium": 15,
+    "moderate": 15,
+    "normal": 15,
+    "hard": 18,
+    "very_hard": 22,
+    "very hard": 22,
+    "extreme": 25,
+    "nearly_impossible": 30,
+    "nearly impossible": 30,
+    "simple": 10,
+    "简单": 10,
+    "容易": 10,
+    "普通": 15,
+    "一般": 15,
+    "中等": 15,
+    "困难": 18,
+    "很难": 22,
+    "极难": 25,
+    "近乎不可能": 30,
+    "几乎不可能": 30,
+}
+
+
+def _resolve_check_dc(dc: Any, difficulty: Any = "") -> tuple[int, str]:
+    dc_number = _number_or_none(dc)
+    if dc_number is not None:
+        return _clamp_int(dc_number, default=10, minimum=1, maximum=40), ""
+    difficulty_number = _number_or_none(difficulty)
+    if difficulty_number is not None:
+        return _clamp_int(difficulty_number, default=10, minimum=1, maximum=40), ""
+    key = str(difficulty or "").strip().lower().replace("-", "_")
+    if key in DIFFICULTY_DC_MAP:
+        value = DIFFICULTY_DC_MAP[key]
+        return value, f"mapped difficulty {difficulty!r} to DC {value}"
+    return 10, "defaulted missing difficulty to DC 10"
+
+
+def _resolve_check_bonus(bonus: Any, extra_context: Dict[str, Any]) -> int:
+    explicit_bonus = _number_or_none(bonus)
+    if explicit_bonus is not None:
+        return int(round(explicit_bonus))
+    total = 0.0
+    found = False
+    for key in (
+        "modifier",
+        "skill_bonus",
+        "ability_bonus",
+        "ability_modifier",
+        "proficiency_bonus",
+        "situational_bonus",
+        "item_bonus",
+        "temporary_bonus",
+        "temp_bonus",
+    ):
+        value = _number_or_none(extra_context.get(key))
+        if value is not None:
+            total += value
+            found = True
+    penalty = _number_or_none(extra_context.get("penalty"))
+    if penalty is not None:
+        total -= abs(penalty)
+        found = True
+    return int(round(total)) if found else 0
+
+
+def _normalize_advantage(advantage: Any, extra_context: Dict[str, Any]) -> str:
+    if isinstance(advantage, bool):
+        return "advantage" if advantage else "normal"
+    if isinstance(extra_context.get("disadvantage"), bool) and extra_context.get("disadvantage"):
+        return "disadvantage"
+    text = str(advantage or "").strip().lower()
+    if text in {"adv", "advantage", "true", "yes", "y", "优势", "有优势"}:
+        return "advantage"
+    if text in {"dis", "disadvantage", "disadv", "劣势", "有劣势"}:
+        return "disadvantage"
+    return "normal"
+
+
+def _roll_d20_for_advantage(advantage: str) -> list[int]:
+    if advantage in {"advantage", "disadvantage"}:
+        return [random.randint(1, 20), random.randint(1, 20)]
+    return [random.randint(1, 20)]
+
+
+def _check_outcome(*, kept_roll: int, total: int, dc: int) -> str:
+    if kept_roll == 20 and total >= dc:
+        return "critical_success"
+    if kept_roll == 1 and total < dc:
+        return "failure"
+    if total >= dc:
+        return "success"
+    if total >= dc - 5:
+        return "partial_success"
+    return "failure"
+
+
+def _narrative_guidance_for_outcome(outcome: str) -> str:
+    if outcome == "critical_success":
+        return "The action succeeds cleanly; add an extra benefit only if it fits the scene."
+    if outcome == "success":
+        return "The action succeeds; write only consequences supported by the check."
+    if outcome == "partial_success":
+        return "The action may progress, but include a cost, trace, complication, or limited effect."
+    return "The action fails or creates a serious complication; do not write a clean success."
+
+
+def _new_check_id(*, actor_id: str, actor_name: str) -> str:
+    actor = re.sub(r"[^a-zA-Z0-9_]+", "_", str(actor_id or actor_name or "actor")).strip("_") or "actor"
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S%f")
+    return f"chk_{stamp}_{actor}"[:80]
 
 
 def _roll_value_from_records(records: Any) -> float | None:

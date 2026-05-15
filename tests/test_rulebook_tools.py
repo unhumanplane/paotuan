@@ -24,4 +24,5 @@ def test_query_core_rules_does_not_write_session_state(tmp_path):
     assert result["ok"] is True
     assert result["available"] is True
     assert result["matches"]
+    assert any("普通 d20 检定用 resolve_check" in hint for hint in result["hints"])
     assert before == after

@@ -962,6 +962,85 @@ def test_router_blocks_update_scene_after_invalid_rule_arguments():
     assert tool_results[1]["result"]["invalid_rule_arguments"]["invalid_arguments"] == ["difficulty"]
 
 
+def test_router_allows_update_scene_after_later_successful_resolve_check():
+    class FakeToolCallResponse:
+        completion_text = ""
+        tools_call_name = ["execute_rule", "resolve_check", "update_scene"]
+        tools_call_args = [
+            {"rule_name": "d20_skill_check", "args": {"ability": "intelligence", "proficiency": True, "dc": 12}},
+            {"action": "组装炸药并遮掩痕迹", "dc": 12, "bonus": 3},
+            {"patch": {"summary": "雅卡组装好了炸药，但留下了可被细查发现的痕迹。"}},
+        ]
+        tool_calls = []
+
+    class FakeLoopLlm:
+        def __init__(self):
+            self.calls = 0
+
+        async def __call__(self, **kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                return FakeToolCallResponse()
+            return FakeLlmResponse("炸药已准备好，但客舱暗格里留下了草率遮掩的痕迹。")
+
+    class RecordingExecutor:
+        def __init__(self):
+            self.calls = []
+
+        async def execute(self, tool_name, args):
+            self.calls.append((tool_name, args))
+            if tool_name == "execute_rule":
+                return {
+                    "ok": False,
+                    "error": "invalid_rule_arguments",
+                    "unknown_arguments": ["ability", "proficiency"],
+                    "allowed_arguments": ["bonus", "dc"],
+                    "reason": "unknown rule arguments: ability, proficiency",
+                }
+            if tool_name == "resolve_check":
+                return {
+                    "ok": True,
+                    "tool": "resolve_check",
+                    "check_id": "chk_test",
+                    "state_write_support": True,
+                    "result": {"total": 13, "dc": 12, "success": True},
+                }
+            if tool_name == "update_scene":
+                return {"ok": True, "scene": {"summary": args["patch"]["summary"]}}
+            raise AssertionError(f"unexpected tool: {tool_name}")
+
+    async def run_case():
+        repository = InMemoryRepository()
+        session = GameSession.new("group-1")
+        session.world_tags["_plot_locked"] = True
+        session.scene["_game_started"] = True
+        repository.save_session(session)
+        router = IntentRouter.__new__(IntentRouter)
+        executor = RecordingExecutor()
+        router.max_steps = 2
+        router._llm_generate = FakeLoopLlm()
+        router.repository = repository
+
+        result = await router._run_llm_tool_loop(
+            chat_provider_id="fake-provider",
+            system_prompt="system",
+            initial_prompt="玩家行动",
+            toolset=object(),
+            tool_executor=executor,
+            session_id="group-1",
+            raw_player_message="我组装好炸药，设定时间为5分钟，再把笔记塞回去遮掩",
+            available_tool_names=["execute_rule", "resolve_check", "update_scene"],
+        )
+        return result, executor, repository.last_audit_records("group-1", limit=20)
+
+    result, executor, records = asyncio.run(run_case())
+    tool_results = records[-1]["tool_results"]
+
+    assert [name for name, _args in executor.calls] == ["execute_rule", "resolve_check", "update_scene"]
+    assert tool_results[2]["result"]["ok"] is True
+    assert result.completion_text == "炸药已准备好，但客舱暗格里留下了草率遮掩的痕迹。"
+
+
 def test_router_requires_state_write_for_major_outcome_claim():
     repository = InMemoryRepository()
     session = GameSession.new("group-1")

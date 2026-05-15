@@ -101,6 +101,28 @@ def test_tool_registry_always_exposes_final_response_tool():
     assert result == {"ok": True, "reply": "可以。"}
 
 
+def test_tool_registry_prefers_resolve_check_for_ordinary_d20_checks():
+    registry = _registry_with_ready_session()
+    _toolset, names, _executor, specs = registry.for_mode(
+        GameMode.NARRATIVE,
+        "group",
+        message="我搜索桌面上的暗格并说服守卫帮忙。",
+    )
+
+    assert names.index("resolve_check") < names.index("execute_rule")
+    resolve_spec = next(spec for spec in specs if spec["name"] == "resolve_check")
+    execute_spec = next(spec for spec in specs if spec["name"] == "execute_rule")
+    assert "Preferred tool for ordinary d20 checks" in resolve_spec["description"]
+    assert "do not call list_rules first for ordinary checks" in resolve_spec["description"]
+    assert "普通搜索、说服、潜行、破解、操作设备等 d20 检定优先使用 resolve_check" in execute_spec["description"]
+    resolve_properties = resolve_spec["parameters"]["properties"]
+    assert "modifier_note" in resolve_properties
+    assert "target_dc" in resolve_properties
+    assert "ability_modifier" in resolve_properties
+    assert "proficiency_bonus" in resolve_properties
+    assert "disadvantage" in resolve_properties
+
+
 def test_tool_registry_keeps_estimate_token_usage_for_diagnostic_requests():
     registry = _registry_with_ready_session()
     _toolset, names, _executor, _specs = registry.for_mode(

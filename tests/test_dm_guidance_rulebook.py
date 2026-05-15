@@ -43,7 +43,7 @@ def test_dm_guidance_query_hits_combat_narration():
         fallback_dirs=[Path("astrbot_plugin_auto_trpg_dm/rulebook/seed/dnd2024_core")],
     )
 
-    result = store.query("战斗中怎样叙述命中和伤害", mode_hint="tactical", limit=4)
+    result = store.query("战斗中怎样叙述命中和伤害", mode_hint="tactical", limit=4, max_chars=1600)
 
     assert result["ok"] is True
     assert any(item["id"] == "dmg2024.guidance.combat_narration" for item in result["matches"])

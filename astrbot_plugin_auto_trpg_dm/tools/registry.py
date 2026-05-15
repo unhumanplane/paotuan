@@ -33,7 +33,7 @@ from .overview_topology_render_tools import (
     OverviewTopologyRenderTools,
     RenderOverviewTopologySvgArgs,
 )
-from .rule_tools import ExecuteRuleArgs, ListRulesArgs, RegisterRuleArgs, RuleTools
+from .rule_tools import ExecuteRuleArgs, ListRulesArgs, RegisterRuleArgs, ResolveCheckArgs, RuleTools
 from .rulebook_tools import QueryCoreRulesArgs, RulebookTools
 from .spatial_tools import (
     CheckAttackVectorArgs,
@@ -238,10 +238,22 @@ class ToolRegistry:
                 model=RegisterRuleArgs,
                 handler=rule_tools.register_rule,
             ),
+            "resolve_check": make_tool(
+                name="resolve_check",
+                description=(
+                    "Preferred tool for ordinary d20 checks such as searching, persuading, sneaking, lockpicking, "
+                    "equipment operation, decoding, or risky preparation. Provide action, optional actor, dc or "
+                    "difficulty, final bonus, advantage/disadvantage, modifier_note, and stakes. It accepts natural "
+                    "check context like ability, skill, and proficiency; do not call list_rules first for ordinary checks."
+                ),
+                model=ResolveCheckArgs,
+                handler=rule_tools.resolve_check,
+            ),
             "execute_rule": make_tool(
                 name="execute_rule",
                 description=(
-                    "执行已注册规则，用于检定、伤害、资源消耗和随机判定。"
+                    "执行已注册规则，用于伤害、资源消耗、随机表、自定义机制或已注册规则。"
+                    "普通搜索、说服、潜行、破解、操作设备等 d20 检定优先使用 resolve_check。"
                     "如果玩家或角色状态提到武器/装备、熟练、属性、优势/劣势、buff、祝福或其他修正，"
                     "必须在 reason 或 args 中说明已纳入/未纳入的修正，不能漏算后直接投骰。"
                 ),
@@ -488,6 +500,7 @@ class ToolRegistry:
                 "update_world_tags",
                 "start_game",
                 "register_rule",
+                "resolve_check",
                 "execute_rule",
                 "list_rules",
                 "query_core_rules",
@@ -504,6 +517,7 @@ class ToolRegistry:
         if mode == GameMode.RULE_AUTHORING:
             return [
                 "register_rule",
+                "resolve_check",
                 "execute_rule",
                 "list_rules",
                 "query_core_rules",
@@ -532,6 +546,7 @@ class ToolRegistry:
                     "create_character",
                     "bind_player_character",
                     "update_character_tags",
+                    "resolve_check",
                     "execute_rule",
                     "register_rule",
                     "update_scene",
@@ -555,6 +570,7 @@ class ToolRegistry:
                     "end_combat",
                     "turn_control",
                     "query_core_rules",
+                    "resolve_check",
                     "execute_rule",
                     "update_scene",
                     "update_character_tags",
@@ -578,6 +594,7 @@ class ToolRegistry:
                     "query_core_rules",
                     "move_entity",
                     "check_attack_vector",
+                    "resolve_check",
                     "execute_rule",
                     "update_scene",
                     "update_character_tags",
@@ -607,6 +624,7 @@ class ToolRegistry:
                 return [
                     "get_battle_snapshot",
                     "query_core_rules",
+                    "resolve_check",
                     "execute_rule",
                     "register_rule",
                     "list_rules",
@@ -623,6 +641,7 @@ class ToolRegistry:
             return [
                 "get_battle_snapshot",
                 "turn_control",
+                "resolve_check",
                 "execute_rule",
                 "update_scene",
                 "update_character_tags",
@@ -633,6 +652,7 @@ class ToolRegistry:
             return [
                 "turn_control",
                 "query_core_rules",
+                "resolve_check",
                 "execute_rule",
                 "register_rule",
                 "update_character_tags",
@@ -651,6 +671,7 @@ class ToolRegistry:
             "update_character_tags",
             "start_game",
             "register_rule",
+            "resolve_check",
             "execute_rule",
             "list_rules",
             "session_control",
@@ -1165,7 +1186,7 @@ def _post_game_tool_names(message: str) -> list[str]:
         or _contains_any(text, RULE_QUERY_TERMS)
         or any(term in text for term in post_game_action_terms)
     ):
-        for name in ("execute_rule", "update_scene", "update_character_tags"):
+        for name in ("resolve_check", "execute_rule", "update_scene", "update_character_tags"):
             if name not in names:
                 names.insert(0, name)
     elif any(

@@ -213,13 +213,15 @@ def _normal_score(score: float) -> float:
 
 
 def _fit_payload(payload: dict[str, Any], max_chars: int) -> dict[str, Any]:
-    while payload.get("matches") and len(json.dumps(payload, ensure_ascii=False)) > max_chars:
-        payload["matches"] = payload["matches"][:-1]
     if payload.get("matches") and len(json.dumps(payload, ensure_ascii=False)) > max_chars:
         for match in payload["matches"]:
             match["summary"] = _limit_text(match.get("summary", ""), 180)
             match["procedure"] = [_limit_text(item, 80) for item in list(match.get("procedure") or [])[:3]]
             match["exceptions"] = [_limit_text(item, 80) for item in list(match.get("exceptions") or [])[:2]]
+            match["related_rule_ids"] = list(match.get("related_rule_ids") or [])[:3]
+            match["source_refs"] = list(match.get("source_refs") or [])[:1]
+    while payload.get("matches") and len(json.dumps(payload, ensure_ascii=False)) > max_chars:
+        payload["matches"] = payload["matches"][:-1]
     return payload
 
 
@@ -227,7 +229,7 @@ def _hints_for_matches(matches: list[dict[str, Any]]) -> list[str]:
     if not matches:
         return ["规则库没有命中；不要凭空编造具体书面规则，可按当前团风格给出临时裁定并标注。"]
     categories = {str(item.get("category") or "") for item in matches}
-    hints = ["query_core_rules 只提供规则摘要；数值检定、命中、豁免、伤害、治疗仍应调用 execute_rule。"]
+    hints = ["query_core_rules 只提供规则摘要；普通 d20 检定用 resolve_check，命中、豁免、伤害、治疗或已注册规则再用 execute_rule。"]
     if "dm_guidance" in categories:
         hints.append("DM 指引用于稳定裁定风格：以玩家引导和共同故事为主，规则限制作为公平护栏。")
     if categories.intersection({"combat", "action_economy"}):

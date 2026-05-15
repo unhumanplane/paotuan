@@ -2,6 +2,20 @@
 
 所有已经合入 `main` 的用户可见变更都记录在这里。日期使用香港时区对应的开发日期。
 
+## [0.1.108] - 2026-05-15
+
+### Fixed
+
+- 新增 `resolve_check` 工具作为普通 d20 检定入口，支持搜索、说服、潜行、破解、设备操作和冒险准备等自然语言字段，降低模型必须理解 `execute_rule` 注册规则入参的成本。
+- d20 类 `execute_rule` 会归一化 `difficulty`、`target_dc`、`ability_modifier`、`proficiency_bonus` 等常见 LLM 字段，并避免显式 `bonus` 与 `modifier` 被重复计入。
+- 状态写入守卫不再被早先失败的规则入参永久卡住；后续成功的 `resolve_check` 或 `execute_rule` 可以清除旧的 `invalid_rule_arguments` 阻塞。
+- 系统提示、工具描述和规则检索 hint 现在明确要求普通 d20 行动优先使用 `resolve_check`，自定义规则、伤害、资源消耗等再使用 `execute_rule`。
+
+### Verified
+
+- `python -m pytest tests/test_rule_tools.py tests/test_tool_registry.py tests/test_prompts.py tests/test_router_usage.py -q`
+- `python -m pytest -q`
+
 ## [0.1.107] - 2026-05-15
 
 ### Fixed
