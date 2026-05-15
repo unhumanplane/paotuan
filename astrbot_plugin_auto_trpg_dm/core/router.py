@@ -1750,6 +1750,7 @@ class IntentRouter:
                         guard_block = _guard_tool_call_before_execution(
                             raw_player_message,
                             all_tool_results + tool_results,
+                            session=guard_session,
                             tool_name=tool_name,
                             args=args,
                         )
@@ -1796,8 +1797,13 @@ class IntentRouter:
             else:
                 async with audit_lock:
                     self.repository.append_audit(session_id, audit_record)
+            tool_guard_blocked = (
+                _player_consent_guard_blocked(tool_results)
+                or _modifier_review_guard_blocked(tool_results)
+                or _state_write_guard_blocked(tool_results)
+            )
             final_reply = _final_response_reply(tool_results)
-            if final_reply is not None:
+            if final_reply is not None and not tool_guard_blocked:
                 completion_text = await guarded_completion(
                     self._sanitize_completion_text(final_reply)
                 )
@@ -3631,6 +3637,25 @@ SPATIAL_REQUIRED_ACTION_TERMS = (
     "坐标",
 )
 
+STRICT_SPATIAL_REQUIRED_ACTION_TERMS = (
+    "射程",
+    "视线",
+    "掩体",
+    "近战距离",
+    "远程射程",
+    "射程内",
+    "视线内",
+    "相邻",
+    "占位",
+    "格子",
+    "格内",
+    "格外",
+    "战棋",
+    "地图格",
+    "可攻击",
+    "攻击范围",
+)
+
 RESOLVED_OUTCOME_TERMS = (
     "成功",
     "命中",
@@ -3877,10 +3902,7 @@ def _adjudication_completeness_guard(
     has_turn_support = "turn_control" in successful_tools
     has_state_support = bool(successful_tools.intersection({"update_scene", "update_character_tags", "start_game", "cycle_control"}))
     needs_roll = _contains_any_term(text, ROLL_REQUIRED_ACTION_TERMS)
-    needs_spatial = _contains_any_term(text, SPATIAL_REQUIRED_ACTION_TERMS) or _contains_any_term(
-        text,
-        ("攻击", "射击", "近战", "远程", "冲锋"),
-    )
+    needs_spatial = _needs_strict_spatial_tool(text, session=session)
 
     if needs_roll and not has_roll_support:
         reason = "missing_execute_rule_for_risky_outcome"
@@ -3908,6 +3930,7 @@ def _guard_tool_call_before_execution(
     player_message: str,
     tool_results: list[dict[str, Any]],
     *,
+    session: Any | None = None,
     tool_name: str,
     args: dict[str, Any],
 ) -> dict[str, Any]:
@@ -3921,6 +3944,7 @@ def _guard_tool_call_before_execution(
     return _tool_call_requires_adjudication_support(
         player_message,
         tool_results,
+        session=session,
         tool_name=tool_name,
     )
 
@@ -3971,6 +3995,7 @@ def _tool_call_requires_adjudication_support(
     player_message: str,
     tool_results: list[dict[str, Any]],
     *,
+    session: Any | None = None,
     tool_name: str,
 ) -> dict[str, Any]:
     if tool_name != "update_scene":
@@ -3988,10 +4013,7 @@ def _tool_call_requires_adjudication_support(
     if _looks_like_rule_setup_request(text):
         return {}
     needs_roll = _contains_any_term(text, ROLL_REQUIRED_ACTION_TERMS)
-    needs_spatial = _contains_any_term(text, SPATIAL_REQUIRED_ACTION_TERMS) or _contains_any_term(
-        text,
-        ("近战距离", "远程射程", "冲锋", "射程内", "视线内"),
-    )
+    needs_spatial = _needs_strict_spatial_tool(text, session=session)
     if not (needs_roll or needs_spatial):
         return {}
     support = _objective_tool_support(tool_results)
@@ -4014,6 +4036,31 @@ def _objective_tool_support(tool_results: list[dict[str, Any]]) -> dict[str, boo
         "turn": "turn_control" in successful_tools,
         "objective": bool(successful_tools.intersection(OBJECTIVE_ADJUDICATION_TOOLS)),
     }
+
+
+def _needs_strict_spatial_tool(text: str, *, session: Any | None = None) -> bool:
+    if not text:
+        return False
+    if _contains_any_term(text, STRICT_SPATIAL_REQUIRED_ACTION_TERMS):
+        return True
+    if _contains_any_term(text, ("攻击", "射击", "近战", "远程", "冲锋")):
+        return True
+    if _session_has_active_tactical_space(session):
+        return _contains_any_term(text, SPATIAL_REQUIRED_ACTION_TERMS)
+    return False
+
+
+def _session_has_active_tactical_space(session: Any | None) -> bool:
+    if session is None:
+        return False
+    battle = getattr(session, "battle", {}) or {}
+    turn = battle.get("turn") if isinstance(battle.get("turn"), dict) else {}
+    mode = getattr(session, "mode", None)
+    return bool(
+        mode == GameMode.TACTICAL
+        or battle.get("active")
+        or turn.get("active")
+    )
 
 
 def _latest_invalid_rule_argument_result_without_later_success(tool_results: list[dict[str, Any]]) -> dict[str, Any]:

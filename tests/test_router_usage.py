@@ -1065,6 +1065,151 @@ def test_router_requires_state_write_for_major_outcome_claim():
     assert completion_guard["reason"] == "state_change_not_written"
 
 
+def test_completion_guard_allows_narrative_position_after_successful_check():
+    repository = InMemoryRepository()
+    session = GameSession.new("group-1")
+    session.world_tags["_plot_locked"] = True
+    session.scene["_game_started"] = True
+    repository.save_session(session)
+
+    completion_guard = _adjudication_completeness_guard(
+        session,
+        actor={"player_id": "p1"},
+        player_message="进门前按下炸弹启动键，将布包放在控制台下方，记录位置坐标，走向船尾深潜器。",
+        completion="计时器从5:00跳到4:59，炸药包已经藏进控制台下方线缆槽。你记录坐标后走向船尾深潜器。",
+        tool_results=[
+            {
+                "tool": "execute_rule",
+                "args": {"rule_name": "d20_skill_check", "args": {"bonus": 2, "dc": 14}},
+                "result": {"ok": True, "result": {"success": True, "total": 23, "dc": 14}},
+            }
+        ],
+    )
+
+    assert completion_guard == {}
+
+
+def test_completion_guard_still_requires_spatial_tool_for_tactical_movement():
+    repository = InMemoryRepository()
+    session = GameSession.new("group-1")
+    session.mode = GameMode.TACTICAL
+    session.world_tags["_plot_locked"] = True
+    session.scene["_game_started"] = True
+    session.battle = {"active": True}
+    repository.save_session(session)
+
+    completion_guard = _adjudication_completeness_guard(
+        session,
+        actor={"player_id": "p1"},
+        player_message="我移动到B3绕到敌人背后。",
+        completion="你已经绕到敌人背后，取得了更好的位置。",
+        tool_results=[
+            {
+                "tool": "execute_rule",
+                "args": {"rule_name": "acrobatics", "args": {"bonus": 2, "dc": 12}},
+                "result": {"ok": True, "result": {"success": True}},
+            }
+        ],
+    )
+
+    assert completion_guard["reason"] == "missing_spatial_or_turn_tool_for_positioned_outcome"
+
+
+def test_router_does_not_append_completeness_guard_after_successful_check_and_final_response():
+    class FakeToolCallResponse:
+        completion_text = ""
+        tools_call_name = ["execute_rule", "execute_rule", "update_scene", "final_response"]
+        tools_call_args = [
+            {
+                "rule_name": "d20_skill_check",
+                "args": {"skill": "stealth", "advantage": False, "bonus": 2, "dc": 14},
+                "reason": "非法参数复现旧模型第一次调用",
+            },
+            {
+                "rule_name": "d20_skill_check",
+                "args": {"bonus": 2, "dc": 14},
+                "reason": "雅卡隐蔽启动C4并藏入控制台下方线缆槽",
+            },
+            {
+                "patch": {
+                    "summary": "C4炸药已暗中启动并藏于控制台下。",
+                    "pressure_clock": {"label": "C4倒计时", "status": "active"},
+                }
+            },
+            {
+                "reply": "计时器从5:00跳到4:59，炸药包已经藏进控制台下方线缆槽。你记录坐标后走向船尾深潜器。"
+            },
+        ]
+        tool_calls = []
+
+    class FakeLoopLlm:
+        def __init__(self):
+            self.calls = 0
+
+        async def __call__(self, **kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                return FakeToolCallResponse()
+            return FakeLlmResponse("不应要求第二次补充。")
+
+    class RecordingExecutor:
+        def __init__(self):
+            self.calls = []
+
+        async def execute(self, tool_name, args):
+            self.calls.append((tool_name, args))
+            if tool_name == "execute_rule" and len(self.calls) == 1:
+                return {
+                    "ok": False,
+                    "error": "invalid_rule_arguments",
+                    "unknown_arguments": ["advantage", "skill"],
+                    "allowed_arguments": ["bonus", "dc"],
+                    "reason": "unknown rule arguments: advantage, skill",
+                }
+            if tool_name == "execute_rule":
+                return {"ok": True, "result": {"success": True, "total": 23, "dc": 14}}
+            if tool_name == "update_scene":
+                return {"ok": True, "scene": {"summary": args["patch"]["summary"]}}
+            if tool_name == "final_response":
+                return {"ok": True, "reply": args["reply"]}
+            raise AssertionError(f"unexpected tool: {tool_name}")
+
+    async def run_case():
+        repository = InMemoryRepository()
+        session = GameSession.new("group-1")
+        session.world_tags["_plot_locked"] = True
+        session.scene["_game_started"] = True
+        repository.save_session(session)
+        router = IntentRouter.__new__(IntentRouter)
+        executor = RecordingExecutor()
+        router.max_steps = 2
+        router._llm_generate = FakeLoopLlm()
+        router.repository = repository
+
+        result = await router._run_llm_tool_loop(
+            chat_provider_id="fake-provider",
+            system_prompt="system",
+            initial_prompt="玩家行动",
+            toolset=object(),
+            tool_executor=executor,
+            session_id="group-1",
+            raw_player_message="进门前按下炸弹启动键，将布包放在控制台下方，记录位置坐标，走向船尾深潜器。",
+            available_tool_names=["execute_rule", "update_scene", "final_response"],
+        )
+        return result, executor, repository.last_audit_records("group-1", limit=20)
+
+    result, executor, records = asyncio.run(run_case())
+
+    assert [name for name, _args in executor.calls] == [
+        "execute_rule",
+        "execute_rule",
+        "update_scene",
+        "final_response",
+    ]
+    assert result.completion_text == "计时器从5:00跳到4:59，炸药包已经藏进控制台下方线缆槽。你记录坐标后走向船尾深潜器。"
+    assert not [record for record in records if record.get("type") == "adjudication_completeness_guard"]
+
+
 def test_router_blocks_consent_bypass_execute_rule():
     class FakeToolCallResponse:
         completion_text = ""
