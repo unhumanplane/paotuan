@@ -136,6 +136,53 @@ def test_router_uses_detected_mode_for_routing_without_persisting_keyword_mode()
     assert handled[-1]["mode"] == GameMode.CHARACTER_CREATION.value
     assert saved.mode == GameMode.NARRATIVE
 
+
+def test_router_serializes_narrative_llm_for_same_session():
+    repository = InMemoryRepository()
+    session = repository.load_session("group-1")
+    session.scene["_game_started"] = True
+    active_calls = 0
+    max_active_calls = 0
+
+    async def run_case():
+        release_first = asyncio.Event()
+
+        class BlockingAstrContext(FakeAstrContext):
+            async def llm_generate(self, **kwargs):
+                nonlocal active_calls, max_active_calls
+                active_calls += 1
+                max_active_calls = max(max_active_calls, active_calls)
+                self.calls.append(kwargs)
+                try:
+                    if len(self.calls) == 1:
+                        await release_first.wait()
+                        return FakeLlmResponse("first done")
+                    return FakeLlmResponse("second done")
+                finally:
+                    active_calls -= 1
+
+        astr_context = BlockingAstrContext("first done", "second done")
+        router = IntentRouter(
+            astr_context=astr_context,
+            repository=repository,
+            tool_registry=FakeToolRegistry(),
+            continuity_auditor_enabled=False,
+        )
+        first = asyncio.create_task(router.handle_message(FakeEvent("我调查控制台")))
+        await asyncio.sleep(0)
+        second = asyncio.create_task(router.handle_message(FakeEvent("我查看日志")))
+        await asyncio.sleep(0.05)
+        assert len(astr_context.calls) == 1
+        release_first.set()
+        return await asyncio.gather(first, second), astr_context
+
+    replies, astr_context = asyncio.run(run_case())
+
+    assert replies == ["first done", "second done"]
+    assert len(astr_context.calls) == 2
+    assert max_active_calls == 1
+
+
 def test_extract_llm_usage_summary_reads_anthropic_cache_fields():
     summary = _extract_llm_usage_summary(
         {

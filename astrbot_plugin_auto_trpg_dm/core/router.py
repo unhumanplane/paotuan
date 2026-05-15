@@ -420,25 +420,22 @@ class IntentRouter:
         provider_id = await self.astr_context.get_current_chat_provider_id(
             umo=event.unified_msg_origin
         )
-        if await self._should_serialize_llm(session_id, message, lock):
-            turn_lock = self._turn_lock_for_session(session_id)
-            async with turn_lock:
-                return await self._handle_message_once(
-                    message=message,
-                    session_id=session_id,
-                    actor=actor,
-                    lock=lock,
-                    provider_id=provider_id,
-                    security_notes=security_notes,
-                )
-        return await self._handle_message_once(
-            message=message,
-            session_id=session_id,
-            actor=actor,
-            lock=lock,
-            provider_id=provider_id,
-            security_notes=security_notes,
-        )
+        turn_lock = self._turn_lock_for_session(session_id)
+        if turn_lock.locked():
+            get_plugin_logger().info(
+                "session_llm_queued session=%s actor=%s",
+                session_id,
+                actor.get("player_id", ""),
+            )
+        async with turn_lock:
+            return await self._handle_message_once(
+                message=message,
+                session_id=session_id,
+                actor=actor,
+                lock=lock,
+                provider_id=provider_id,
+                security_notes=security_notes,
+            )
 
     async def _handle_message_once(
         self,
@@ -1465,17 +1462,6 @@ class IntentRouter:
             lock = asyncio.Lock()
             self._session_turn_locks[session_id] = lock
         return lock
-
-    async def _should_serialize_llm(
-        self,
-        session_id: str,
-        message: str,
-        lock: asyncio.Lock,
-    ) -> bool:
-        async with lock:
-            session = self.repository.load_session(session_id)
-            mode = self.mode_machine.detect(session, message)
-            return mode == GameMode.TACTICAL
 
     @staticmethod
     def _touch_participant(session: Any, actor: dict[str, str]) -> None:

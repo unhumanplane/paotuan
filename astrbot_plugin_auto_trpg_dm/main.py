@@ -43,7 +43,7 @@ from .tools.registry import ToolRegistry
 from .tools.turn_tools import TurnTools
 
 
-PLUGIN_VERSION = "0.1.105"
+PLUGIN_VERSION = "0.1.106"
 
 DEFAULT_REASSURANCE_PHRASES = (
     "正在翻找合适的骰子。",
@@ -178,6 +178,7 @@ REASSURANCE_CHOICE_TERMS = (
 )
 class AutoTrpgDmPlugin(Star):
     DEDUP_WINDOW_SECONDS = 18.0
+    IN_FLIGHT_DUPLICATE_WINDOW_SECONDS = 300.0
     ACTION_PACING_SECONDS = 12
     HEARTBEAT_INTERVAL_SECONDS = 60
     DM_ACK_COOLDOWN_SECONDS = 10.0
@@ -188,6 +189,7 @@ class AutoTrpgDmPlugin(Star):
         self.astr_context = context
         self.trigger_prefixes = ["/dm"]
         self._recent_dm_messages: dict[tuple[str, str, str], float] = {}
+        self._inflight_dm_messages: dict[tuple[str, str, str], float] = {}
         self._recent_dm_acks: dict[tuple[str, str], float] = {}
         data_dir = Path(get_astrbot_data_path()) / "plugin_data" / "astrbot_plugin_auto_trpg_dm"
         self.repository = JsonGameRepository(data_dir)
@@ -419,6 +421,7 @@ class AutoTrpgDmPlugin(Star):
             )
             yield self._quoted_result(event, pacing_reply)
             event.stop_event()
+            self._mark_message_finished(session_id, sender_id, routed_message)
             return
         security = security_precheck(routed_message)
         if security.blocked:
@@ -471,6 +474,7 @@ class AutoTrpgDmPlugin(Star):
             )
             yield self._quoted_result(event, security.reply)
             event.stop_event()
+            self._mark_message_finished(session_id, sender_id, routed_message)
             return
         if security.notes:
             self.plugin_logger.info(
@@ -506,6 +510,7 @@ class AutoTrpgDmPlugin(Star):
             )
         except asyncio.CancelledError:
             await self._cancel_long_running_reassurance_task(reassurance_task)
+            self._mark_message_finished(session_id, sender_id, routed_message)
             raise
         except Exception as exc:
             await self._cancel_long_running_reassurance_task(reassurance_task)
@@ -513,6 +518,7 @@ class AutoTrpgDmPlugin(Star):
             logger.exception("Auto TRPG DM failed to handle message.")
             yield self._quoted_result(event, self._friendly_error_message(exc))
             event.stop_event()
+            self._mark_message_finished(session_id, sender_id, routed_message)
             return
         await self._cancel_long_running_reassurance_task(reassurance_task)
         pending_outputs = self._pop_pending_outputs(session_id)
@@ -534,6 +540,7 @@ class AutoTrpgDmPlugin(Star):
             sent_any = True
         if sent_any:
             event.stop_event()
+        self._mark_message_finished(session_id, sender_id, routed_message)
 
     def _start_long_running_reassurance_task(
         self,
@@ -2891,19 +2898,43 @@ class AutoTrpgDmPlugin(Star):
 
     def _duplicate_reply(self, session_id: str, sender_id: str, routed_message: str) -> str:
         now = monotonic()
-        expire_after = self.DEDUP_WINDOW_SECONDS * 3
-        for key, seen_at in list(self._recent_dm_messages.items()):
-            if now - seen_at > expire_after:
-                self._recent_dm_messages.pop(key, None)
+        recent = getattr(self, "_recent_dm_messages", None)
+        if recent is None:
+            recent = {}
+            self._recent_dm_messages = recent
+        inflight = getattr(self, "_inflight_dm_messages", None)
+        if inflight is None:
+            inflight = {}
+            self._inflight_dm_messages = inflight
+        recent_expire_after = self.DEDUP_WINDOW_SECONDS * 3
+        for key, seen_at in list(recent.items()):
+            if now - seen_at > recent_expire_after:
+                recent.pop(key, None)
+        for key, seen_at in list(inflight.items()):
+            if now - seen_at > self.IN_FLIGHT_DUPLICATE_WINDOW_SECONDS:
+                inflight.pop(key, None)
         normalized = self._dedupe_text(routed_message)
         if not normalized:
             return ""
         key = (session_id, sender_id, normalized)
-        last_seen = self._recent_dm_messages.get(key)
-        self._recent_dm_messages[key] = now
+        if key in inflight:
+            return "这句还在结算中，我不会把同一句动作排队再处理一次。要改动作，请换一句新的 `/dm` 意图。"
+        last_seen = recent.get(key)
+        recent[key] = now
+        inflight[key] = now
         if last_seen is not None and now - last_seen <= self.DEDUP_WINDOW_SECONDS:
-            return "这句刚才已经进入结算，我不会重复处理。要改动作，请换一句新的 /dm 意图。"
+            inflight.pop(key, None)
+            return "这句刚才已经进入结算，我不会重复处理。要改动作，请换一句新的 `/dm` 意图。"
         return ""
+
+    def _mark_message_finished(self, session_id: str, sender_id: str, routed_message: str) -> None:
+        normalized = self._dedupe_text(routed_message)
+        if not normalized:
+            return
+        inflight = getattr(self, "_inflight_dm_messages", None)
+        if not inflight:
+            return
+        inflight.pop((session_id, sender_id, normalized), None)
 
     @staticmethod
     def _dedupe_text(text: str) -> str:

@@ -2,6 +2,18 @@
 
 所有已经合入 `main` 的用户可见变更都记录在这里。日期使用香港时区对应的开发日期。
 
+## [0.1.106] - 2026-05-15
+
+### Fixed
+
+- 同一群/session 的 LLM 工具循环现在全程串行，不再只在 tactical 模式串行；避免多名玩家的普通叙事请求同时基于旧快照生成、交错写入角色线程和全局场景。
+- 同一玩家在上一句相同动作仍在结算时再次发送，会被入口层识别为“进行中重复请求”，不会排队再处理一次，避免同一动作被重复叙事、重复写状态。
+- 处理完成、安检拦截、节奏拦截和异常返回都会清理进行中重复标记，避免误挡后续有效动作。
+
+### Verified
+
+- `python -m pytest tests/test_router_usage.py tests/test_dm_ack_and_outputs.py tests/test_long_running_reassurance.py tests/test_cycle_buffer.py tests/test_memory_tools.py -q`
+
 ## [0.1.105] - 2026-05-15
 
 ### Fixed

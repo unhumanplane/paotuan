@@ -181,6 +181,30 @@ def test_dm_ack_is_rate_limited_per_sender():
     assert plugin._should_send_dm_ack("group", "player", now=111.0) is True
 
 
+def test_duplicate_reply_blocks_same_message_while_in_flight():
+    plugin = AutoTrpgDmPlugin.__new__(AutoTrpgDmPlugin)
+    plugin._recent_dm_messages = {}
+    plugin._inflight_dm_messages = {}
+
+    assert plugin._duplicate_reply("group", "player", "same action") == ""
+    duplicate = plugin._duplicate_reply("group", "player", "same action")
+
+    assert "same action" not in duplicate
+    assert duplicate
+    assert ("group", "player", "same action") in plugin._inflight_dm_messages
+
+
+def test_mark_message_finished_clears_inflight_duplicate_guard():
+    plugin = AutoTrpgDmPlugin.__new__(AutoTrpgDmPlugin)
+    plugin._recent_dm_messages = {}
+    plugin._inflight_dm_messages = {}
+
+    assert plugin._duplicate_reply("group", "player", "same action") == ""
+    plugin._mark_message_finished("group", "player", "same action")
+
+    assert ("group", "player", "same action") not in plugin._inflight_dm_messages
+
+
 def test_format_dice_summary_combines_multiple_checks():
     plugin = AutoTrpgDmPlugin.__new__(AutoTrpgDmPlugin)
     items = [
