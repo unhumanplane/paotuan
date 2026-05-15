@@ -3720,7 +3720,7 @@ def _resolve_scene_thread_id(
         base = f"character:{character_id}"
     else:
         base = f"session:{_short_tag_value(message or session.session_id, 40)}"
-    return _safe_scene_thread_id(base)
+    return _canonical_scene_thread_id(session, base)
 
 
 def _actor_character_id(session: GameSession, actor: Dict[str, str]) -> str:
@@ -3760,13 +3760,33 @@ def _coalesce_character_thread_alias(
         return
     current = scene_threads.get(thread_id)
     if isinstance(current, dict):
-        merged = dict(legacy)
-        merged.update(current)
+        merged = _merge_scene_thread_alias_records(legacy, current)
         scene_threads[thread_id] = merged
     else:
         scene_threads[thread_id] = dict(legacy)
     if scene.get("active_scene_thread_id") == alias:
         scene["active_scene_thread_id"] = thread_id
+
+
+def _merge_scene_thread_alias_records(legacy: Dict[str, Any], current: Dict[str, Any]) -> Dict[str, Any]:
+    legacy_updated = str((legacy or {}).get("updated_at") or "")
+    current_updated = str((current or {}).get("updated_at") or "")
+    primary_is_open = False
+    if _scene_thread_is_closed(current) and not _scene_thread_is_closed(legacy):
+        primary, secondary = legacy, current
+        primary_is_open = True
+    elif _scene_thread_is_closed(legacy) and not _scene_thread_is_closed(current):
+        primary, secondary = current, legacy
+        primary_is_open = True
+    elif legacy_updated > current_updated:
+        primary, secondary = legacy, current
+    else:
+        primary, secondary = current, legacy
+    merged = dict(secondary or {})
+    merged.update(dict(primary or {}))
+    if primary_is_open:
+        merged.pop("status", None)
+    return merged
 
 
 def _merge_scene_thread(

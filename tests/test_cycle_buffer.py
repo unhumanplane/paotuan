@@ -105,6 +105,31 @@ def test_complete_cycle_without_ra_ignores_unsynced_timeline_wording_without_pat
     assert session.timeline["day"] == 1
 
 
+def test_complete_cycle_without_ra_does_not_advance_timeline_twice_after_cycle_control():
+    session = GameSession.new("group")
+    session.cycle_state = CycleState.CYCLE_RESOLVING
+    session.current_cycle_id = 2
+    session.timeline.update(
+        {
+            "day": 2,
+            "time_of_day": "morning",
+            "label": "第 2 天清晨",
+            "last_advance_reason": "全员休息到第二天清晨",
+            "last_advanced_cycle_id": 2,
+        }
+    )
+
+    result = complete_cycle_without_ra(session)
+
+    assert result["ok"] is True
+    assert result["timeline_result"]["timeline_advanced"] is False
+    assert result["timeline_result"]["already_advanced"] is True
+    assert result["timeline_result"]["timeline"]["day"] == 2
+    assert session.current_cycle_id == 3
+    assert session.timeline["day"] == 2
+    assert session.timeline["last_advanced_cycle_id"] == 2
+
+
 def test_append_cycle_action_sanitizes_raw_grid_from_ra_tool_input():
     session = GameSession.new("group")
     tool_results = [

@@ -2,6 +2,19 @@
 
 所有已经合入 `main` 的用户可见变更都记录在这里。日期使用香港时区对应的开发日期。
 
+## [0.1.105] - 2026-05-15
+
+### Fixed
+
+- 合并同一角色的 scene thread 别名，统一 `pc_xxx` 与 `character:pc_xxx`，避免同一角色被分裂到两条剧情线后继续沿用已关闭或过期线程。
+- 连续性审计现在允许有本轮叙事、工具结果或近期事件支撑的低风险状态标签更新，例如当前位置、当前状态和最近行动；仍会拒绝没有证据的状态改写。
+- 已由 `cycle_control` 显式推进过的周期，在后续无 RA 结算时不会再次推进全局时间线，避免一次休息/换日被结算两次。
+- 角色名纠错和“查看游戏日志”类请求会进入事实核查提示，优先查询本地记录，而不是被误当成开场后改名或换卡请求拒绝。
+
+### Verified
+
+- `python -m pytest tests/test_continuity_auditor.py tests/test_cycle_buffer.py tests/test_memory_tools.py tests/test_prompts.py -q`
+
 ## [0.1.104] - 2026-05-14
 
 ### Fixed

@@ -587,6 +587,82 @@ def test_audit_patch_applies_only_terminal_character_tags_with_evidence():
     assert ("identity", "职业") not in tags
 
 
+def test_audit_patch_applies_evidence_backed_low_risk_status_tag():
+    session = GameSession.new("group")
+    session.scene["_game_started"] = True
+    session.characters["pc_zhagu"] = Character(id="pc_zhagu", name="扎古", player_id="p1")
+    session.characters["pc_zhagu"].upsert_tags(
+        [{"key": "当前所在", "value": "音速号客舱", "layer": "status"}]
+    )
+    session.player_character_map["p1"] = "pc_zhagu"
+    payload = {
+        "issues": [
+            {
+                "severity": "low",
+                "problem": "扎古的当前位置标签滞后。",
+                "evidence": ["DM 回复显示扎古已经进入公共休息室。"],
+                "repair": "把当前所在更新为公共休息室。",
+            }
+        ],
+        "safe_patches": {
+            "character_tags": [
+                {
+                    "character_id": "pc_zhagu",
+                    "tags": [{"key": "当前所在", "value": "公共休息室", "layer": "status"}],
+                }
+            ]
+        },
+    }
+
+    result = apply_continuity_audit_patches(
+        session,
+        payload,
+        actor={"player_id": "p1"},
+        player_message="和他们喝些酒，联络感情。",
+        completion="几分钟后，扎古和三位水手、轮机员围坐在公共休息室靠舷窗的圆桌边。",
+        tool_results=[],
+    )
+
+    assert any(item["type"] == "character_tags" for item in result["applied"])
+    assert not any(item.get("key") == "当前所在" for item in result["rejected"])
+    tags = {(tag.layer, tag.key): tag.value for tag in session.characters["pc_zhagu"].tags}
+    assert tags[("status", "当前所在")] == "公共休息室"
+
+
+def test_audit_patch_rejects_low_risk_status_tag_without_evidence():
+    session = GameSession.new("group")
+    session.scene["_game_started"] = True
+    session.characters["pc_zhagu"] = Character(id="pc_zhagu", name="扎古", player_id="p1")
+    session.characters["pc_zhagu"].upsert_tags(
+        [{"key": "当前所在", "value": "音速号客舱", "layer": "status"}]
+    )
+    session.player_character_map["p1"] = "pc_zhagu"
+    payload = {
+        "safe_patches": {
+            "character_tags": [
+                {
+                    "character_id": "pc_zhagu",
+                    "tags": [{"key": "当前所在", "value": "公共休息室", "layer": "status"}],
+                }
+            ]
+        }
+    }
+
+    result = apply_continuity_audit_patches(
+        session,
+        payload,
+        actor={"player_id": "p1"},
+        player_message="我继续整理工具。",
+        completion="扎古还在客舱里整理工具包。",
+        tool_results=[],
+    )
+
+    assert not any(item["type"] == "character_tags" for item in result["applied"])
+    assert any(item.get("key") == "当前所在" for item in result["rejected"])
+    tags = {(tag.layer, tag.key): tag.value for tag in session.characters["pc_zhagu"].tags}
+    assert tags[("status", "当前所在")] == "音速号客舱"
+
+
 def test_terminal_thread_patch_requires_external_evidence_not_patch_text():
     session = GameSession.new("group")
     session.scene["_game_started"] = True
@@ -711,3 +787,61 @@ def test_normalize_active_scene_thread_does_not_close_from_terminal_text_alone()
     assert result["closed_thread_ids"] == []
     assert "status" not in session.scene["scene_threads"]["character:pc_esmeralda"]
     assert session.scene["active_scene_thread_id"] == "character:pc_esmeralda"
+
+
+def test_normalize_active_scene_thread_coalesces_character_aliases():
+    session = GameSession.new("group")
+    session.characters["pc_yaka"] = Character(id="pc_yaka", name="雅卡", player_id="p1")
+    session.scene["active_scene_thread_id"] = "pc_yaka"
+    session.scene["scene_threads"] = {
+        "pc_yaka": {
+            "summary": "旧别名线程：雅卡仍在客舱。",
+            "participants": ["pc_yaka"],
+            "active_character_id": "pc_yaka",
+            "updated_at": "2026-05-14T13:40:00+00:00",
+        },
+        "character:pc_yaka": {
+            "summary": "规范线程：雅卡在会议厅。",
+            "participants": ["pc_yaka"],
+            "active_character_id": "pc_yaka",
+            "updated_at": "2026-05-14T13:58:00+00:00",
+        },
+    }
+
+    result = normalize_active_scene_thread(session)
+
+    assert result["changed"] is True
+    assert result["merged_thread_aliases"] == [{"from": "pc_yaka", "to": "character:pc_yaka"}]
+    assert "pc_yaka" not in session.scene["scene_threads"]
+    assert session.scene["active_scene_thread_id"] == "character:pc_yaka"
+    assert session.scene["scene_threads"]["character:pc_yaka"]["summary"] == "规范线程：雅卡在会议厅。"
+
+
+def test_normalize_active_scene_thread_alias_merge_preserves_open_canonical_over_closed_alias():
+    session = GameSession.new("group")
+    session.characters["pc_yaka"] = Character(id="pc_yaka", name="雅卡", player_id="p1")
+    session.scene["active_scene_thread_id"] = "pc_yaka"
+    session.scene["scene_threads"] = {
+        "pc_yaka": {
+            "summary": "旧别名线程：雅卡已退场。",
+            "status": "closed",
+            "participants": ["pc_yaka"],
+            "active_character_id": "pc_yaka",
+            "updated_at": "2026-05-14T13:58:00+00:00",
+        },
+        "character:pc_yaka": {
+            "summary": "规范线程：雅卡在会议厅。",
+            "participants": ["pc_yaka"],
+            "active_character_id": "pc_yaka",
+            "updated_at": "2026-05-14T13:40:00+00:00",
+        },
+    }
+
+    result = normalize_active_scene_thread(session)
+
+    assert result["changed"] is True
+    assert "pc_yaka" not in session.scene["scene_threads"]
+    thread = session.scene["scene_threads"]["character:pc_yaka"]
+    assert "status" not in thread
+    assert thread["summary"] == "规范线程：雅卡在会议厅。"
+    assert session.scene["active_scene_thread_id"] == "character:pc_yaka"

@@ -207,6 +207,7 @@ SCENE_MIRROR_KEYS = (
     "relations",
 )
 SCENE_PATCH_KEYS = {"summary", "current_conflict", "current_objective", "open_hooks", "clues", "stakes"}
+LOW_RISK_STATUS_TAG_KEYS = {"当前所在", "当前状态", "最近行动"}
 
 
 class ContinuityAuditor:
@@ -369,6 +370,26 @@ def apply_continuity_audit_patches(
             key = str(tag.get("key") or "").strip()
             value = str(tag.get("value") or "").strip()
             layer = str(tag.get("layer") or infer_tag_layer(key)).strip() or "status"
+            if layer == "status" and key in LOW_RISK_STATUS_TAG_KEYS and _low_risk_status_tag_is_evidence_backed(
+                session,
+                character_id,
+                key,
+                value,
+                actor=actor,
+                player_message=player_message,
+                completion=completion,
+                tool_results=tool_results,
+            ):
+                safe_tags.append(
+                    {
+                        "key": key,
+                        "value": _short_text(value, 240),
+                        "type": "text",
+                        "source": "continuity_auditor",
+                        "layer": "status",
+                    }
+                )
+                continue
             if layer != "status" or not _is_terminal_status_tag(key, value):
                 result["rejected"].append(
                     {
@@ -458,13 +479,16 @@ def apply_continuity_audit_patches(
 def normalize_active_scene_thread(session: GameSession) -> dict[str, Any]:
     scene = session.scene if isinstance(session.scene, dict) else {}
     threads = _scene_threads(scene)
+    alias_result = _coalesce_character_scene_thread_aliases(session, scene, threads)
+    alias_changed = bool(alias_result.pop("changed", False))
     closed_thread_ids: list[str] = []
     active_id = str(scene.get("active_scene_thread_id") or "").strip()
     active = threads.get(active_id) if active_id else None
     if isinstance(active, dict) and not _scene_thread_is_closed(active):
         return {
             "type": "active_scene_thread_normalized",
-            "changed": bool(closed_thread_ids),
+            "changed": bool(alias_changed or closed_thread_ids),
+            **alias_result,
             "closed_thread_ids": closed_thread_ids,
         }
 
@@ -477,6 +501,7 @@ def normalize_active_scene_thread(session: GameSession) -> dict[str, Any]:
             "changed": True,
             "from": active_id,
             "to": replacement_id,
+            **alias_result,
             "closed_thread_ids": closed_thread_ids,
         }
     if active_id:
@@ -486,11 +511,13 @@ def normalize_active_scene_thread(session: GameSession) -> dict[str, Any]:
             "changed": True,
             "from": active_id,
             "to": "",
+            **alias_result,
             "closed_thread_ids": closed_thread_ids,
         }
     return {
         "type": "active_scene_thread_normalized",
-        "changed": bool(closed_thread_ids),
+        "changed": bool(alias_changed or closed_thread_ids),
+        **alias_result,
         "closed_thread_ids": closed_thread_ids,
     }
 
@@ -1120,6 +1147,72 @@ def _scene_threads(scene: dict[str, Any]) -> dict[str, Any]:
     return threads
 
 
+def _coalesce_character_scene_thread_aliases(
+    session: GameSession,
+    scene: dict[str, Any],
+    threads: dict[str, Any],
+) -> dict[str, Any]:
+    alias_map = {}
+    for thread_id in list(threads.keys()):
+        if not isinstance(thread_id, str):
+            continue
+        canonical = _canonical_scene_thread_id(session, thread_id)
+        if canonical != thread_id:
+            alias_map[thread_id] = canonical
+    merged_aliases = []
+    for alias, canonical in alias_map.items():
+        legacy = threads.pop(alias, None)
+        if not isinstance(legacy, dict):
+            continue
+        current = threads.get(canonical)
+        if isinstance(current, dict):
+            threads[canonical] = _merge_scene_thread_alias_records(legacy, current)
+        else:
+            threads[canonical] = dict(legacy)
+        if scene.get("active_scene_thread_id") == alias:
+            scene["active_scene_thread_id"] = canonical
+        merged_aliases.append({"from": alias, "to": canonical})
+    if not merged_aliases:
+        return {"changed": False}
+    return {"changed": True, "merged_thread_aliases": merged_aliases}
+
+
+def _canonical_scene_thread_id(session: GameSession, value: Any) -> str:
+    safe = _safe_scene_thread_id(value)
+    if safe.startswith("character:"):
+        return safe
+    if safe in (session.characters or {}):
+        return _safe_scene_thread_id(f"character:{safe}")
+    return safe
+
+
+def _safe_scene_thread_id(value: Any) -> str:
+    safe = re.sub(r"[^a-zA-Z0-9_.:-]+", "_", str(value or "").strip())
+    safe = safe.strip("._:-")
+    return safe[:96] or "default"
+
+
+def _merge_scene_thread_alias_records(legacy: dict[str, Any], current: dict[str, Any]) -> dict[str, Any]:
+    legacy_updated = str((legacy or {}).get("updated_at") or "")
+    current_updated = str((current or {}).get("updated_at") or "")
+    primary_is_open = False
+    if _scene_thread_is_closed(current) and not _scene_thread_is_closed(legacy):
+        primary, secondary = legacy, current
+        primary_is_open = True
+    elif _scene_thread_is_closed(legacy) and not _scene_thread_is_closed(current):
+        primary, secondary = current, legacy
+        primary_is_open = True
+    elif legacy_updated > current_updated:
+        primary, secondary = legacy, current
+    else:
+        primary, secondary = current, legacy
+    merged = dict(secondary or {})
+    merged.update(dict(primary or {}))
+    if primary_is_open:
+        merged.pop("status", None)
+    return merged
+
+
 def _scene_thread_is_closed(thread: dict[str, Any]) -> bool:
     return str((thread or {}).get("status") or "").strip().lower() in CLOSED_THREAD_STATUSES
 
@@ -1211,6 +1304,78 @@ def _is_terminal_status_tag(key: Any, value: Any) -> bool:
     return _contains_any(key_text, TERMINAL_STATUS_TAG_KEYS) or _terminal_status_text_match(value_text)
 
 
+def _low_risk_status_tag_is_evidence_backed(
+    session: GameSession,
+    character_id: str,
+    key: str,
+    value: str,
+    *,
+    actor: dict[str, Any],
+    player_message: str,
+    completion: str,
+    tool_results: list[dict[str, Any]],
+) -> bool:
+    if not character_id or not value.strip():
+        return False
+    source = _low_risk_status_evidence_text(
+        session,
+        character_id,
+        actor=actor,
+        player_message=player_message,
+        completion=completion,
+        tool_results=tool_results,
+    )
+    if not source:
+        return False
+    value_text = _normalized_projection_text(value)
+    if not value_text:
+        return False
+    if value_text in _normalized_projection_text(source):
+        return True
+    if key == "当前所在":
+        tokens = [
+            token
+            for token in re.split(r"[\s,，。；;、/\\|:：.!！?？()\[\]{}<>《》\"'“”]+", str(value))
+            if len(token.strip()) >= 2
+        ]
+        return bool(tokens and any(_normalized_projection_text(token) in _normalized_projection_text(source) for token in tokens))
+    return False
+
+
+def _low_risk_status_evidence_text(
+    session: GameSession,
+    character_id: str,
+    *,
+    actor: dict[str, Any],
+    player_message: str,
+    completion: str,
+    tool_results: list[dict[str, Any]],
+) -> str:
+    character = session.characters.get(character_id)
+    names = [character_id]
+    if character and character.name:
+        names.append(str(character.name))
+    actor_character_id = _actor_character_id(session, actor)
+    pieces: list[Any] = []
+    if actor_character_id == character_id:
+        pieces.extend([player_message, completion])
+    for item in tool_results or []:
+        if not isinstance(item, dict):
+            continue
+        result = item.get("result")
+        if isinstance(result, dict) and result.get("ok") is False:
+            continue
+        text = _flatten_text({"tool": item.get("tool"), "args": item.get("args"), "result": result})
+        if any(name and name in text for name in names):
+            pieces.append(text)
+    recent = (session.scene or {}).get("_recent_narrative_events") if isinstance(session.scene, dict) else []
+    for event in recent[-8:] if isinstance(recent, list) else []:
+        text = _flatten_text(event)
+        if any(name and name in text for name in names):
+            pieces.append(text)
+    return _flatten_text(pieces)
+
+
 def _terminal_status_text_match(text: Any) -> bool:
     normalized = str(text or "").lower()
     return _contains_any(normalized, TERMINAL_TERMS) and not _contains_any(normalized, TERMINAL_REJOIN_TERMS)
@@ -1218,6 +1383,21 @@ def _terminal_status_text_match(text: Any) -> bool:
 
 def _contains_any(text: str, terms: tuple[str, ...]) -> bool:
     return any(term.lower() in text for term in terms)
+
+
+def _normalized_projection_text(value: Any) -> str:
+    if isinstance(value, dict):
+        parts = [
+            str(value.get(key) or "")
+            for key in ("name", "title", "id", "text", "summary", "value")
+            if value.get(key)
+        ]
+        text = " ".join(parts) if parts else _flatten_text(value)
+    elif isinstance(value, list):
+        text = " ".join(_normalized_projection_text(item) for item in value[:8])
+    else:
+        text = str(value or "")
+    return re.sub(r"\s+", " ", text).strip().lower()
 
 
 def _salient_tokens(text: str) -> list[str]:

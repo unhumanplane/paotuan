@@ -407,6 +407,90 @@ def test_update_scene_canonicalizes_character_thread_id_alias(tmp_path):
     )
 
 
+def test_update_scene_alias_merge_keeps_open_record_over_closed_legacy(tmp_path):
+    repository = JsonGameRepository(tmp_path / "data")
+    session = GameSession.new("group")
+    session.world_tags["_background_ready"] = True
+    session.characters["pc_yaka"] = Character(id="pc_yaka", name="Yaka", player_id="p1")
+    session.player_character_map["p1"] = "pc_yaka"
+    session.scene["active_scene_thread_id"] = "pc_yaka"
+    session.scene["scene_threads"] = {
+        "pc_yaka": {
+            "summary": "Yaka was once marked asleep in the cabin.",
+            "status": "closed",
+            "participants": ["pc_yaka"],
+            "active_character_id": "pc_yaka",
+            "updated_at": "2026-05-14T13:58:44+00:00",
+        },
+        "character:pc_yaka": {
+            "summary": "Yaka is at the restaurant table with Stone.",
+            "participants": ["pc_yaka"],
+            "active_character_id": "pc_yaka",
+            "updated_at": "2026-05-14T13:44:58+00:00",
+        },
+    }
+    repository.save_session(session)
+
+    tools = MemoryTools(repository, "group", actor={"player_id": "p1"}, message="continue restaurant scene")
+    result = asyncio.run(
+        tools.update_scene(
+            {
+                "scene_thread_id": "pc_yaka",
+                "summary": "Yaka continues the restaurant conversation with Stone.",
+            }
+        )
+    )
+
+    assert result["ok"] is True
+    assert result["scene_thread_id"] == "character:pc_yaka"
+    saved = repository.load_session("group")
+    thread = saved.scene["scene_threads"]["character:pc_yaka"]
+    assert "pc_yaka" not in saved.scene["scene_threads"]
+    assert "status" not in thread
+    assert thread["summary"] == "Yaka continues the restaurant conversation with Stone."
+    assert saved.scene["active_scene_thread_id"] == "character:pc_yaka"
+
+
+def test_update_scene_alias_merge_drops_closed_status_without_reopen_patch(tmp_path):
+    repository = JsonGameRepository(tmp_path / "data")
+    session = GameSession.new("group")
+    session.world_tags["_background_ready"] = True
+    session.characters["pc_yaka"] = Character(id="pc_yaka", name="Yaka", player_id="p1")
+    session.player_character_map["p1"] = "pc_yaka"
+    session.scene["active_scene_thread_id"] = "pc_yaka"
+    session.scene["scene_threads"] = {
+        "pc_yaka": {
+            "summary": "Stale closed alias.",
+            "status": "closed",
+            "participants": ["pc_yaka"],
+            "active_character_id": "pc_yaka",
+            "updated_at": "2026-05-14T13:58:44+00:00",
+        },
+        "character:pc_yaka": {
+            "summary": "Open canonical thread.",
+            "participants": ["pc_yaka"],
+            "active_character_id": "pc_yaka",
+            "updated_at": "2026-05-14T13:44:58+00:00",
+        },
+    }
+    repository.save_session(session)
+
+    tools = MemoryTools(repository, "group", actor={"player_id": "p1"}, message="set restaurant objective")
+    result = asyncio.run(
+        tools.update_scene(
+            {
+                "scene_thread_id": "pc_yaka",
+                "current_objective": "Continue the active restaurant scene.",
+            }
+        )
+    )
+
+    assert result["ok"] is True
+    saved = repository.load_session("group")
+    assert "pc_yaka" not in saved.scene["scene_threads"]
+    assert "status" not in saved.scene["scene_threads"]["character:pc_yaka"]
+
+
 def test_update_scene_rejects_implicit_thread_timeline_advance(tmp_path):
     repository = JsonGameRepository(tmp_path / "data")
     session = GameSession.new("group")
