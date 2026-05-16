@@ -20,8 +20,10 @@ from .external_memory_tools import ExternalMemoryTools, SearchExternalMemoryArgs
 from .map_tools import GenerateMapSvgArgs, MapTools
 from .memory_tools import (
     BindPlayerCharacterArgs,
+    ClarifyEntityTimelineArgs,
     CreateCharacterArgs,
     MemoryTools,
+    RecordTimelineEventArgs,
     SessionControlArgs,
     StartGameArgs,
     UpdateCharacterTagsArgs,
@@ -306,6 +308,26 @@ class ToolRegistry:
                 model=UpdateSceneArgs,
                 handler=memory_tools.update_scene,
             ),
+            "record_timeline_event": make_tool(
+                name="record_timeline_event",
+                description=(
+                    "记录一条结构化权威剧情事件时间线，用于保存已由工具、审计或明确场内结果支持的事实。"
+                    "适合记录爆炸发生、检定确认生还、物品被消耗、NPC 状态被确认等事件。"
+                    "不要用它创造隐藏真相；未知项写入 unknowns。后续事实更正应使用 supersedes/retracted_by，而不是删除旧事件。"
+                ),
+                model=RecordTimelineEventArgs,
+                handler=memory_tools.record_timeline_event,
+            ),
+            "clarify_entity_timeline": make_tool(
+                name="clarify_entity_timeline",
+                description=(
+                    "按实体统一当前状态、历史事实、未知项和证据来源，并可同步修正当前 scene thread 的 NPC known_facts/open_hooks。"
+                    "当旧位置事实、旧持物事实或旧状态被误读成当前事实时优先使用；例如把“曾在中控室”与“当前所在不明”分开。"
+                    "不要编造逃生路线、隐藏动机或未发现真相；只写已有证据支持的当前状态和明确未知项。"
+                ),
+                model=ClarifyEntityTimelineArgs,
+                handler=memory_tools.clarify_entity_timeline,
+            ),
             "update_world_tags": make_tool(
                 name="update_world_tags",
                 description="更新世界设定、剧本风格、势力、地点等长期状态。",
@@ -498,6 +520,8 @@ class ToolRegistry:
                 "bind_player_character",
                 "update_character_tags",
                 "update_world_tags",
+                "record_timeline_event",
+                "clarify_entity_timeline",
                 "start_game",
                 "register_rule",
                 "resolve_check",
@@ -550,6 +574,8 @@ class ToolRegistry:
                     "execute_rule",
                     "register_rule",
                     "update_scene",
+                    "record_timeline_event",
+                    "clarify_entity_timeline",
                     "session_control",
                     "estimate_token_usage",
                 ]
@@ -574,6 +600,8 @@ class ToolRegistry:
                     "execute_rule",
                     "update_scene",
                     "update_character_tags",
+                    "record_timeline_event",
+                    "clarify_entity_timeline",
                     "session_control",
                     "estimate_token_usage",
                 ]
@@ -598,6 +626,8 @@ class ToolRegistry:
                     "execute_rule",
                     "update_scene",
                     "update_character_tags",
+                    "record_timeline_event",
+                    "clarify_entity_timeline",
                     "session_control",
                     "estimate_token_usage",
                 ]
@@ -658,6 +688,8 @@ class ToolRegistry:
                 "update_character_tags",
                 "bind_player_character",
                 "update_scene",
+                "record_timeline_event",
+                "clarify_entity_timeline",
                 "start_game",
                 "list_rules",
                 "session_control",
@@ -665,6 +697,8 @@ class ToolRegistry:
             ]
         base_tools = [
             "update_scene",
+            "record_timeline_event",
+            "clarify_entity_timeline",
             "update_world_tags",
             "create_character",
             "bind_player_character",

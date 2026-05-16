@@ -47,6 +47,57 @@ def test_system_prompt_includes_shared_cycle_contract():
     assert "结束当前叙事周期" not in prompt
 
 
+def test_system_prompt_includes_event_timeline_contract():
+    session = GameSession.new("group")
+
+    prompt = build_system_prompt(
+        session,
+        GameMode.NARRATIVE,
+        ["record_timeline_event", "clarify_entity_timeline"],
+        actor={"player_id": "player-1"},
+    )
+
+    assert "event_timeline" in prompt
+    assert "record_timeline_event" in prompt
+    assert "clarify_entity_timeline" in prompt
+    assert "旧 `known_facts`" in prompt
+    assert "未知项不能反推成否定事实" in prompt
+
+
+def test_prompt_projection_includes_compact_event_timeline_and_entity_facts():
+    session = GameSession.new("group")
+    session.scene["event_timeline"] = [
+        {
+            "id": "event_shidong_survived",
+            "order": 10,
+            "event_type": "npc_status_confirmed",
+            "status": "confirmed",
+            "summary": "史东已确认生还。",
+            "entities": ["npc_shidong"],
+            "unknowns": ["当前所在未知"],
+            "evidence": ["resolve_check success"],
+        }
+    ]
+    session.scene["entity_facts"] = {
+        "npc_shidong": {
+            "entity_type": "npc",
+            "name": "史东",
+            "current_status": "已确认生还；当前所在不明",
+            "historical_facts": ["曾在中央控制室观察ROV操作。"],
+            "unknowns": ["逃生路线未知"],
+        }
+    }
+
+    snapshot, _stats = prompt_snapshot_data(
+        session,
+        GameMode.NARRATIVE,
+        actor={"player_id": "player-1"},
+    )
+
+    assert snapshot["scene"]["event_timeline"][0]["id"] == "event_shidong_survived"
+    assert snapshot["scene"]["entity_facts"]["npc_shidong"]["current_status"] == "已确认生还；当前所在不明"
+
+
 def test_system_prompt_prefers_overview_topology_renderer_before_llm_svg_fallback():
     session = GameSession.new("group")
 

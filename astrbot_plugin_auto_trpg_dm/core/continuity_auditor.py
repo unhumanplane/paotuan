@@ -21,6 +21,8 @@ CONTINUITY_AUDITOR_SYSTEM_PROMPT = """你是独立上下文的跑团连续性审
 - 角色死亡、被捕后无法继续参与、被驱逐/离船、被剧情永久隔离、失去当前故事参与资格、退休或主动退场后，相关 scene thread 是否仍被当作 active。
 - 单个玩家退场是否错误地把整个团切到建卡模式。
 - scene.summary/current_conflict/current_objective/open_hooks 是否和 scene_threads、last_resolution、角色 status tag 冲突。
+- event_timeline/entity_facts 中的较新权威事件是否被旧 summary、旧 known_facts 或 DM 回复降级、否认或误读。
+- NPC known_facts 中“站在某地/持有某物/正在做某事”等旧描述，跨过爆炸、沉船、转场、检定或较新状态写入后，是否缺少“曾经/当时/爆炸前”等时间限定，导致被误读为当前事实。
 - 状态查询、核对、抱怨类消息不应被当成新的剧情事实。
 - 不要只因为出现“退休/退场/被捕/死亡”等字样就判定退场；背景经历、假设规则、条件说明、抱怨、询问、复述旧设定都不能当作新事实。
 
@@ -59,7 +61,9 @@ CONTINUITY_AUDITOR_SYSTEM_PROMPT = """你是独立上下文的跑团连续性审
     "scene": {
       "summary": "可选；只有在新摘要完全由工具结果或较新存档事实支持时才给出",
       "current_conflict": "可选",
-      "current_objective": "可选"
+      "current_objective": "可选",
+      "open_hooks": "可选；只修正已确认事实和未知项的表达",
+      "npcs": "可选；只用于把旧 known_facts 时间限定化或同步已确认状态，不能创造新 NPC 真相"
     }
   },
   "player_correction": "可选；若当前 DM 回复已经明显误导玩家，用一句话更正。否则空字符串。"
@@ -206,7 +210,7 @@ SCENE_MIRROR_KEYS = (
     "factions",
     "relations",
 )
-SCENE_PATCH_KEYS = {"summary", "current_conflict", "current_objective", "open_hooks", "clues", "stakes"}
+SCENE_PATCH_KEYS = {"summary", "current_conflict", "current_objective", "open_hooks", "clues", "stakes", "npcs"}
 LOW_RISK_STATUS_TAG_KEYS = {"当前所在", "当前状态", "最近行动"}
 
 
@@ -467,6 +471,13 @@ def apply_continuity_audit_patches(
         if applied_scene_patch:
             session.scene.update(applied_scene_patch)
             result["applied"].append({"type": "scene", "patch": applied_scene_patch})
+            thread_projection = _project_scene_patch_to_relevant_threads(
+                session,
+                applied_scene_patch,
+                tool_results,
+            )
+            if thread_projection.get("changed"):
+                result["applied"].append(thread_projection)
         elif scene_patch:
             result["rejected"].append({"type": "scene", "reason": "scene_patch_not_evidence_backed"})
 
@@ -592,6 +603,8 @@ def _scene_audit_view(scene: dict[str, Any]) -> dict[str, Any]:
         "current_conflict": _short_text(scene.get("current_conflict"), 500),
         "current_objective": _short_text(scene.get("current_objective"), 500),
         "open_hooks": _compact_json_value(scene.get("open_hooks"), depth=3),
+        "entity_facts": _compact_json_value(scene.get("entity_facts"), depth=4, text_limit=360, item_limit=16),
+        "event_timeline": _compact_json_value(scene.get("event_timeline"), depth=4, text_limit=360, item_limit=16),
         "active_scene_thread_id": scene.get("active_scene_thread_id", ""),
         "last_resolution": _compact_json_value(scene.get("last_resolution"), depth=3),
         "recent_events": [
@@ -619,6 +632,8 @@ def _scene_thread_audit_view(thread: dict[str, Any]) -> dict[str, Any]:
         "summary": _short_text(thread.get("summary"), 700),
         "current_conflict": _short_text(thread.get("current_conflict"), 360),
         "current_objective": _short_text(thread.get("current_objective"), 360),
+        "open_hooks": _compact_json_value(thread.get("open_hooks"), depth=3, text_limit=300, item_limit=8),
+        "npcs": _compact_json_value(thread.get("npcs"), depth=3, text_limit=300, item_limit=8),
         "participants": list(thread.get("participants") or [])[:12],
         "active_character_id": thread.get("active_character_id", ""),
         "last_actor_player_id": thread.get("last_actor_player_id", ""),
@@ -1000,11 +1015,153 @@ def _text_mentions_thread(text: str, thread_id: str, thread: dict[str, Any], ses
 
 def _has_recent_tool_backed_scene_fact(tool_results: list[dict[str, Any]]) -> bool:
     for item in tool_results or []:
-        if str(item.get("tool") or "") in {"update_scene", "execute_rule", "update_character_tags"}:
+        if str(item.get("tool") or "") in {
+            "update_scene",
+            "execute_rule",
+            "update_character_tags",
+            "record_timeline_event",
+            "clarify_entity_timeline",
+        }:
             result = item.get("result")
             if not isinstance(result, dict) or result.get("ok", True):
                 return True
     return False
+
+
+def _project_scene_patch_to_relevant_threads(
+    session: GameSession,
+    patch: dict[str, Any],
+    tool_results: list[dict[str, Any]],
+) -> dict[str, Any]:
+    thread_patch = {key: value for key, value in patch.items() if key in SCENE_MIRROR_KEYS}
+    if not thread_patch:
+        return {"type": "scene_thread_projection", "changed": False}
+    threads = _scene_threads(session.scene)
+    target_ids = _scene_thread_ids_from_tool_results(tool_results, threads)
+    target_ids.update(_scene_thread_ids_matching_scene_patch(thread_patch, threads))
+    if not target_ids and len(threads) == 1:
+        target_ids.update(str(thread_id) for thread_id in threads.keys())
+    if not target_ids:
+        active_id = str(session.scene.get("active_scene_thread_id") or "").strip()
+        if active_id and active_id in threads:
+            target_ids.add(active_id)
+
+    updated_ids = []
+    for thread_id in sorted(target_ids):
+        thread = threads.get(thread_id)
+        if not isinstance(thread, dict) or _scene_thread_is_closed(thread):
+            continue
+        if _merge_scene_thread_projection(thread, thread_patch):
+            thread["updated_at"] = utc_now_iso()
+            updated_ids.append(thread_id)
+    if not updated_ids:
+        return {"type": "scene_thread_projection", "changed": False}
+    return {
+        "type": "scene_thread_projection",
+        "changed": True,
+        "thread_ids": updated_ids,
+        "patch_keys": sorted(thread_patch.keys()),
+    }
+
+
+def _scene_thread_ids_from_tool_results(
+    tool_results: list[dict[str, Any]],
+    threads: dict[str, Any],
+) -> set[str]:
+    target_ids: set[str] = set()
+    for item in tool_results or []:
+        result = item.get("result")
+        if not isinstance(result, dict):
+            continue
+        if result.get("ok") is False:
+            continue
+        for key in ("scene_thread_id", "thread_id"):
+            thread_id = str(result.get(key) or "").strip()
+            if thread_id and thread_id in threads:
+                target_ids.add(thread_id)
+        for applied in _list_of_dicts(result.get("applied")):
+            thread_id = str(applied.get("thread_id") or applied.get("scene_thread_id") or "").strip()
+            if thread_id and thread_id in threads:
+                target_ids.add(thread_id)
+    return target_ids
+
+
+def _scene_thread_ids_matching_scene_patch(
+    patch: dict[str, Any],
+    threads: dict[str, Any],
+) -> set[str]:
+    patched_npc_ids = _ids_from_list_of_dicts(patch.get("npcs"))
+    patched_hook_ids = _ids_from_list_of_dicts(patch.get("open_hooks"))
+    target_ids: set[str] = set()
+    for thread_id, thread in threads.items():
+        if not isinstance(thread, dict):
+            continue
+        if patched_npc_ids and patched_npc_ids & _ids_from_list_of_dicts(thread.get("npcs")):
+            target_ids.add(str(thread_id))
+            continue
+        if patched_hook_ids and patched_hook_ids & _ids_from_list_of_dicts(thread.get("open_hooks")):
+            target_ids.add(str(thread_id))
+    return target_ids
+
+
+def _merge_scene_thread_projection(thread: dict[str, Any], patch: dict[str, Any]) -> bool:
+    changed = False
+    for key, value in patch.items():
+        if key == "npcs" and isinstance(value, list):
+            if _merge_dict_list_by_id(thread, key, value):
+                changed = True
+            continue
+        if key == "open_hooks" and isinstance(value, list):
+            if _merge_dict_list_by_id(thread, key, value):
+                changed = True
+            continue
+        if thread.get(key) != value:
+            thread[key] = _compact_json_value(value, depth=3)
+            changed = True
+    return changed
+
+
+def _merge_dict_list_by_id(thread: dict[str, Any], key: str, value: list[Any]) -> bool:
+    existing = thread.get(key)
+    if not isinstance(existing, list):
+        existing = []
+        thread[key] = existing
+    changed = False
+    index: dict[str, dict[str, Any]] = {}
+    for item in existing:
+        if isinstance(item, dict):
+            item_id = str(item.get("id") or "").strip()
+            if item_id:
+                index[item_id] = item
+    for raw_item in value:
+        if not isinstance(raw_item, dict):
+            continue
+        incoming = _compact_json_value(raw_item, depth=3)
+        item_id = str(incoming.get("id") or "").strip()
+        if item_id and item_id in index:
+            target = index[item_id]
+            if target != incoming:
+                target.clear()
+                target.update(incoming)
+                changed = True
+            continue
+        if incoming not in existing:
+            existing.append(incoming)
+            changed = True
+    return changed
+
+
+def _ids_from_list_of_dicts(value: Any) -> set[str]:
+    ids: set[str] = set()
+    if not isinstance(value, list):
+        return ids
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        item_id = str(item.get("id") or "").strip()
+        if item_id:
+            ids.add(item_id)
+    return ids
 
 
 def _scene_patch_value_is_backed(session: GameSession, value: Any, tool_results: list[dict[str, Any]]) -> bool:

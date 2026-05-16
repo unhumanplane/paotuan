@@ -359,6 +359,10 @@ def _project_scene_value(key: str, value: Any, profile: str) -> Any:
             text_limit=360 if profile not in {"state_query", "character_profile"} else 240,
             item_limit=12,
         )
+    if key == "event_timeline":
+        return _project_event_timeline_for_prompt(value, profile)
+    if key == "entity_facts":
+        return _project_entity_facts_for_prompt(value, profile)
     if isinstance(value, dict):
         return _project_mapping(value, depth=2, text_limit=360, item_limit=16)
     if isinstance(value, list):
@@ -366,6 +370,37 @@ def _project_scene_value(key: str, value: Any, profile: str) -> Any:
     if isinstance(value, str):
         return _short_text(value, 500)
     return value
+
+
+def _project_event_timeline_for_prompt(value: Any, profile: str) -> Any:
+    if not isinstance(value, list):
+        return value
+    limit = 6 if profile in {"state_query", "character_profile"} else 10
+    events = [item for item in value if isinstance(item, dict)]
+    projected: list[dict[str, Any]] = []
+    for item in events[-limit:]:
+        record: dict[str, Any] = {}
+        for key in ("id", "order", "event_type", "status", "summary", "entities", "unknowns", "source", "evidence"):
+            if key not in item:
+                continue
+            record[key] = project_visible_scene_value(item.get(key), depth=2, text_limit=260, item_limit=8)
+        if record:
+            projected.append(record)
+    return projected
+
+
+def _project_entity_facts_for_prompt(value: Any, profile: str) -> Any:
+    if not isinstance(value, dict):
+        return value
+    limit = 6 if profile in {"state_query", "character_profile"} else 10
+    projected: dict[str, Any] = {}
+    for index, (entity_id, fact) in enumerate(value.items()):
+        if index >= limit:
+            break
+        if not isinstance(fact, dict):
+            continue
+        projected[str(entity_id)] = project_visible_scene_value(fact, depth=3, text_limit=260, item_limit=8)
+    return projected
 
 
 def _project_scene_threads(value: Any, active_thread_id: str, profile: str, *, actor_character_id: str = "") -> Any:
@@ -1136,6 +1171,9 @@ BASE_RULES = """共享基础规则：
 - 关键词不是状态写入授权：不要只因为玩家或叙事文本里出现“退场、退休、被驱逐、结局、终幕、天亮、第二天”等词，就改变角色状态、关闭 scene thread、结束战斗或推进时间线。状态变化必须来自显式工具参数、结构化补丁、规则/回合工具结果或独立审计证据。
 - `update_scene` 的 summary/current_objective/current_conflict/stakes 只是叙事记录；关闭线程必须显式写 `status="closed"/"resolved"/"retired"/"archived"`，跨时段必须显式写全局 `timeline_patch` 或调用 `cycle_control`。
 - 已声明的物理环境和设备能力是连续性事实：水下/干燥、封闭/开口、重力/浮力、压力密封、载具是否能飞行或悬停等不能在相邻回复里反复反转。玩家指出物理矛盾时，先核对当前 scene、scene_threads 和最近审计；若确实矛盾，明确承认并以最新权威状态修正，不能为了圆场临时新增未记录的设备能力。
+- `event_timeline` 是权威剧情事实时间线，优先级高于旧 summary、旧 known_facts 和模型回忆。`record_timeline_event` 用于记录已由工具、审计或明确场内结果支持的事件；`clarify_entity_timeline` 用于把实体当前状态、历史事实、未知项和证据来源分开落盘。
+- 旧 `known_facts` 中的地点、持物、状态描述跨过爆炸、沉船、转场、检定或后续状态写入后，只能当历史事实，除非有较新的权威事件证明它仍是当前事实。不要把“曾在某地”误读成“当前仍在那里”。
+- 未知项不能反推成否定事实：例如“附近没看到某 NPC”只能说明当前附近不可见或所在未知，不能推翻已确认生还、已确认逃生、已确认持有/消耗等工具事实。需要澄清时调用 `clarify_entity_timeline`，不要在叙事里临时摇摆。
 - RA 只读取 `ra_cycle_input` 过滤投影和清洗后的权威字段快照，不读取完整 `GameSession`、原始玩家输入、prompt、诊断字段或 raw audit。
 - RA 输出的状态字段只是补丁候选；框架只应用 allowlisted、tool-backed、validator 通过的权威字段。"""
 

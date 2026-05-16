@@ -101,6 +101,20 @@ def test_tool_registry_always_exposes_final_response_tool():
     assert result == {"ok": True, "reply": "可以。"}
 
 
+def test_tool_registry_exposes_timeline_fact_tools_for_narrative():
+    registry = _registry_with_ready_session()
+    _toolset, names, _executor, specs = registry.for_mode(
+        GameMode.NARRATIVE,
+        "group",
+        message="复盘一下史东到底是什么情况",
+    )
+
+    assert "record_timeline_event" in names
+    assert "clarify_entity_timeline" in names
+    assert any(spec["name"] == "record_timeline_event" for spec in specs)
+    assert any(spec["name"] == "clarify_entity_timeline" for spec in specs)
+
+
 def test_tool_registry_prefers_resolve_check_for_ordinary_d20_checks():
     registry = _registry_with_ready_session()
     _toolset, names, _executor, specs = registry.for_mode(

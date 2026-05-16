@@ -80,6 +80,36 @@ class UpdateSceneArgs(BaseModel):
     )
 
 
+class RecordTimelineEventArgs(BaseModel):
+    event_id: str = Field(default="", description="Stable event id. Leave empty to derive one from event_type/entities.")
+    event_type: str = Field(default="event", description="Event category, for example npc_status_confirmed or item_used.")
+    summary: str = Field(..., description="Short authoritative event summary; do not add hidden truth.")
+    entities: List[str] = Field(default_factory=list, description="Related character/NPC/item/location ids.")
+    status: str = Field(default="confirmed", description="confirmed, suspected, retracted, or superseded.")
+    visibility: str = Field(default="observed_or_confirmed", description="observed, confirmed, suspected, or observed_or_confirmed.")
+    source: Dict[str, Any] = Field(default_factory=dict, description="Optional structured source such as tool result, DC, total, success.")
+    evidence: List[str] = Field(default_factory=list, description="Existing tool/audit/state evidence; no invented evidence.")
+    unknowns: List[str] = Field(default_factory=list, description="Known unknowns produced by this event.")
+    order: Optional[int] = Field(default=None, description="Optional relative order. If empty, appended after existing events.")
+    supersedes: List[str] = Field(default_factory=list, description="Older event ids this event corrects or supersedes.")
+    retracted_by: str = Field(default="", description="Event id or repair id that retracts this event, when status=retracted.")
+
+
+class ClarifyEntityTimelineArgs(BaseModel):
+    entity_id: str = Field(..., description="Entity id, for example npc_shidong.")
+    entity_type: str = Field(default="npc", description="npc, character, item, location, faction, or other.")
+    name: str = Field(default="", description="Human-readable entity name.")
+    current_status: str = Field(default="", description="Current authoritative status. Keep unknowns explicit.")
+    historical_facts: List[str] = Field(default_factory=list, description="Time-qualified past facts, e.g. '曾在...'.")
+    unknowns: List[str] = Field(default_factory=list, description="Facts that remain unknown and must not be guessed.")
+    authoritative_events: List[str] = Field(default_factory=list, description="Timeline event ids supporting this clarification.")
+    evidence: List[str] = Field(default_factory=list, description="Existing tool/audit/state evidence; no invented evidence.")
+    scene_thread_id: str = Field(default="", description="Optional scene thread to update, e.g. character:pc_yaka.")
+    replace_conflicting_current_fact: bool = Field(default=False, description="Replace stale NPC known_facts/status in the thread.")
+    open_hook_id: str = Field(default="", description="Optional hook id to upsert for unresolved unknowns.")
+    open_hook_text: str = Field(default="", description="Optional hook text. Must preserve confirmed facts and only ask about unknowns.")
+
+
 SCENE_THREAD_CONTROL_KEYS = {"scene_thread_id", "thread_id", "_scene_thread_id"}
 SCENE_THREAD_METADATA_KEYS = {
     "scene_thread_id",
@@ -660,6 +690,177 @@ class MemoryTools:
             "scene_threads_isolated": True,
         }
         self._audit("update_scene", {"patch": normalized_patch, "scene_thread_id": thread_id}, result)
+        return result
+
+    async def record_timeline_event(
+        self,
+        event_id: str = "",
+        event_type: str = "event",
+        summary: str = "",
+        entities: Optional[List[str]] = None,
+        status: str = "confirmed",
+        visibility: str = "observed_or_confirmed",
+        source: Optional[Dict[str, Any]] = None,
+        evidence: Optional[List[str]] = None,
+        unknowns: Optional[List[str]] = None,
+        order: Optional[int] = None,
+        supersedes: Optional[List[str]] = None,
+        retracted_by: str = "",
+    ) -> Dict[str, Any]:
+        summary_text = _short_tag_value(summary, 500)
+        if not summary_text:
+            result = {
+                "ok": False,
+                "error": "empty_summary",
+                "message": "record_timeline_event needs a concise authoritative summary.",
+            }
+            self._audit("record_timeline_event", {"event_id": event_id, "summary": summary}, result)
+            return result
+        session = self.repository.load_session(self.session_id)
+        gate = background_required_result(session, "record_timeline_event")
+        if gate:
+            self._audit("record_timeline_event", {"event_id": event_id, "summary": summary_text}, gate)
+            return gate
+        event = _build_timeline_event(
+            session.scene,
+            event_id=event_id,
+            event_type=event_type,
+            summary=summary_text,
+            entities=entities or [],
+            status=status,
+            visibility=visibility,
+            source=source or {},
+            evidence=evidence or [],
+            unknowns=unknowns or [],
+            order=order,
+            supersedes=supersedes or [],
+            retracted_by=retracted_by,
+        )
+        timeline = _event_timeline(session.scene)
+        existing = _timeline_event_by_id(timeline, str(event["id"]))
+        action = "updated" if existing is not None else "created"
+        if existing is not None:
+            existing.update(event)
+            event = existing
+        else:
+            timeline.append(event)
+        _sort_event_timeline(timeline)
+        self.repository.save_session(session)
+        result = {
+            "ok": True,
+            "action": action,
+            "event": event,
+            "event_timeline": _project_event_timeline(session.scene, entities=event.get("entities") or []),
+        }
+        self._audit(
+            "record_timeline_event",
+            {
+                "event_id": event_id,
+                "event_type": event_type,
+                "summary": summary_text,
+                "entities": entities or [],
+                "status": status,
+                "visibility": visibility,
+                "source": source or {},
+                "evidence": evidence or [],
+                "unknowns": unknowns or [],
+                "order": order,
+                "supersedes": supersedes or [],
+                "retracted_by": retracted_by,
+            },
+            result,
+        )
+        return result
+
+    async def clarify_entity_timeline(
+        self,
+        entity_id: str,
+        entity_type: str = "npc",
+        name: str = "",
+        current_status: str = "",
+        historical_facts: Optional[List[str]] = None,
+        unknowns: Optional[List[str]] = None,
+        authoritative_events: Optional[List[str]] = None,
+        evidence: Optional[List[str]] = None,
+        scene_thread_id: str = "",
+        replace_conflicting_current_fact: bool = False,
+        open_hook_id: str = "",
+        open_hook_text: str = "",
+    ) -> Dict[str, Any]:
+        safe_entity_id = _safe_entity_id(entity_id)
+        if not safe_entity_id:
+            result = {"ok": False, "error": "invalid_entity_id"}
+            self._audit("clarify_entity_timeline", {"entity_id": entity_id}, result)
+            return result
+        session = self.repository.load_session(self.session_id)
+        gate = background_required_result(session, "clarify_entity_timeline")
+        if gate:
+            self._audit("clarify_entity_timeline", {"entity_id": safe_entity_id}, gate)
+            return gate
+        fact = _build_entity_fact(
+            entity_id=safe_entity_id,
+            entity_type=entity_type,
+            name=name,
+            current_status=current_status,
+            historical_facts=historical_facts or [],
+            unknowns=unknowns or [],
+            authoritative_events=authoritative_events or [],
+            evidence=evidence or [],
+        )
+        entity_facts = _entity_facts(session.scene)
+        previous = dict(entity_facts.get(safe_entity_id) or {})
+        entity_facts[safe_entity_id] = fact
+        applied = [{"type": "entity_fact", "entity_id": safe_entity_id, "previous": previous, "current": fact}]
+
+        resolved_thread_id = ""
+        if scene_thread_id or replace_conflicting_current_fact or open_hook_text:
+            resolved_thread_id = _resolve_scene_thread_id(
+                session,
+                self.actor,
+                self.message,
+                {"scene_thread_id": scene_thread_id} if scene_thread_id else {},
+            )
+            threads = _scene_threads(session.scene)
+            _coalesce_character_thread_alias(session.scene, threads, resolved_thread_id)
+            thread = dict(threads.get(resolved_thread_id) or {})
+            if replace_conflicting_current_fact:
+                _clarify_entity_in_scene_thread(thread, fact)
+                applied.append({"type": "scene_thread_entity_fact", "thread_id": resolved_thread_id, "entity_id": safe_entity_id})
+            if open_hook_text:
+                hook_id = _safe_hook_id(open_hook_id, safe_entity_id)
+                _upsert_open_hook(thread, hook_id=hook_id, text=_short_tag_value(open_hook_text, 360))
+                applied.append({"type": "scene_thread_open_hook", "thread_id": resolved_thread_id, "hook_id": hook_id})
+            threads[resolved_thread_id] = thread
+            _write_scene_mirror(session.scene, resolved_thread_id, thread, thread)
+        self.repository.save_session(session)
+        result = {
+            "ok": True,
+            "entity_id": safe_entity_id,
+            "entity_fact": fact,
+            "applied": applied,
+        }
+        if resolved_thread_id:
+            result["scene_thread_id"] = resolved_thread_id
+            result["scene_thread"] = session.scene.get("scene_threads", {}).get(resolved_thread_id, {})
+        self._audit(
+            "clarify_entity_timeline",
+            {
+                "entity_id": entity_id,
+                "resolved_entity_id": safe_entity_id,
+                "entity_type": entity_type,
+                "name": name,
+                "current_status": current_status,
+                "historical_facts": historical_facts or [],
+                "unknowns": unknowns or [],
+                "authoritative_events": authoritative_events or [],
+                "evidence": evidence or [],
+                "scene_thread_id": scene_thread_id,
+                "replace_conflicting_current_fact": replace_conflicting_current_fact,
+                "open_hook_id": open_hook_id,
+                "open_hook_text": open_hook_text,
+            },
+            result,
+        )
         return result
 
     async def update_world_tags(self, patch: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
@@ -3664,6 +3865,227 @@ def _compact_structured(value: Any, depth: int = 3) -> Any:
     if isinstance(value, str):
         return _short_tag_value(value, 360)
     return value
+
+
+def _safe_entity_id(value: Any) -> str:
+    safe = re.sub(r"[^a-zA-Z0-9_.:-]+", "_", str(value or "").strip())
+    safe = safe.strip("._-:")
+    return safe[:80]
+
+
+def _safe_timeline_event_id(value: Any) -> str:
+    safe = re.sub(r"[^a-zA-Z0-9_.:-]+", "_", str(value or "").strip())
+    safe = safe.strip("._-:")
+    if not safe:
+        safe = "event"
+    if not safe.startswith("event_"):
+        safe = f"event_{safe}"
+    return safe[:96]
+
+
+def _safe_hook_id(value: Any, entity_id: str) -> str:
+    safe = re.sub(r"[^a-zA-Z0-9_.:-]+", "_", str(value or "").strip())
+    safe = safe.strip("._-:")
+    if not safe:
+        safe = f"hook_{_safe_entity_id(entity_id) or 'entity'}_unknowns"
+    if not safe.startswith("hook_"):
+        safe = f"hook_{safe}"
+    return safe[:96]
+
+
+def _safe_int(value: Any, default: int) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _event_timeline(scene: Dict[str, Any]) -> List[Dict[str, Any]]:
+    timeline = scene.get("event_timeline")
+    if isinstance(timeline, list):
+        normalized = [item for item in timeline if isinstance(item, dict)]
+        scene["event_timeline"] = normalized
+        return normalized
+    timeline = []
+    scene["event_timeline"] = timeline
+    return timeline
+
+
+def _entity_facts(scene: Dict[str, Any]) -> Dict[str, Any]:
+    facts = scene.get("entity_facts")
+    if isinstance(facts, dict):
+        return facts
+    facts = {}
+    scene["entity_facts"] = facts
+    return facts
+
+
+def _timeline_event_by_id(timeline: List[Dict[str, Any]], event_id: str) -> Optional[Dict[str, Any]]:
+    for item in timeline:
+        if str(item.get("id") or "") == event_id:
+            return item
+    return None
+
+
+def _next_timeline_order(scene: Dict[str, Any]) -> int:
+    orders: List[int] = []
+    for item in _event_timeline(scene):
+        orders.append(_safe_int(item.get("order"), 0))
+    return (max(orders) + 10) if orders else 10
+
+
+def _sort_event_timeline(timeline: List[Dict[str, Any]]) -> None:
+    timeline.sort(key=lambda item: (_safe_int(item.get("order"), 0), str(item.get("created_at") or ""), str(item.get("id") or "")))
+
+
+def _build_timeline_event(
+    scene: Dict[str, Any],
+    *,
+    event_id: str,
+    event_type: str,
+    summary: str,
+    entities: List[str],
+    status: str,
+    visibility: str,
+    source: Dict[str, Any],
+    evidence: List[str],
+    unknowns: List[str],
+    order: Optional[int],
+    supersedes: List[str],
+    retracted_by: str,
+) -> Dict[str, Any]:
+    safe_entities = [_safe_entity_id(item) for item in entities if _safe_entity_id(item)]
+    base_id = event_id or "_".join([event_type or "event"] + safe_entities[:2])
+    safe_id = _safe_timeline_event_id(base_id)
+    timeline = _event_timeline(scene)
+    if not event_id:
+        candidate = safe_id
+        suffix = 2
+        while _timeline_event_by_id(timeline, candidate):
+            candidate = f"{safe_id}_{suffix}"
+            suffix += 1
+        safe_id = candidate
+    safe_status = str(status or "confirmed").strip().lower()
+    if safe_status not in {"confirmed", "suspected", "retracted", "superseded"}:
+        safe_status = "confirmed"
+    safe_visibility = str(visibility or "observed_or_confirmed").strip().lower()
+    if safe_visibility not in {"observed", "confirmed", "suspected", "observed_or_confirmed", "hidden"}:
+        safe_visibility = "observed_or_confirmed"
+    event: Dict[str, Any] = {
+        "id": safe_id,
+        "event_type": _short_tag_value(event_type or "event", 80),
+        "order": int(order) if order is not None else _next_timeline_order(scene),
+        "status": safe_status,
+        "summary": _short_tag_value(summary, 500),
+        "entities": safe_entities[:12],
+        "visibility": safe_visibility,
+        "evidence": [_short_tag_value(item, 240) for item in evidence if str(item).strip()][:12],
+        "created_at": utc_now_iso(),
+    }
+    if source:
+        event["source"] = _compact_structured(source, depth=3)
+    if unknowns:
+        event["unknowns"] = [_short_tag_value(item, 180) for item in unknowns if str(item).strip()][:8]
+    if supersedes:
+        event["supersedes"] = [_safe_timeline_event_id(item) for item in supersedes if str(item).strip()][:8]
+    if retracted_by:
+        event["retracted_by"] = _short_tag_value(retracted_by, 120)
+    return event
+
+
+def _project_event_timeline(scene: Dict[str, Any], *, entities: List[Any], limit: int = 12) -> List[Dict[str, Any]]:
+    entity_set = {_safe_entity_id(item) for item in entities if _safe_entity_id(item)}
+    selected: List[Dict[str, Any]] = []
+    for event in reversed(_event_timeline(scene)):
+        event_entities = {_safe_entity_id(item) for item in event.get("entities", []) if _safe_entity_id(item)}
+        if entity_set and not (entity_set & event_entities):
+            continue
+        selected.append(dict(event))
+        if len(selected) >= limit:
+            break
+    selected.reverse()
+    return selected
+
+
+def _build_entity_fact(
+    *,
+    entity_id: str,
+    entity_type: str,
+    name: str,
+    current_status: str,
+    historical_facts: List[str],
+    unknowns: List[str],
+    authoritative_events: List[str],
+    evidence: List[str],
+) -> Dict[str, Any]:
+    fact: Dict[str, Any] = {
+        "entity_id": entity_id,
+        "entity_type": _short_tag_value(entity_type or "entity", 60),
+        "name": _short_tag_value(name or entity_id, 120),
+        "updated_at": utc_now_iso(),
+    }
+    if current_status:
+        fact["current_status"] = _short_tag_value(current_status, 300)
+    if historical_facts:
+        fact["historical_facts"] = [_short_tag_value(item, 240) for item in historical_facts if str(item).strip()][:12]
+    if unknowns:
+        fact["unknowns"] = [_short_tag_value(item, 180) for item in unknowns if str(item).strip()][:8]
+    if authoritative_events:
+        fact["authoritative_events"] = [_safe_timeline_event_id(item) for item in authoritative_events if str(item).strip()][:12]
+    if evidence:
+        fact["evidence"] = [_short_tag_value(item, 240) for item in evidence if str(item).strip()][:12]
+    return fact
+
+
+def _clarify_entity_in_scene_thread(thread: Dict[str, Any], fact: Dict[str, Any]) -> None:
+    entity_type = str(fact.get("entity_type") or "").strip().lower()
+    if entity_type not in {"npc", "character"}:
+        return
+    entity_id = _safe_entity_id(fact.get("entity_id") or "")
+    name = str(fact.get("name") or "").strip()
+    npcs = thread.get("npcs")
+    if not isinstance(npcs, list):
+        npcs = []
+        thread["npcs"] = npcs
+    target: Optional[Dict[str, Any]] = None
+    for item in npcs:
+        if not isinstance(item, dict):
+            continue
+        if entity_id and str(item.get("id") or "") == entity_id:
+            target = item
+            break
+        if name and str(item.get("name") or "") == name:
+            target = item
+            break
+    if target is None:
+        target = {"id": entity_id, "name": name or entity_id, "attitude": "neutral"}
+        npcs.append(target)
+    if entity_id:
+        target["id"] = entity_id
+    if name:
+        target["name"] = name
+    if fact.get("current_status"):
+        target["status"] = fact["current_status"]
+    if fact.get("historical_facts"):
+        target["known_facts"] = list(fact.get("historical_facts") or [])[:12]
+    if fact.get("unknowns"):
+        target["unknowns"] = list(fact.get("unknowns") or [])[:8]
+    if fact.get("authoritative_events"):
+        target["authoritative_events"] = list(fact.get("authoritative_events") or [])[:12]
+
+
+def _upsert_open_hook(thread: Dict[str, Any], *, hook_id: str, text: str) -> None:
+    if not text:
+        return
+    hooks = thread.get("open_hooks")
+    if not isinstance(hooks, list):
+        hooks = []
+        thread["open_hooks"] = hooks
+    for hook in hooks:
+        if isinstance(hook, dict) and str(hook.get("id") or "") == hook_id:
+            hook.update({"id": hook_id, "text": text, "status": "open", "visibility": "observed", "attitude": "concern"})
+            return
+    hooks.append({"id": hook_id, "text": text, "status": "open", "visibility": "observed", "attitude": "concern"})
 
 
 TAG_KEYS = (

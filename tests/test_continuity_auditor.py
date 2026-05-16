@@ -742,6 +742,71 @@ def test_audit_patch_can_reopen_actor_thread_with_reactivation_evidence():
     assert thread["summary"] == "雅卡在客舱电脑前继续调查。"
 
 
+def test_audit_scene_patch_can_time_qualify_npc_known_fact_with_tool_evidence():
+    session = GameSession.new("group")
+    session.scene["entity_facts"] = {
+        "npc_shidong": {
+            "entity_type": "npc",
+            "name": "史东",
+            "current_status": "已确认生还；当前所在不明",
+            "historical_facts": ["曾在中央控制室观察ROV操作，时间点早于C4爆炸。"],
+        }
+    }
+    session.scene["scene_threads"] = {
+        "character:pc_yaka": {
+            "npcs": [{"id": "npc_shidong", "name": "史东", "known_facts": ["站在中央控制室观察ROV操作"]}],
+            "open_hooks": [{"id": "hook_where_is_shidong", "text": "史东是否随船沉没？", "status": "open"}],
+        }
+    }
+    payload = {
+        "safe_patches": {
+            "scene": {
+                "npcs": [
+                    {
+                        "id": "npc_shidong",
+                        "name": "史东",
+                        "status": "已确认生还；当前所在不明",
+                        "known_facts": ["曾在中央控制室观察ROV操作，时间点早于C4爆炸。"],
+                    }
+                ],
+                "open_hooks": [
+                    {
+                        "id": "hook_where_is_shidong",
+                        "text": "史东已确认生还但当前所在不明——他通过何种路线逃生？",
+                        "status": "open",
+                        "visibility": "observed",
+                    }
+                ],
+            }
+        }
+    }
+    tool_results = [
+        {
+            "tool": "clarify_entity_timeline",
+            "result": {
+                "ok": True,
+                "entity_fact": session.scene["entity_facts"]["npc_shidong"],
+                "scene_thread_id": "character:pc_yaka",
+            },
+        }
+    ]
+
+    result = apply_continuity_audit_patches(
+        session,
+        payload,
+        actor={"player_id": "p1"},
+        player_message="史东到底什么情况",
+        completion="史东已确认生还。",
+        tool_results=tool_results,
+    )
+
+    thread = session.scene["scene_threads"]["character:pc_yaka"]
+
+    assert any(item.get("type") == "scene" for item in result["applied"])
+    assert thread["npcs"][0]["known_facts"] == ["曾在中央控制室观察ROV操作，时间点早于C4爆炸。"]
+    assert "是否随船沉没" not in thread["open_hooks"][0]["text"]
+
+
 def test_normalize_active_scene_thread_ignores_closed_active_thread():
     session = GameSession.new("group")
     session.scene["active_scene_thread_id"] = "character:pc_esmeralda"

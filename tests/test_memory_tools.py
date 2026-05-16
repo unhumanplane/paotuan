@@ -1027,3 +1027,88 @@ def test_update_character_tags_rejects_unearned_social_control_after_start(tmp_p
     assert result["ok"] is False
     assert result["error"] == "character_card_locked_after_start"
     assert saved.characters["pc_face"].tags == []
+
+
+def test_record_timeline_event_appends_authoritative_event(tmp_path):
+    repository = JsonGameRepository(tmp_path / "data")
+    session = GameSession.new("group")
+    session.world_tags["_background_ready"] = True
+    repository.save_session(session)
+
+    tools = MemoryTools(repository, "group", actor={"player_id": "p1"}, message="/dm record event")
+    result = asyncio.run(
+        tools.record_timeline_event(
+            event_id="event_shidong_survival_check_success",
+            event_type="npc_status_confirmed",
+            summary="史东通过三重风险生还检定。",
+            entities=["npc_shidong"],
+            source={"tool": "resolve_check", "dc": 12, "total": 15, "success": True},
+            evidence=["resolve_check success"],
+            unknowns=["史东当前所在"],
+            order=170,
+        )
+    )
+
+    saved = repository.load_session("group")
+    event = saved.scene["event_timeline"][0]
+
+    assert result["ok"] is True
+    assert event["id"] == "event_shidong_survival_check_success"
+    assert event["entities"] == ["npc_shidong"]
+    assert event["source"]["success"] is True
+    assert event["unknowns"] == ["史东当前所在"]
+
+
+def test_clarify_entity_timeline_time_qualifies_stale_npc_fact(tmp_path):
+    repository = JsonGameRepository(tmp_path / "data")
+    session = GameSession.new("group")
+    session.world_tags["_background_ready"] = True
+    session.scene["active_scene_thread_id"] = "character:pc_yaka"
+    session.scene["scene_threads"] = {
+        "character:pc_yaka": {
+            "npcs": [{"id": "npc_shidong", "name": "史东", "known_facts": ["站在中央控制室观察ROV操作"]}],
+            "open_hooks": [
+                {
+                    "id": "hook_where_is_shidong",
+                    "text": "史东是否随船沉没？",
+                    "status": "open",
+                    "visibility": "observed",
+                }
+            ],
+        }
+    }
+    repository.save_session(session)
+
+    tools = MemoryTools(repository, "group", actor={"player_id": "p1"}, message="/dm clarify Stone")
+    result = asyncio.run(
+        tools.clarify_entity_timeline(
+            entity_id="npc_shidong",
+            entity_type="npc",
+            name="史东",
+            current_status="已确认生还；当前所在不明",
+            historical_facts=["曾在中央控制室观察ROV操作，时间点早于C4爆炸。"],
+            unknowns=["逃生路线未知", "当前所在未知"],
+            authoritative_events=[
+                "event_shidong_survival_check_success",
+                "event_shidong_survived_escape_before_sinking",
+            ],
+            evidence=["resolve_check success", "update_scene npc status"],
+            scene_thread_id="character:pc_yaka",
+            replace_conflicting_current_fact=True,
+            open_hook_id="hook_where_is_shidong",
+            open_hook_text="史东已确认生还但不在附近海面——他通过何种路线逃生、现在在哪里？",
+        )
+    )
+
+    saved = repository.load_session("group")
+    thread = saved.scene["scene_threads"]["character:pc_yaka"]
+    npc = thread["npcs"][0]
+    hook = thread["open_hooks"][0]
+
+    assert result["ok"] is True
+    assert saved.scene["entity_facts"]["npc_shidong"]["current_status"] == "已确认生还；当前所在不明"
+    assert npc["status"] == "已确认生还；当前所在不明"
+    assert npc["known_facts"] == ["曾在中央控制室观察ROV操作，时间点早于C4爆炸。"]
+    assert npc["unknowns"] == ["逃生路线未知", "当前所在未知"]
+    assert "是否随船沉没" not in hook["text"]
+    assert "已确认生还" in hook["text"]

@@ -2,6 +2,24 @@
 
 所有已经合入 `main` 的用户可见变更都记录在这里。日期使用香港时区对应的开发日期。
 
+## [0.1.111] - 2026-05-16
+
+### Fixed
+
+- 新增 `record_timeline_event` 权威事件时间线工具，用结构化事件记录 C4、爆炸、逃生检定、转场等已发生事实，避免模型只靠旧摘要推断当前状态。
+- 新增 `clarify_entity_timeline` 实体澄清工具，把 NPC/角色的当前状态、历史事实、未知项和证据分开写入；可同步修正角色线里的 NPC `known_facts` 和未解钩子。
+- Prompt 投影现在包含紧凑的 `event_timeline` 与 `entity_facts`，并明确“旧位置/持物/行动事实跨过爆炸、沉船、检定或转场后必须视为历史事实，不能覆盖较新权威事件”。
+- 连续性审计会检查 `event_timeline/entity_facts` 是否被旧 `summary/known_facts` 或 DM 回复降级，并可将有工具证据背书的 NPC 事实修复同步回相关 scene thread。
+
+### Operational Repair
+
+- 已热修 live save：史东状态统一为“已确认生还；当前所在不明”，旧“在中央控制室观察 ROV”事实限定为 C4 爆炸前历史事实，并补齐“逃生路线/当前所在未知”的开放钩子。
+
+### Verified
+
+- `python -m pytest tests/test_memory_tools.py tests/test_tool_registry.py tests/test_prompts.py tests/test_continuity_auditor.py`
+- `python -m pytest`
+
 ## [0.1.110] - 2026-05-16
 
 ### Fixed
