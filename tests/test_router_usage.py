@@ -827,6 +827,80 @@ def test_router_blocks_update_scene_for_risky_action_before_rule_support():
     assert "状态写入已被守卫拒绝" in llm.prompts[1]
 
 
+def test_router_blocks_character_tags_for_risky_success_before_rule_support():
+    class FakeToolCallResponse:
+        completion_text = ""
+        tools_call_name = ["update_character_tags"]
+        tools_call_args = [
+            {
+                "character_id": "pc_kaide",
+                "tags": [
+                    {
+                        "key": "当前状态",
+                        "value": "科考站派船返回沉没区域搜索，确认只找到凯德一人",
+                        "layer": "status",
+                    }
+                ],
+            }
+        ]
+        tool_calls = []
+
+    class FakeLoopLlm:
+        def __init__(self):
+            self.calls = 0
+            self.prompts = []
+
+        async def __call__(self, **kwargs):
+            self.calls += 1
+            self.prompts.append(kwargs["prompt"])
+            if self.calls == 1:
+                return FakeToolCallResponse()
+            return FakeLlmResponse("这步还没结算，先确认科考站是否愿意派船搜索。")
+
+    class RecordingExecutor:
+        def __init__(self):
+            self.calls = []
+
+        async def execute(self, tool_name, args):
+            self.calls.append((tool_name, args))
+            return {"ok": True}
+
+    async def run_case():
+        repository = InMemoryRepository()
+        session = GameSession.new("group-1")
+        session.world_tags["_plot_locked"] = True
+        session.scene["_game_started"] = True
+        repository.save_session(session)
+        router = IntentRouter.__new__(IntentRouter)
+        llm = FakeLoopLlm()
+        executor = RecordingExecutor()
+        router.max_steps = 2
+        router._llm_generate = llm
+        router.repository = repository
+
+        result = await router._run_llm_tool_loop(
+            chat_provider_id="fake-provider",
+            system_prompt="system",
+            initial_prompt="玩家行动",
+            toolset=object(),
+            tool_executor=executor,
+            session_id="group-1",
+            raw_player_message="我说服科考站派船回音速号沉没区域搜索，只找到我一个人",
+            available_tool_names=["update_character_tags", "resolve_check"],
+        )
+        return result, llm, executor, repository.last_audit_records("group-1", limit=20)
+
+    result, llm, executor, records = asyncio.run(run_case())
+    tool_results = records[-1]["tool_results"]
+
+    assert executor.calls == []
+    assert result.completion_text == "这步还没结算，先确认科考站是否愿意派船搜索。"
+    assert tool_results[0]["tool"] == "update_character_tags"
+    assert tool_results[0]["result"]["error"] == "adjudication_guard_blocked_state_write"
+    assert tool_results[0]["result"]["reason"] == "missing_execute_rule_for_risky_state_write"
+    assert "状态写入已被守卫拒绝" in llm.prompts[1]
+
+
 def test_router_allows_update_scene_after_successful_execute_rule_support():
     class FakeToolCallResponse:
         completion_text = ""
@@ -1063,6 +1137,27 @@ def test_router_requires_state_write_for_major_outcome_claim():
     )
 
     assert completion_guard["reason"] == "state_change_not_written"
+
+
+def test_completion_guard_skips_rejection_of_player_premise():
+    repository = InMemoryRepository()
+    session = GameSession.new("group-1")
+    session.world_tags["_plot_locked"] = True
+    session.scene["_game_started"] = True
+    repository.save_session(session)
+
+    completion_guard = _adjudication_completeness_guard(
+        session,
+        actor={"player_id": "p1"},
+        player_message="史东作为大BOSS，必须由他在中控室控制台上释放深潜器，重新检定史东能否活下来",
+        completion=(
+            "这个前提跟已记录的事实对不上。已确立的事实链：潜航器释放是在船尾底层潜航器库房完成，"
+            "没有记录显示史东曾进入中控室；不能通过事后重新设定他在爆炸中心来重投。"
+        ),
+        tool_results=[],
+    )
+
+    assert completion_guard == {}
 
 
 def test_completion_guard_allows_narrative_position_after_successful_check():

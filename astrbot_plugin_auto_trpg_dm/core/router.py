@@ -3715,6 +3715,16 @@ UNRESOLVED_OUTCOME_MARKERS = (
     "不能把成功写死",
     "可以尝试",
     "可尝试",
+    "前提不成立",
+    "前提跟已记录的事实对不上",
+    "跟已记录的事实对不上",
+    "已确立的事实链",
+    "不能通过事后重新设定",
+    "不能事后重新设定",
+    "没有记录显示",
+    "场内可验证的新证据",
+    "既定裁定保持",
+    "不是已发生的事",
 )
 
 LOW_RISK_DIRECT_TERMS = (
@@ -3998,7 +4008,7 @@ def _tool_call_requires_adjudication_support(
     session: Any | None = None,
     tool_name: str,
 ) -> dict[str, Any]:
-    if tool_name != "update_scene":
+    if tool_name not in {"update_scene", "update_character_tags"}:
         return {}
     text = str(player_message or "").strip().lower()
     if not text or _contains_any_term(text, LOW_RISK_DIRECT_TERMS):
