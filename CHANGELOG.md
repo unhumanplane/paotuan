@@ -2,6 +2,18 @@
 
 所有已经合入 `main` 的用户可见变更都记录在这里。日期使用香港时区对应的开发日期。
 
+## [0.1.116] - 2026-05-17
+
+### Fixed
+
+- 修复 `/dm` 事件同时被 command handler 和 `on_any_message` 入口处理导致重复回复的问题；两个入口现在按同一个 `message_id` 抢占处理权，第二个入口会静默跳过。
+- 新增入口级去重日志 `dm_route_duplicate_suppressed`，用于区分“同一条事件被双入口触发”和玩家真实重复发送。
+
+### Verified
+
+- `python -m pytest tests/test_dm_ack_and_outputs.py tests/test_scenario_templates.py -q`
+- `python -m compileall -q astrbot_plugin_auto_trpg_dm tests`
+
 ## [0.1.115] - 2026-05-17
 
 ### Fixed

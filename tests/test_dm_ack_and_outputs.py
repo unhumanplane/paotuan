@@ -930,6 +930,36 @@ def test_any_message_extracts_multiline_dm_from_message_chain_when_message_str_i
     assert "基本概括：老徐是锦衣卫百户" in routed_message
 
 
+def test_command_and_any_message_share_same_event_route_claim():
+    plugin = AutoTrpgDmPlugin.__new__(AutoTrpgDmPlugin)
+    plugin.trigger_prefixes = ["/dm"]
+    plugin._recent_dm_route_claims = {}
+    plugin.plugin_logger = FakeLogger()
+    event = FakeEvent(message_id="same-message", message_str="/dm status")
+
+    assert plugin._claim_dm_event_route(event, "command") is True
+    assert plugin._claim_dm_event_route(event, "event_message_type") is False
+
+
+def test_any_message_skips_when_command_handler_already_claimed_event():
+    plugin = AutoTrpgDmPlugin.__new__(AutoTrpgDmPlugin)
+    plugin.trigger_prefixes = ["/dm"]
+    plugin._recent_dm_route_claims = {}
+    plugin.plugin_logger = FakeLogger()
+    event = FakeEvent(message_id="same-message", message_str="/dm status")
+
+    async def fail_handle(*args, **kwargs):
+        raise AssertionError("on_any_message should not handle an already claimed /dm event")
+        yield None
+
+    plugin._handle_dm_event = fail_handle
+
+    assert plugin._claim_dm_event_route(event, "command") is True
+    results = asyncio.run(_collect_async_generator(plugin.on_any_message(event)))
+
+    assert results == []
+
+
 class FakeLogger:
     def info(self, *args, **kwargs):
         pass

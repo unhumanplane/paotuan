@@ -59,7 +59,7 @@ from .tools.registry import ToolRegistry
 from .tools.turn_tools import TurnTools
 
 
-PLUGIN_VERSION = "0.1.115"
+PLUGIN_VERSION = "0.1.116"
 
 DEFAULT_REASSURANCE_PHRASES = (
     "正在翻找合适的骰子。",
@@ -195,6 +195,7 @@ REASSURANCE_CHOICE_TERMS = (
 class AutoTrpgDmPlugin(Star):
     DEDUP_WINDOW_SECONDS = 18.0
     IN_FLIGHT_DUPLICATE_WINDOW_SECONDS = 300.0
+    ROUTE_CLAIM_WINDOW_SECONDS = 600.0
     ACTION_PACING_SECONDS = 12
     HEARTBEAT_INTERVAL_SECONDS = 60
     DM_ACK_COOLDOWN_SECONDS = 10.0
@@ -206,6 +207,7 @@ class AutoTrpgDmPlugin(Star):
         self.trigger_prefixes = ["/dm"]
         self._recent_dm_messages: dict[tuple[str, str, str], float] = {}
         self._inflight_dm_messages: dict[tuple[str, str, str], float] = {}
+        self._recent_dm_route_claims: dict[str, float] = {}
         self._recent_dm_acks: dict[tuple[str, str], float] = {}
         data_dir = Path(get_astrbot_data_path()) / "plugin_data" / "astrbot_plugin_auto_trpg_dm"
         self.repository = JsonGameRepository(data_dir)
@@ -370,6 +372,8 @@ class AutoTrpgDmPlugin(Star):
             yield self._quoted_result(event, "请输入 `/dm` 后面的具体行动、问题或开局需求。")
             event.stop_event()
             return
+        if not self._claim_dm_event_route(event, "command"):
+            return
         async for result in self._handle_dm_event(event, routed_message):
             yield result
 
@@ -402,6 +406,8 @@ class AutoTrpgDmPlugin(Star):
             return
         routed_message = self._extract_best_routed_message(event, message)
         if not routed_message:
+            return
+        if not self._claim_dm_event_route(event, "event_message_type"):
             return
         async for result in self._handle_dm_event(event, routed_message):
             yield result
@@ -2412,6 +2418,28 @@ class AutoTrpgDmPlugin(Star):
                 best = routed
         return best
 
+    def _claim_dm_event_route(self, event: AstrMessageEvent, source: str) -> bool:
+        key = _dm_event_route_key(event)
+        if not key:
+            return True
+        claims = getattr(self, "_recent_dm_route_claims", None)
+        if claims is None:
+            claims = {}
+            self._recent_dm_route_claims = claims
+        now = monotonic()
+        for item_key, seen_at in list(claims.items()):
+            if now - seen_at > self.ROUTE_CLAIM_WINDOW_SECONDS:
+                claims.pop(item_key, None)
+        if key in claims:
+            self.plugin_logger.info(
+                "dm_route_duplicate_suppressed source=%s route_key=%s",
+                source,
+                key[:80],
+            )
+            return False
+        claims[key] = now
+        return True
+
     async def _send_independent_ambient_image(self, session_id: str, result: dict[str, Any]) -> bool:
         if not result.get("ok") or not result.get("available") or not result.get("send_to_chat"):
             return False
@@ -4322,6 +4350,15 @@ def _looks_like_player_roster_request(text: str) -> bool:
 
 def _event_has_empty_dm_command(event: AstrMessageEvent | None) -> bool:
     return _dm_command_argument_from_event(event) == ""
+
+
+def _dm_event_route_key(event: AstrMessageEvent | None) -> str:
+    if event is None:
+        return ""
+    message_id = getattr(getattr(event, "message_obj", None), "message_id", None)
+    if message_id:
+        return f"message:{message_id}"
+    return f"event:{id(event)}"
 
 
 def _dm_command_argument_from_event(event: AstrMessageEvent | None) -> str | None:
