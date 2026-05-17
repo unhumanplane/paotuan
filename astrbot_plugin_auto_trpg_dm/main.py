@@ -20,12 +20,28 @@ from astrbot.core.message.message_event_result import MessageChain
 from astrbot.core.utils.astrbot_path import get_astrbot_data_path
 
 from .core.ambient_image import AmbientImageConfig, AmbientImageProvider
+from .core.admin_web import AutoTrpgAdminWeb
 from .core.external_memory import HonchoExternalMemory, HonchoMemoryConfig
 from .core.map_core import load_active_strict_grid_entities
 from .core.map_delivery_cadence import filter_map_pending_outputs_for_delivery
 from .core.map_tool_routing import looks_visual_map_request
 from .core.plugin_log import configure_plugin_logging
 from .core.router import IntentRouter
+from .core.scenario_templates import (
+    build_campaign_preference_question,
+    build_campaign_preset_patch,
+    build_campaign_seed_patch,
+    campaign_preset_start_requested,
+    format_campaign_preset_list,
+    format_campaign_preset_loaded_reply,
+    looks_like_campaign_preset_list_request,
+    looks_like_campaign_generation_request,
+    looks_like_campaign_preference_answer,
+    match_campaign_template,
+    select_campaign_preset,
+    should_ask_campaign_preferences,
+    template_by_key,
+)
 from .core.security import security_precheck
 from .core.models import CycleState, GameMode
 from .core.timeline import timeline_status_text
@@ -43,7 +59,7 @@ from .tools.registry import ToolRegistry
 from .tools.turn_tools import TurnTools
 
 
-PLUGIN_VERSION = "0.1.111"
+PLUGIN_VERSION = "0.1.112"
 
 DEFAULT_REASSURANCE_PHRASES = (
     "正在翻找合适的骰子。",
@@ -299,6 +315,7 @@ class AutoTrpgDmPlugin(Star):
         self._heartbeat_task: asyncio.Task | None = None
         self._heartbeat_idle_ticks = 0
         self._start_heartbeat_task()
+        self.admin_web = AutoTrpgAdminWeb(self.repository)
         self.plugin_logger.info(
             "plugin_initialized version=%s data_dir=%s honcho_enabled=%s honcho_workspace=%s ambient_image_enabled=%s ambient_image_mode=%s prompt_snapshot_projection_enabled=%s continuity_auditor_enabled=%s heartbeat_idle_log_interval=%s llm_tool_loop_max_steps=%s",
             PLUGIN_VERSION,
@@ -313,6 +330,11 @@ class AutoTrpgDmPlugin(Star):
             llm_tool_loop_max_steps,
         )
         logger.info("Auto TRPG DM plugin initialized.")
+
+    async def initialize(self) -> None:
+        registered = self.admin_web.register_routes(self.astr_context)
+        if registered:
+            self.plugin_logger.info("admin_web_routes_registered count=%s", registered)
 
     @filter.command("dm")
     async def on_dm_command(self, event: AstrMessageEvent, content: GreedyStr):
@@ -833,6 +855,17 @@ class AutoTrpgDmPlugin(Star):
             )
             return "当前叙事周期正在结算或过渡中。我可以回答 `/dm status`、`/dm token`、`/dm 当前轮次` 这类只读查询；新的行动、重置、备份恢复或推进轮次请稍候。"
 
+        if not has_campaign_background(session):
+            preset_reply = await self._campaign_preset_fast_path(session_id, session, actor, text)
+            if preset_reply:
+                return preset_reply
+            session = self.repository.load_session(session_id)
+
+        pending_campaign_reply = await self._campaign_preference_fast_path(session_id, session, actor, text)
+        if pending_campaign_reply:
+            return pending_campaign_reply
+        session = self.repository.load_session(session_id)
+
         if _looks_like_dm_autopilot_takeover(text):
             self.repository.append_audit(
                 session_id,
@@ -1017,8 +1050,13 @@ class AutoTrpgDmPlugin(Star):
             return "当前群已有一场跑团存档；同群只能同时保留一场。若要把这句作为新团开场，需先清空旧团。\n" + message
 
         if not has_campaign_background(session):
-            background_patch = _guided_background_patch_from_text(text)
+            background_patch = {}
             background_action = "guided_background_bootstrap"
+            if looks_like_campaign_generation_request(text):
+                background_patch = build_campaign_seed_patch(text, template=match_campaign_template(text))
+                background_action = "campaign_template_bootstrap"
+            if not background_patch:
+                background_patch = _guided_background_patch_from_text(text)
             if not background_patch and visual_map_request:
                 background_patch = _visual_map_background_patch_from_text(text)
                 background_action = "visual_map_background_bootstrap"
@@ -1151,9 +1189,151 @@ class AutoTrpgDmPlugin(Star):
             )
             return (
                 "我先需要一句背景方向，之后会自动补细节并引导建卡/开场。"
-                "可以直接说：`/dm 来一个战锤40K底巢清剿剧本`，或 `/dm 你来定一个废土科幻开局`。"
+                "可以直接说：`/dm 来一个战锤40K底巢清剿剧本`，或问 `/dm 有什么预设剧本`。"
             )
 
+        return ""
+
+    async def _campaign_preset_fast_path(
+        self,
+        session_id: str,
+        session,
+        actor: dict[str, str],
+        text: str,
+    ) -> str:
+        if has_campaign_background(session):
+            return ""
+        if looks_like_campaign_preset_list_request(text):
+            self.repository.append_audit(
+                session_id,
+                {
+                    "type": "local_fast_path",
+                    "action": "campaign_preset_list",
+                    "actor": actor,
+                    "text": text[:240],
+                },
+            )
+            return format_campaign_preset_list()
+
+        template = select_campaign_preset(text)
+        if not template:
+            return ""
+        patch = build_campaign_preset_patch(template, request_text=text)
+        result = await MemoryTools(self.repository, session_id, actor=actor, message=text).update_world_tags(patch)
+        updated_session = self.repository.load_session(session_id)
+        updated_scene = updated_session.scene or {}
+        if "_pending_campaign_preferences" in updated_scene:
+            updated_scene.pop("_pending_campaign_preferences", None)
+            updated_session.scene = updated_scene
+            self.repository.save_session(updated_session)
+        self.repository.append_audit(
+            session_id,
+            {
+                "type": "local_fast_path",
+                "action": "campaign_preset_loaded",
+                "actor": actor,
+                "template_key": template.key,
+                "text": text[:240],
+                "result": result,
+            },
+        )
+        self.plugin_logger.info(
+            "campaign_preset_loaded session=%s sender=%s ok=%s template=%s",
+            session_id,
+            actor.get("player_id", ""),
+            result.get("ok"),
+            template.key,
+        )
+        if not result.get("ok"):
+            return str(result.get("message") or "预设剧本载入失败；请换一个预设或直接给一句新团方向。")
+        if campaign_preset_start_requested(text):
+            return ""
+        return format_campaign_preset_loaded_reply(template)
+
+    async def _campaign_preference_fast_path(
+        self,
+        session_id: str,
+        session,
+        actor: dict[str, str],
+        text: str,
+    ) -> str:
+        if has_campaign_background(session):
+            return ""
+        scene = session.scene or {}
+        pending = dict(scene.get("_pending_campaign_preferences") or {})
+        actor_id = str(actor.get("player_id", "") or "")
+        if pending and _pending_campaign_preference_matches(pending, actor_id):
+            if looks_like_campaign_preference_answer(text):
+                seed = str(pending.get("seed") or "").strip()
+                template = template_by_key(str(pending.get("template_key") or "")) or match_campaign_template(seed)
+                patch = build_campaign_seed_patch(seed, preference_text=text, template=template)
+                patch["campaign_preferences"] = {
+                    "intensity_and_style": text[:1200],
+                    "asked_at": str(pending.get("asked_at") or ""),
+                    "answered_at": _utc_now_iso(),
+                    "actor_id": actor_id,
+                }
+                result = await MemoryTools(self.repository, session_id, actor=actor, message=text).update_world_tags(patch)
+                updated_session = self.repository.load_session(session_id)
+                updated_scene = updated_session.scene or {}
+                updated_scene.pop("_pending_campaign_preferences", None)
+                updated_session.scene = updated_scene
+                self.repository.save_session(updated_session)
+                self.repository.append_audit(
+                    session_id,
+                    {
+                        "type": "local_fast_path",
+                        "action": "campaign_preference_answered",
+                        "actor": actor,
+                        "seed": seed[:240],
+                        "preferences": text[:240],
+                        "result": result,
+                    },
+                )
+                self.plugin_logger.info(
+                    "campaign_preference_answered session=%s sender=%s ok=%s template=%s",
+                    session_id,
+                    actor_id,
+                    result.get("ok"),
+                    patch.get("campaign_contract", {}).get("template_key", ""),
+                )
+                if result.get("ok"):
+                    return ""
+                return str(result.get("message") or "剧本偏好写入失败；请换一句更明确的开场方向。")
+            if looks_like_campaign_generation_request(text):
+                _clear_pending_campaign_preferences(self.repository, session_id, session)
+            else:
+                return str(pending.get("question") or "先确认一下这场团的烈度和玩法取向，一句话回我就行。")
+
+        if should_ask_campaign_preferences(text):
+            template = match_campaign_template(text)
+            question = build_campaign_preference_question(text, template)
+            session.scene["_pending_campaign_preferences"] = {
+                "seed": text[:12000],
+                "template_key": template.key,
+                "template_title": template.title,
+                "question": question,
+                "actor_id": actor_id,
+                "asked_at": _utc_now_iso(),
+            }
+            self.repository.save_session(session)
+            self.repository.append_audit(
+                session_id,
+                {
+                    "type": "local_fast_path",
+                    "action": "campaign_preference_question",
+                    "actor": actor,
+                    "template_key": template.key,
+                    "text": text[:240],
+                },
+            )
+            self.plugin_logger.info(
+                "campaign_preference_question session=%s sender=%s template=%s",
+                session_id,
+                actor_id,
+                template.key,
+            )
+            return question
         return ""
 
     async def _cycle_readonly_fast_path(
@@ -3445,6 +3625,20 @@ def _local_turn_end_summary(text: str, current_label: str) -> str:
 
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _pending_campaign_preference_matches(pending: dict, actor_id: str) -> bool:
+    owner = str(pending.get("actor_id") or "")
+    return not owner or not actor_id or owner == actor_id
+
+
+def _clear_pending_campaign_preferences(repository, session_id: str, session) -> None:
+    scene = session.scene or {}
+    if "_pending_campaign_preferences" not in scene:
+        return
+    scene.pop("_pending_campaign_preferences", None)
+    session.scene = scene
+    repository.save_session(session)
 
 
 def _parse_datetime(value: object) -> datetime | None:

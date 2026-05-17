@@ -442,6 +442,191 @@ def test_visual_map_requests_without_background_reach_tool_chain():
         assert not any(record.get("action") == "background_required" for record in repo.audits)
 
 
+def test_new_campaign_seed_asks_style_preferences_before_background_write():
+    session = GameSession.new("group")
+    repo = FakeRepository(session)
+    plugin = AutoTrpgDmPlugin.__new__(AutoTrpgDmPlugin)
+    plugin.repository = repo
+    plugin.ambient_image_config = AmbientImageConfig(enabled=False)
+    plugin.plugin_logger = FakeLogger()
+    plugin.honcho_config = types.SimpleNamespace(
+        enabled=False,
+        read_enabled=False,
+        max_context_chars=0,
+    )
+
+    reply = asyncio.run(
+        plugin._local_fast_path(
+            FakeEvent(),
+            "group",
+            {"player_id": "player-a"},
+            "开一个战锤40K底巢清剿团，我是极限战士喷火兵，队里还有一个技术军士。",
+        )
+    )
+
+    assert "烈度" in reply
+    assert "战术清剿" in reply
+    assert "恐怖调查" in reply
+    assert "_pending_campaign_preferences" in repo.session.scene
+    assert "_background_ready" not in repo.session.world_tags
+    assert any(record.get("action") == "campaign_preference_question" for record in repo.audits)
+
+
+def test_campaign_preference_answer_writes_template_background_and_continues_to_router():
+    session = GameSession.new("group")
+    session.scene["_pending_campaign_preferences"] = {
+        "seed": "开一个战锤40K底巢清剿团，我是极限战士喷火兵，队里还有一个技术军士。",
+        "template_key": "grimdark_underhive_purge",
+        "template_title": "哥特科幻底巢清剿",
+        "question": "先确认烈度。",
+        "actor_id": "player-a",
+        "asked_at": "2026-05-17T00:00:00+00:00",
+    }
+    repo = FakeRepository(session)
+    plugin = AutoTrpgDmPlugin.__new__(AutoTrpgDmPlugin)
+    plugin.repository = repo
+    plugin.ambient_image_config = AmbientImageConfig(enabled=False)
+    plugin.plugin_logger = FakeLogger()
+    plugin.honcho_config = types.SimpleNamespace(
+        enabled=False,
+        read_enabled=False,
+        max_context_chars=0,
+    )
+
+    reply = asyncio.run(
+        plugin._local_fast_path(
+            FakeEvent(),
+            "group",
+            {"player_id": "player-a"},
+            "硬核，战术和恐怖均衡，别太多规则书细节。",
+        )
+    )
+
+    assert reply == ""
+    assert repo.session.world_tags["_background_ready"] is True
+    assert repo.session.world_tags["campaign_contract"]["template_key"] == "grimdark_underhive_purge"
+    assert "硬核" in repo.session.world_tags["campaign_preferences"]["intensity_and_style"]
+    assert "_pending_campaign_preferences" not in repo.session.scene
+    assert any(record.get("action") == "campaign_preference_answered" for record in repo.audits)
+
+
+def test_preset_list_request_before_background_returns_template_menu():
+    session = GameSession.new("group")
+    repo = FakeRepository(session)
+    plugin = AutoTrpgDmPlugin.__new__(AutoTrpgDmPlugin)
+    plugin.repository = repo
+    plugin.ambient_image_config = AmbientImageConfig(enabled=False)
+    plugin.plugin_logger = FakeLogger()
+    plugin.honcho_config = types.SimpleNamespace(
+        enabled=False,
+        read_enabled=False,
+        max_context_chars=0,
+    )
+
+    reply = asyncio.run(
+        plugin._local_fast_path(
+            FakeEvent(),
+            "group",
+            {"player_id": "player-a"},
+            "有什么预设剧本",
+        )
+    )
+
+    assert "开箱即玩" in reply
+    assert "《霓虹债务夜奔》" in reply
+    assert "跑 2 号" in reply
+    assert "_background_ready" not in repo.session.world_tags
+    assert any(record.get("action") == "campaign_preset_list" for record in repo.audits)
+
+
+def test_preset_selection_loads_background_without_extra_form():
+    session = GameSession.new("group")
+    repo = FakeRepository(session)
+    plugin = AutoTrpgDmPlugin.__new__(AutoTrpgDmPlugin)
+    plugin.repository = repo
+    plugin.ambient_image_config = AmbientImageConfig(enabled=False)
+    plugin.plugin_logger = FakeLogger()
+    plugin.honcho_config = types.SimpleNamespace(
+        enabled=False,
+        read_enabled=False,
+        max_context_chars=0,
+    )
+
+    reply = asyncio.run(
+        plugin._local_fast_path(
+            FakeEvent(),
+            "group",
+            {"player_id": "player-a"},
+            "就跑暖炉酒馆小镇奇案",
+        )
+    )
+
+    assert "已载入预设剧本《暖炉酒馆小镇奇案》" in reply
+    assert repo.session.world_tags["_background_ready"] is True
+    assert repo.session.world_tags["campaign_preset"]["key"] == "cozy_tavern_mystery"
+    assert repo.session.world_tags["campaign_generation"]["source"] == "preset_library"
+    assert any(record.get("action") == "campaign_preset_loaded" for record in repo.audits)
+
+
+def test_preset_selection_with_start_request_continues_to_router():
+    session = GameSession.new("group")
+    repo = FakeRepository(session)
+    plugin = AutoTrpgDmPlugin.__new__(AutoTrpgDmPlugin)
+    plugin.repository = repo
+    plugin.ambient_image_config = AmbientImageConfig(enabled=False)
+    plugin.plugin_logger = FakeLogger()
+    plugin.honcho_config = types.SimpleNamespace(
+        enabled=False,
+        read_enabled=False,
+        max_context_chars=0,
+    )
+
+    reply = asyncio.run(
+        plugin._local_fast_path(
+            FakeEvent(),
+            "group",
+            {"player_id": "player-a"},
+            "跑 2 号开始",
+        )
+    )
+
+    assert reply == ""
+    assert repo.session.world_tags["_background_ready"] is True
+    assert repo.session.world_tags["campaign_preset"]["key"] == "grimdark_underhive_purge"
+    assert any(record.get("action") == "campaign_preset_loaded" for record in repo.audits)
+
+
+def test_rusted_chapel_preset_selection_writes_objective_and_pressure():
+    session = GameSession.new("group")
+    repo = FakeRepository(session)
+    plugin = AutoTrpgDmPlugin.__new__(AutoTrpgDmPlugin)
+    plugin.repository = repo
+    plugin.ambient_image_config = AmbientImageConfig(enabled=False)
+    plugin.plugin_logger = FakeLogger()
+    plugin.honcho_config = types.SimpleNamespace(
+        enabled=False,
+        read_enabled=False,
+        max_context_chars=0,
+    )
+
+    reply = asyncio.run(
+        plugin._local_fast_path(
+            FakeEvent(),
+            "group",
+            {"player_id": "player-a"},
+            "就跑锈蚀圣堂",
+        )
+    )
+
+    assert "已载入预设剧本《底巢清剿：锈蚀圣堂》" in reply
+    assert repo.session.world_tags["_background_ready"] is True
+    assert repo.session.world_tags["campaign_preset"]["key"] == "underhive_rusted_chapel"
+    assert repo.session.world_tags["campaign_preset"]["current_objective"] == "找到失联侦察队的记录核心。"
+    assert repo.session.world_tags["campaign_preset"]["current_pressure"] == "底巢通讯将在两小时后被轨道干扰彻底切断。"
+    assert "帝国圣歌" in repo.session.world_tags["campaign_generation"]["opening_scene"]
+    assert any(record.get("action") == "campaign_preset_loaded" for record in repo.audits)
+
+
 def test_guided_background_preserves_full_three_act_campaign_seed():
     text = (
         "来一个现代背景的跑团： 第一幕 游艇探险旅行 半路史东房间内身亡  "

@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Auto TRPG DM</title>
+  <link rel="stylesheet" href="./style.css">
+</head>
+<body>
+  <header class="app-header">
+    <div>
+      <h1>Auto TRPG DM</h1>
+      <p>只读运行状态面板</p>
+    </div>
+    <button id="refresh-all" class="icon-button" title="刷新">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><polyline points="23 4 23 10 17 10"></polyline><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path></svg>
+    </button>
+  </header>
+
+  <main class="shell">
+    <section class="metrics" aria-label="运行指标">
+      <div class="metric">
+        <span class="metric-label">会话</span>
+        <strong id="metric-sessions">-</strong>
+      </div>
+      <div class="metric">
+        <span class="metric-label">战斗中</span>
+        <strong id="metric-battles">-</strong>
+      </div>
+      <div class="metric">
+        <span class="metric-label">审计文件</span>
+        <strong id="metric-audits">-</strong>
+      </div>
+      <div class="metric">
+        <span class="metric-label">备份文件</span>
+        <strong id="metric-backups">-</strong>
+      </div>
+    </section>
+
+    <section class="workspace">
+      <aside class="session-pane">
+        <div class="pane-header">
+          <h2>会话</h2>
+          <span id="session-count" class="subtle">加载中</span>
+        </div>
+        <div id="session-list" class="session-list"></div>
+      </aside>
+
+      <section class="detail-pane">
+        <div id="empty-detail" class="empty">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 15a4 4 0 0 1-4 4H7l-4 4V7a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4z"></path></svg>
+          <p>选择一个会话查看状态。</p>
+        </div>
+
+        <div id="session-detail" class="detail hidden">
+          <div class="detail-header">
+            <div>
+              <h2 id="detail-title">-</h2>
+              <p id="detail-meta" class="subtle">-</p>
+            </div>
+            <span id="detail-mode" class="pill">-</span>
+          </div>
+
+          <nav class="tabs" aria-label="详情分类">
+            <button class="tab-button active" data-tab="snapshot">快照</button>
+            <button class="tab-button" data-tab="audit">审计</button>
+            <button class="tab-button" data-tab="backups">备份</button>
+          </nav>
+
+          <div id="tab-snapshot" class="tab-panel active">
+            <div class="summary-grid">
+              <div class="info-block">
+                <span class="label">时间线</span>
+                <strong id="snapshot-timeline">-</strong>
+              </div>
+              <div class="info-block">
+                <span class="label">周期</span>
+                <strong id="snapshot-cycle">-</strong>
+              </div>
+              <div class="info-block">
+                <span class="label">角色 / 玩家</span>
+                <strong id="snapshot-counts">-</strong>
+              </div>
+            </div>
+            <div class="section">
+              <h3>场景追踪</h3>
+              <pre id="snapshot-tracking" class="text-panel"></pre>
+            </div>
+            <div class="section two-col">
+              <div>
+                <h3>可见场景</h3>
+                <pre id="snapshot-scene" class="json-panel"></pre>
+              </div>
+              <div>
+                <h3>战斗</h3>
+                <pre id="snapshot-battle" class="json-panel"></pre>
+              </div>
+            </div>
+            <div class="section">
+              <h3>角色</h3>
+              <div id="snapshot-characters" class="character-list"></div>
+            </div>
+          </div>
+
+          <div id="tab-audit" class="tab-panel">
+            <div id="audit-list" class="event-list"></div>
+          </div>
+
+          <div id="tab-backups" class="tab-panel">
+            <div id="backup-list" class="event-list"></div>
+          </div>
+        </div>
+      </section>
+    </section>
+  </main>
+
+  <div id="toast" class="toast"></div>
+
+  <script>
+  (function(){
+    var original = window.parent.postMessage.bind(window.parent);
+    window.parent.postMessage = function(message, targetOrigin, transfer) {
+      if (targetOrigin === "null" || targetOrigin === null || targetOrigin === undefined) {
+        targetOrigin = "*";
+      }
+      return transfer !== undefined ? original(message, targetOrigin, transfer) : original(message, targetOrigin);
+    };
+  })();
+  </script>
+  <script src="./app.js"></script>
+</body>
+</html>
