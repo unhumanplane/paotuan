@@ -37,6 +37,7 @@ from .core.scenario_templates import (
     looks_like_campaign_preset_list_request,
     looks_like_campaign_generation_request,
     looks_like_campaign_preference_answer,
+    looks_like_custom_campaign_brief,
     match_campaign_template,
     select_campaign_preset,
     should_ask_campaign_preferences,
@@ -59,7 +60,7 @@ from .tools.registry import ToolRegistry
 from .tools.turn_tools import TurnTools
 
 
-PLUGIN_VERSION = "0.1.112"
+PLUGIN_VERSION = "0.1.113"
 
 DEFAULT_REASSURANCE_PHRASES = (
     "正在翻找合适的骰子。",
@@ -1265,7 +1266,12 @@ class AutoTrpgDmPlugin(Star):
         if pending and _pending_campaign_preference_matches(pending, actor_id):
             if looks_like_campaign_preference_answer(text):
                 seed = str(pending.get("seed") or "").strip()
-                template = template_by_key(str(pending.get("template_key") or "")) or match_campaign_template(seed)
+                pending_template_key = str(pending.get("template_key") or "")
+                template = None
+                if pending_template_key and pending_template_key != "custom_player_brief":
+                    template = template_by_key(pending_template_key)
+                if template is None and not looks_like_custom_campaign_brief(seed):
+                    template = match_campaign_template(seed)
                 patch = build_campaign_seed_patch(seed, preference_text=text, template=template)
                 patch["campaign_preferences"] = {
                     "intensity_and_style": text[:1200],
@@ -1306,12 +1312,12 @@ class AutoTrpgDmPlugin(Star):
                 return str(pending.get("question") or "先确认一下这场团的烈度和玩法取向，一句话回我就行。")
 
         if should_ask_campaign_preferences(text):
-            template = match_campaign_template(text)
+            template = None if looks_like_custom_campaign_brief(text) else match_campaign_template(text)
             question = build_campaign_preference_question(text, template)
             session.scene["_pending_campaign_preferences"] = {
                 "seed": text[:12000],
-                "template_key": template.key,
-                "template_title": template.title,
+                "template_key": template.key if template else "custom_player_brief",
+                "template_title": template.title if template else "玩家自定义剧本",
                 "question": question,
                 "actor_id": actor_id,
                 "asked_at": _utc_now_iso(),
@@ -1323,7 +1329,7 @@ class AutoTrpgDmPlugin(Star):
                     "type": "local_fast_path",
                     "action": "campaign_preference_question",
                     "actor": actor,
-                    "template_key": template.key,
+                    "template_key": template.key if template else "custom_player_brief",
                     "text": text[:240],
                 },
             )
@@ -1331,7 +1337,7 @@ class AutoTrpgDmPlugin(Star):
                 "campaign_preference_question session=%s sender=%s template=%s",
                 session_id,
                 actor_id,
-                template.key,
+                template.key if template else "custom_player_brief",
             )
             return question
         return ""

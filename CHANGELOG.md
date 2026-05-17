@@ -2,6 +2,20 @@
 
 所有已经合入 `main` 的用户可见变更都记录在这里。日期使用香港时区对应的开发日期。
 
+## [0.1.113] - 2026-05-17
+
+### Fixed
+
+- 修复结构化自定义剧本文本被“低魔”等弱关键词误判成预设剧本的问题；玩家贴出“时代背景 / 玩家组成 / NPC / 模组限定”等长剧本时，会作为 `player_custom_brief` 原文脚手架保留，不再替换成默认低魔边境背景。
+- 预设选择器现在会跳过自定义长剧本，避免“剧情按照这个来搞”中的“这个”被误解成“选这个预设”。
+- 开场 prompt 明确区分模板库脚手架与玩家自定义剧本；`source=player_custom_brief` 时必须优先保留原文时代背景、NPC 阵营、模组限定和玩家优势。
+
+### Verified
+
+- `python -m pytest tests/test_scenario_templates.py tests/test_dm_ack_and_outputs.py -q`
+- `python -m compileall -q astrbot_plugin_auto_trpg_dm tests`
+- `python -m pytest -q`
+
 ## [0.1.112] - 2026-05-17
 
 ### Added

@@ -358,6 +358,22 @@ CHINESE_NUMBERS = {
     "十一": 11,
     "十二": 12,
 }
+CUSTOM_CAMPAIGN_BRIEF_KEY = "custom_player_brief"
+CUSTOM_CAMPAIGN_BRIEF_TITLE = "玩家自定义剧本"
+CUSTOM_CAMPAIGN_BRIEF_SECTION_TERMS = (
+    "时代背景",
+    "基本概括",
+    "玩家组成",
+    "玩家可选",
+    "友方npc",
+    "友方NPC",
+    "敌对npc",
+    "敌对NPC",
+    "模组限定",
+    "玩家优势",
+    "剧情按照这个",
+    "新剧本",
+)
 
 
 def looks_like_campaign_preset_list_request(text: str) -> bool:
@@ -382,6 +398,8 @@ def format_campaign_preset_list() -> str:
 def select_campaign_preset(text: str) -> Optional[CampaignTemplate]:
     normalized = _normalize(text)
     if not normalized or looks_like_campaign_preset_list_request(text):
+        return None
+    if looks_like_custom_campaign_brief(text):
         return None
     selected_index = _selected_preset_number(normalized)
     if selected_index is not None and 1 <= selected_index <= len(TEMPLATES):
@@ -479,6 +497,22 @@ def looks_like_campaign_generation_request(text: str) -> bool:
     return len(normalized) >= 18 and template is not None
 
 
+def looks_like_custom_campaign_brief(text: str) -> bool:
+    raw = str(text or "").strip()
+    normalized = raw.lower()
+    if len(normalized) < 120:
+        return False
+    section_hits = sum(1 for term in CUSTOM_CAMPAIGN_BRIEF_SECTION_TERMS if term.lower() in normalized)
+    non_empty_lines = sum(1 for line in raw.splitlines() if line.strip())
+    if section_hits >= 3:
+        return True
+    if section_hits >= 2 and non_empty_lines >= 3:
+        return True
+    if section_hits >= 1 and "玩家可选" in normalized and "npc" in normalized:
+        return True
+    return False
+
+
 def match_campaign_template(text: str) -> CampaignTemplate:
     template, _score = match_campaign_template_with_score(text)
     return template or DEFAULT_TEMPLATE
@@ -542,6 +576,12 @@ def looks_like_campaign_preference_answer(text: str) -> bool:
 
 
 def build_campaign_preference_question(text: str, template: Optional[CampaignTemplate] = None) -> str:
+    if looks_like_custom_campaign_brief(text):
+        return (
+            "可以。你这段自定义剧本我会按原文当主设定，不套用预设或默认边境模板。"
+            "开场前确认一下取向：烈度偏电影级冒险、硬核伤亡，还是克制一点？"
+            "玩法更想偏战术推进、调查/社交，还是两者均衡？一句话回我就行。"
+        )
     chosen = template or match_campaign_template(text)
     first_focus, second_focus = chosen.focus_axes
     return (
@@ -556,6 +596,8 @@ def build_campaign_seed_patch(
     preference_text: str = "",
     template: Optional[CampaignTemplate] = None,
 ) -> Dict[str, Any]:
+    if looks_like_custom_campaign_brief(seed_text):
+        return _build_custom_campaign_seed_patch(seed_text, preference_text=preference_text)
     chosen = template or match_campaign_template(seed_text)
     seed = _short(seed_text, 12000)
     preferences = _short(preference_text, 1200)
@@ -591,6 +633,50 @@ def build_campaign_seed_patch(
             "opening_instruction": (
                 "不要要求玩家上传或填写 Markdown；把预设模板当作内部脚手架，"
                 "补齐开场介绍、initial_hook、玩家行动引导、三段式以上剧情骨架和公开 scene_patch，然后调用 start_game。"
+            ),
+        },
+    }
+
+
+def _build_custom_campaign_seed_patch(seed_text: str, preference_text: str = "") -> Dict[str, Any]:
+    seed = _short(seed_text, 12000)
+    preferences = _short(preference_text, 1200)
+    tone_parts = ["以玩家自定义剧本原文为准；不套用预设模板；由 DM 按玩家取向补齐镜头、节奏和可裁定细节"]
+    if preferences:
+        tone_parts.append(f"玩家取向：{preferences}")
+    campaign_background_parts = [f"玩家自定义剧本原文：{seed}"]
+    if preferences:
+        campaign_background_parts.insert(0, f"玩家风格取向：{preferences}")
+    campaign_background = "；".join(campaign_background_parts)
+    return {
+        "genre": "player_custom_campaign",
+        "tone": "；".join(tone_parts),
+        "location": "按玩家自定义剧本原文指定；不得替换为默认边境港镇或其他预设地点",
+        "factions": ["按玩家自定义剧本原文中的玩家阵营、友方 NPC、敌对 NPC 和势力关系整理"],
+        "ruleset": "以 d20 检定为基础；严格遵守玩家模组限定、时代特征、语言限制、阵营锁定和超自然门槛。",
+        "starting_premise": _short(campaign_background, 6000),
+        "campaign_background": campaign_background,
+        "campaign_contract": {
+            "genre": "player_custom_campaign",
+            "premise": _short(seed, 800),
+            "tone": _short("；".join(tone_parts), 800),
+            "template_key": CUSTOM_CAMPAIGN_BRIEF_KEY,
+            "template_title": CUSTOM_CAMPAIGN_BRIEF_TITLE,
+            "source": "player_custom_brief",
+        },
+        "campaign_generation": {
+            "source": "player_custom_brief",
+            "status": "ready_for_opening",
+            "template_key": CUSTOM_CAMPAIGN_BRIEF_KEY,
+            "template_title": CUSTOM_CAMPAIGN_BRIEF_TITLE,
+            "seed": _short(seed, 1200),
+            "preferences": _short(preferences, 500),
+            "preserve_player_brief": True,
+            "opening_instruction": (
+                "以 seed 中的时代背景、基本概括、玩家组成、友方 NPC、敌对 NPC、模组限定和玩家优势为权威；"
+                "不得替换成预设库、默认低魔边境、灰港镇或其他未由玩家指定的模板。"
+                "把玩家原文整理成可开场背景，补齐开场介绍、initial_hook、玩家行动引导、"
+                "三段式以上剧情骨架和公开 scene_patch，然后优先调用 start_game。"
             ),
         },
     }
