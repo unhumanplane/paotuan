@@ -59,6 +59,10 @@ from ..tools.ambient_image_tools import (
     should_offer_ambient_image,
     update_ambient_image_activity_state,
 )
+from ..tools.memory_tools import (
+    validate_character_card_party_balance,
+    validate_character_card_payload,
+)
 from ..tools.registry import ToolRegistry
 from ..tools.turn_tools import TurnTools
 
@@ -1586,7 +1590,40 @@ class IntentRouter:
                 ",".join(text_map_signals),
             )
 
+        async def append_character_card_guard_audit(guard_result: dict[str, Any]) -> None:
+            audit_record = {
+                "type": "character_card_final_reply_guard",
+                "reason": guard_result.get("reason", ""),
+                "errors": guard_result.get("errors", []),
+                "validation": guard_result.get("validation"),
+                "balance": guard_result.get("balance"),
+            }
+            if audit_lock is None:
+                self.repository.append_audit(session_id, audit_record)
+            else:
+                async with audit_lock:
+                    self.repository.append_audit(session_id, audit_record)
+            get_plugin_logger().info(
+                "character_card_final_reply_guard session=%s reason=%s errors=%s",
+                session_id,
+                guard_result.get("reason", ""),
+                ",".join(str(item) for item in guard_result.get("errors", [])),
+            )
+
         async def guarded_completion(completion_text: str) -> str:
+            try:
+                guard_session = self.repository.load_session(session_id)
+            except Exception:
+                guard_session = None
+            character_card_guard = _character_card_final_reply_guard(
+                raw_player_message,
+                completion_text,
+                all_tool_results,
+                session=guard_session,
+            )
+            if character_card_guard:
+                await append_character_card_guard_audit(character_card_guard)
+                completion_text = str(character_card_guard.get("reply") or "").strip() or completion_text
             if not map_guard.visual_map_request or map_guard.text_only_map_request:
                 return completion_text
             renderer_summary = classify_map_renderer_results(all_tool_results)
@@ -4138,6 +4175,145 @@ def _modifier_review_guard_blocked(tool_results: list[dict[str, Any]]) -> bool:
         and isinstance(item.get("result"), dict)
         and item["result"].get("error") == "modifier_review_required"
         for item in tool_results
+    )
+
+
+CHARACTER_CARD_REQUEST_TERMS = (
+    "人物卡",
+    "角色卡",
+    "车卡",
+    "建卡",
+    "创建人物",
+    "创建角色",
+    "建立角色",
+    "绑定角色",
+    "加入新角色",
+    "新角色",
+    "换新角色",
+    "后继角色",
+    "重新加入",
+    "重新进团",
+    "重新入团",
+    "加入角色",
+    "我加入",
+    "我要加入",
+    "new character",
+    "rejoin",
+)
+
+CHARACTER_CARD_ACCEPTANCE_TERMS = (
+    "已创建",
+    "创建了角色",
+    "创建角色",
+    "已绑定",
+    "绑定到",
+    "绑定为",
+    "重新加入",
+    "加入队伍",
+    "加入当前团",
+    "你的角色",
+    "角色已",
+    "角色**",
+    "已经入场",
+    "正式入场",
+    "从这里开始行动",
+    "你现在在",
+    "你已在",
+    "你已经在",
+    "你潜伏",
+    "你已潜伏",
+    "你成功登",
+    "你已登",
+)
+
+
+def _character_card_final_reply_guard(
+    player_message: str,
+    completion: str,
+    tool_results: list[dict[str, Any]],
+    *,
+    session: Any | None,
+) -> dict[str, Any]:
+    if not _looks_like_character_card_request(player_message):
+        return {}
+    text = _completion_claims_character_card_accepted(completion)
+    if not text:
+        return {}
+
+    validation = validate_character_card_payload(
+        name="",
+        summary=text,
+        tags=[],
+        require_name=False,
+    )
+    balance = None
+    if session is not None:
+        balance = validate_character_card_party_balance(
+            session,
+            "__final_reply_candidate__",
+            name="",
+            summary=text,
+            tags=[],
+        )
+    if not validation and not balance:
+        return {}
+
+    errors = [
+        str(item.get("error") or "")
+        for item in (validation, balance)
+        if isinstance(item, dict) and item.get("error")
+    ]
+    return {
+        "reason": "character_card_final_reply_unverified",
+        "errors": errors,
+        "validation": validation,
+        "balance": balance,
+        "reply": _character_card_guard_reply(validation=validation, balance=balance),
+    }
+
+
+def _looks_like_character_card_request(player_message: str) -> bool:
+    text = str(player_message or "").strip().lower()
+    if not text:
+        return False
+    if _contains_any_term(text, CHARACTER_CARD_REQUEST_TERMS):
+        return True
+    return any(term in text for term in ("我是", "我扮演", "我的角色", "身份是")) and any(
+        term in text
+        for term in ("职业", "刺客", "特工", "调查员", "新号", "替补", "补位", "名字", "名叫")
+    )
+
+
+def _completion_claims_character_card_accepted(completion: str) -> str:
+    text = " ".join(str(completion or "").strip().split())
+    if not text:
+        return ""
+    lowered = text.lower()
+    if _contains_any_term(lowered, CHARACTER_CARD_ACCEPTANCE_TERMS):
+        return text
+    if any(term in lowered for term in ("可以作为", "可以加入", "准许加入", "允许加入")) and any(
+        term in lowered for term in ("角色", "新角色", "后继", "队伍", "当前团")
+    ):
+        return text
+    return ""
+
+
+def _character_card_guard_reply(*, validation: dict[str, Any] | None, balance: dict[str, Any] | None) -> str:
+    reasons: list[str] = []
+    for result in (validation, balance):
+        if not isinstance(result, dict):
+            continue
+        for reason in result.get("reasons", []) or []:
+            reason_text = str(reason or "").strip()
+            if reason_text and reason_text not in reasons:
+                reasons.append(reason_text)
+    reason_suffix = ""
+    if reasons:
+        reason_suffix = " 主要问题：" + "；".join(reasons[:2])
+    return (
+        "这张新/后继角色卡还不能直接通过。必须先用 create_character 或 bind_player_character 写入并通过本地角色卡校验；"
+        "后继角色要和现有角色保持同一强度水平，入场方式、装备和已成功潜入等结果也需要场内裁定，不能只靠叙事口头盖章。"
+        f"{reason_suffix}"
     )
 
 

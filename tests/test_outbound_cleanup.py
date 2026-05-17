@@ -286,6 +286,37 @@ def test_preserves_open_question_without_options():
     assert result.text == text
 
 
+def test_removes_soft_route_choice_tail_from_live_log_pattern():
+    text = (
+        "会议厅里人声渐散，屏幕上的冰架图像切回深蓝色待机画面。"
+        "走廊里传来零落的脚步声和舱门开合的声音。\n\n"
+        "整艘船在你面前铺开：有人去吃饭，有人回舱室，有人在设备间转悠。"
+        "你想跟着谁走，还是先在船上四处看看？"
+    )
+
+    result = cleanup_menu_like_guidance(text, "我坐在会议厅里")
+
+    assert result.changed is True
+    assert "会议厅里人声渐散" in result.text
+    assert "你想跟着谁走" not in result.text
+    assert "四处看看" not in result.text
+
+
+def test_removes_inline_can_do_or_wait_soft_menu():
+    text = (
+        "设备箱整齐排列，控制台屏幕闪着待机蓝光，缆线盘卷在滚轮架上。"
+        "其他参与者尚未到场，此刻你可以先检查设备、翻阅日志，或只是静静等待——你选择怎么做？"
+    )
+
+    result = cleanup_menu_like_guidance(text, "我抵达 ROV 调试现场")
+
+    assert result.changed is True
+    assert "控制台屏幕闪着待机蓝光" in result.text
+    assert "检查设备" not in result.text
+    assert "静静等待" not in result.text
+    assert "你选择怎么做" not in result.text
+
+
 def test_review_feedback_preserves_allowed_preparation_and_clarification_examples():
     samples = [
         (

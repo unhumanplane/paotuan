@@ -51,10 +51,11 @@ _install_fake_astrbot_modules()
 from astrbot_plugin_auto_trpg_dm.core.ambient_image import AmbientImageConfig
 from astrbot_plugin_auto_trpg_dm.core.map_core import DEFAULT_STRICT_LOCAL_MAP_ID, save_active_strict_grid
 from astrbot_plugin_auto_trpg_dm.core.modes import GameModeStateMachine
-from astrbot_plugin_auto_trpg_dm.core.models import GameMode, GameSession
+from astrbot_plugin_auto_trpg_dm.core.models import Character, GameMode, GameSession, TagValue
 from astrbot_plugin_auto_trpg_dm.core.router import (
     IntentRouter,
     _adjudication_completeness_guard,
+    _character_card_final_reply_guard,
     _extract_llm_usage_summary,
     _is_diagnostic_request,
     _maybe_close_concluded_turn,
@@ -480,6 +481,101 @@ def test_router_accepts_final_response_tool_as_loop_completion():
     assert [name for name, _args in executor.calls] == ["session_control", "final_response"]
     assert result.tool_results[-1]["tool"] == "final_response"
     assert records[-1]["tool_results"][0]["tool"] == "final_response"
+
+
+def test_character_card_final_reply_guard_blocks_unverified_elite_join():
+    session = GameSession.new("group-1")
+    session.world_tags["_plot_locked"] = True
+    session.scene["_game_started"] = True
+    session.characters["pc_hans"] = Character(
+        id="pc_hans",
+        name="汉斯",
+        player_id="p1",
+        summary="普通船员出身的机械师，熟悉游艇基础维修。",
+        tags=[TagValue(key="能力", value="维修、观察", layer="abilities")],
+    )
+
+    guard = _character_card_final_reply_guard(
+        "加入新角色，我是一名刺客，通过潜艇被投放在船附近，夜间游泳上船",
+        "可以。你的角色杰森·伯恩已经入场：受过专业训练的渗透与格斗专家，通过潜艇投放后夜间游泳登上音速号，已潜伏在船上伺机而动，装备顶级干式潜水服、隐藏的轻武器和工具。",
+        [],
+        session=session,
+    )
+
+    assert guard
+    assert "character_card_power_mismatch" in guard["errors"]
+    assert "不能直接通过" in guard["reply"]
+    assert "潜入结果" in guard["reply"]
+
+
+def test_router_replaces_unverified_character_final_response_tool():
+    class FinalToolCallResponse:
+        completion_text = ""
+        tools_call_name = ["final_response"]
+        tools_call_args = [
+            {
+                "reply": (
+                    "可以。你的角色杰森·伯恩已经入场：受过专业训练的渗透与格斗专家，"
+                    "通过潜艇投放后夜间游泳登上音速号，已潜伏在船上伺机而动。"
+                    "装备顶级干式潜水服和隐藏的轻武器。"
+                )
+            }
+        ]
+        tool_calls = []
+
+    class FakeLoopLlm:
+        async def __call__(self, **kwargs):
+            return FinalToolCallResponse()
+
+    class RecordingExecutor:
+        def __init__(self):
+            self.calls = []
+
+        async def execute(self, tool_name, args):
+            self.calls.append((tool_name, args))
+            if tool_name == "final_response":
+                return {"ok": True, "reply": args["reply"]}
+            raise AssertionError(f"unexpected tool: {tool_name}")
+
+    async def run_case():
+        repository = InMemoryRepository()
+        session = GameSession.new("group-1")
+        session.world_tags["_plot_locked"] = True
+        session.scene["_game_started"] = True
+        session.characters["pc_hans"] = Character(
+            id="pc_hans",
+            name="汉斯",
+            player_id="p1",
+            summary="普通船员出身的机械师，熟悉游艇基础维修。",
+            tags=[TagValue(key="能力", value="维修、观察", layer="abilities")],
+        )
+        repository.save_session(session)
+        router = IntentRouter.__new__(IntentRouter)
+        executor = RecordingExecutor()
+        router.max_steps = 2
+        router._llm_generate = FakeLoopLlm()
+        router.repository = repository
+
+        result = await router._run_llm_tool_loop(
+            chat_provider_id="fake-provider",
+            system_prompt="system",
+            initial_prompt="玩家行动",
+            toolset=object(),
+            tool_executor=executor,
+            session_id="group-1",
+            raw_player_message="加入新角色，我是一名刺客，通过潜艇被投放在船附近，夜间游泳上船",
+            available_tool_names=["bind_player_character", "final_response"],
+        )
+        return result, executor, repository.last_audit_records("group-1", limit=20)
+
+    result, executor, records = asyncio.run(run_case())
+    guard_records = [item for item in records if item.get("type") == "character_card_final_reply_guard"]
+
+    assert [name for name, _args in executor.calls] == ["final_response"]
+    assert "还不能直接通过" in result.completion_text
+    assert "已潜伏" not in result.completion_text
+    assert guard_records[-1]["reason"] == "character_card_final_reply_unverified"
+    assert "character_card_power_mismatch" in guard_records[-1]["errors"]
 
 
 def test_terminal_request_wording_does_not_close_battle_turn_locally():

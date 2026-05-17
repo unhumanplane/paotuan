@@ -2574,6 +2574,8 @@ def validate_character_card_payload(
         reasons.append("角色卡不能直接写成半神、神格、创世神、全知全能或传奇权能；高阶身份和超凡权能必须先符合队伍层级并由 DM 裁定。")
     if _looks_like_late_join_power_bundle(combined):
         reasons.append("开场后新角色不能自带军队、传奇随从、跨作品神级身份或路过式解决当前冲突。")
+    if _looks_like_unearned_entry_success_fact(combined):
+        reasons.append("新角色卡不能把潜入、登船、绕过安保、已在隐蔽位置或已成功潜伏写成既成事实；入场位置和潜入结果需要场内裁定。")
     if _looks_like_world_law_rewrite(combined):
         reasons.append("角色卡或行动描述不能把“世界意志/规则修正/清除不合世界观事物”写成可执行能力。")
     if any(term.lower() in combined for term in CARD_FACT_INJECTION_TERMS):
@@ -2784,6 +2786,34 @@ BALANCE_HIGH_TECH_TERMS = (
     "rocket launcher",
 )
 
+BALANCE_ELITE_OPERATIVE_TERMS = (
+    "顶级",
+    "专业训练",
+    "受过专业训练",
+    "特种训练",
+    "特种潜水",
+    "特工",
+    "刺客",
+    "杀手",
+    "渗透",
+    "潜伏",
+    "潜入",
+    "格斗专家",
+    "格斗",
+    "轻武器",
+    "隐藏的轻武器",
+    "潜艇投放",
+    "干式潜水服",
+    "ks-23",
+    "霰弹枪",
+    "鹿弹",
+    "assassin",
+    "operative",
+    "special forces",
+    "commando",
+    "jason bourne",
+)
+
 
 def validate_character_card_party_balance(
     session: GameSession,
@@ -2840,6 +2870,9 @@ def validate_character_card_party_balance(
     if candidate.get("high_tech_terms") and not any(profile.get("high_tech_terms") for profile in existing_profiles) and baseline_max_score < 5:
         terms = "、".join(candidate.get("high_tech_terms", [])[:4])
         reasons.append(f"新角色装备科技/火力层级（{terms}）明显高于现有角色卡。")
+    if candidate.get("elite_operative_terms") and not any(profile.get("elite_operative_terms") for profile in existing_profiles) and baseline_max_score < 5:
+        terms = "、".join(candidate.get("elite_operative_terms", [])[:4])
+        reasons.append(f"新角色自带顶级渗透、特种作战或隐藏武装能力（{terms}），明显高于队伍基准；应降级为普通训练、有限装备或需要场内检定的资源。")
 
     candidate_score = int(candidate.get("score", 0))
     score_ceiling = max(baseline_max_score + 6, int(baseline_avg_score + 8), 8)
@@ -2875,6 +2908,7 @@ def _character_power_profile(*, name: str, summary: str, tags: List[Dict[str, An
     strategic_terms = _matched_terms(text, BALANCE_STRATEGIC_ASSET_TERMS) if _looks_like_strategic_asset_claim(text) else []
     force_candidates = _matched_terms(text, BALANCE_FORCE_MULTIPLIER_TERMS)
     force_terms = force_candidates if force_candidates and _contains_any_text(text, BALANCE_FORCE_CONTROL_TERMS) else []
+    elite_operative_terms = _matched_terms(text, BALANCE_ELITE_OPERATIVE_TERMS) if _looks_like_elite_operative_bundle(text) else []
     mythic_terms = list(
         dict.fromkeys(
             [
@@ -2897,15 +2931,17 @@ def _character_power_profile(*, name: str, summary: str, tags: List[Dict[str, An
             score += 1
     score += 12 if strategic_terms else 0
     score += 8 if force_terms else 0
+    score += 8 if elite_operative_terms else 0
     score += 9 if mythic_terms else 0
     score += 4 if high_tech_terms else 0
     score += 5 if absurd_numeric else 0
-    matched_terms = list(dict.fromkeys([*strategic_terms, *force_terms, *mythic_terms, *high_tech_terms]))
+    matched_terms = list(dict.fromkeys([*strategic_terms, *force_terms, *elite_operative_terms, *mythic_terms, *high_tech_terms]))
     return {
         "level": level,
         "score": score,
         "strategic_terms": strategic_terms,
         "force_terms": force_terms,
+        "elite_operative_terms": elite_operative_terms,
         "mythic_terms": mythic_terms,
         "high_tech_terms": high_tech_terms,
         "matched_terms": matched_terms,
@@ -2967,6 +3003,42 @@ def _looks_like_mythic_power_claim(text: str) -> bool:
         lowered,
         ("我是", "身为", "作为", "成为", "拥有", "持有", "掌握", "权能", "赐福", "神力", "神性", "神级"),
     )
+
+
+def _looks_like_elite_operative_bundle(text: str) -> bool:
+    lowered = str(text or "").lower()
+    if _contains_any_text(lowered, ("jason bourne", "杰森伯恩", "杰森·伯恩")):
+        return True
+    identity_terms = ("特工", "刺客", "杀手", "间谍", "突击队", "特战", "commando", "operative", "assassin")
+    capability_terms = (
+        "顶级",
+        "专业训练",
+        "受过专业训练",
+        "特种训练",
+        "特种潜水",
+        "渗透",
+        "潜伏",
+        "潜入",
+        "格斗",
+        "轻武器",
+        "隐藏的轻武器",
+        "潜艇投放",
+        "干式潜水服",
+        "ks-23",
+        "霰弹枪",
+        "鹿弹",
+    )
+    hits = sum(1 for term in capability_terms if term in lowered)
+    if _contains_any_text(lowered, identity_terms) and hits >= 2:
+        return True
+    return "潜艇" in lowered and "特种潜水" in lowered and hits >= 2
+
+
+def _looks_like_unearned_entry_success_fact(text: str) -> bool:
+    lowered = str(text or "").lower()
+    success_terms = ("已成功", "已经成功", "成功登", "成功潜", "已潜伏", "已经潜伏", "已在", "当前在隐蔽")
+    entry_terms = ("登船", "上船", "潜入", "潜伏", "绕过安保", "避开船员", "隐蔽位置", "藏身", "藏在")
+    return _contains_any_text(lowered, success_terms) and _contains_any_text(lowered, entry_terms)
 
 
 def _matched_terms(text: str, terms: tuple[str, ...]) -> List[str]:

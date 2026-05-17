@@ -89,6 +89,84 @@ def test_nuclear_material_card_exceeds_low_power_party_baseline():
     assert "铀" in result["candidate_profile"]["matched_terms"]
 
 
+def test_bind_player_character_rejects_elite_operative_late_join(tmp_path):
+    repository = JsonGameRepository(tmp_path / "data")
+    session = GameSession.new("group")
+    session.world_tags["_background_ready"] = True
+    session.world_tags["_plot_locked"] = True
+    session.scene["_game_started"] = True
+    session.characters["pc_hans"] = Character(
+        id="pc_hans",
+        name="汉斯",
+        player_id="p1",
+        summary="普通船员出身的机械师，熟悉游艇基础维修。",
+        tags=[TagValue(key="能力", value="维修、观察", layer="abilities")],
+    )
+    session.player_character_map["p1"] = "pc_hans"
+    repository.save_session(session)
+
+    tools = MemoryTools(
+        repository,
+        "group",
+        actor={"player_id": "p2"},
+        message="/dm 加入新角色，我是一名刺客，通过潜艇被投放在船附近，夜间游泳上船",
+    )
+    result = asyncio.run(
+        tools.bind_player_character(
+            character_id="pc_jason",
+            name="杰森·伯恩",
+            summary="受过专业训练的渗透与格斗专家，通过潜艇投放后夜间游泳登上音速号，已潜伏在船上伺机而动。",
+            tags=[
+                {"key": "职业", "value": "刺客/渗透者", "layer": "identity"},
+                {"key": "能力", "value": "渗透、格斗、轻武器、特种潜水", "layer": "abilities"},
+                {"key": "装备", "value": "顶级干式潜水服（已收好）、隐藏的轻武器和工具", "layer": "equipment"},
+                {"key": "入场方式", "value": "潜艇投放，夜间游泳登船", "layer": "notes"},
+            ],
+        )
+    )
+
+    saved = repository.load_session("group")
+    reasons = " ".join(result.get("reasons", []))
+
+    assert result["ok"] is False
+    assert result["error"] in {"character_card_unreasonable", "character_card_power_mismatch"}
+    assert "pc_jason" not in saved.characters
+    assert "p2" not in saved.player_character_map
+    assert any(term in reasons for term in ("潜入", "登船", "已成功潜伏", "入场位置"))
+
+
+def test_elite_operative_successor_exceeds_party_balance():
+    session = GameSession.new("group")
+    session.characters["pc_mechanic"] = Character(
+        id="pc_mechanic",
+        name="普通机械师",
+        player_id="p1",
+        summary="随队同行的普通机械师，擅长修理和基础观察。",
+        tags=[TagValue(key="能力", value="维修、观察", layer="abilities")],
+    )
+
+    result = validate_character_card_party_balance(
+        session,
+        "pc_jason",
+        name="杰森·伯恩",
+        summary="受过专业训练的渗透与格斗专家，通过潜艇投放后夜间游泳登上音速号，等待场内裁定潜入结果。",
+        tags=[
+            {"key": "职业", "value": "刺客/渗透者", "layer": "identity"},
+            {"key": "能力", "value": "渗透、格斗、轻武器、特种潜水", "layer": "abilities"},
+            {"key": "装备", "value": "顶级干式潜水服、隐藏的轻武器和工具", "layer": "equipment"},
+            {"key": "入场方式", "value": "潜艇投放，夜间游泳登船", "layer": "notes"},
+        ],
+    )
+
+    reasons = " ".join(result.get("reasons", []))
+
+    assert result
+    assert result["error"] == "character_card_power_mismatch"
+    assert result["candidate_profile"]["power_score"] >= 8
+    assert any(term in reasons for term in ("顶级渗透", "特种作战", "隐藏武装"))
+    assert any(term in result["candidate_profile"]["matched_terms"] for term in ("特种潜水", "隐藏的轻武器", "潜艇投放"))
+
+
 def test_start_game_accepts_json_string_outline_and_text_scene(tmp_path):
     repository = JsonGameRepository(tmp_path / "data")
     session = GameSession.new("group")

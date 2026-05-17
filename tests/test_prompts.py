@@ -172,6 +172,24 @@ def test_system_prompt_keeps_open_narrative_hooks_without_action_menu():
     assert "封闭行动菜单" in prompt
 
 
+def test_system_prompt_requires_dm_agency_and_pressure_instead_of_passive_menu():
+    session = GameSession.new("group")
+
+    prompt = build_system_prompt(
+        session,
+        GameMode.NARRATIVE,
+        ["update_scene", "resolve_check"],
+        actor={"player_id": "player-1"},
+    )
+
+    assert "DM 不是被动许愿机或路线菜单" in prompt
+    assert "围绕当前 objective/open_hooks/stakes/pressure_clock 推进主线" in prompt
+    assert "选择最相关的既有压力、NPC 动机、敌方行动或环境变化推进" in prompt
+    assert "不能接管世界事实、敌方意志、NPC 忠诚、剧情真相或主线方向" in prompt
+    assert "每个推进性回复至少体现一种可感知压力升级" in prompt
+    assert "不要用“你想跟谁走/还是先四处看看/你选择怎么做”" in prompt
+
+
 def test_user_prompt_routes_overview_map_requests_to_deterministic_renderer_hint():
     overview_prompt = build_user_prompt("画一张当前区域路线概览地图")
     tactical_prompt = build_user_prompt("画一张当前战场站位图")

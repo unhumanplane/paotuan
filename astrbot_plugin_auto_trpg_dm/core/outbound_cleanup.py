@@ -59,10 +59,16 @@ SEMANTIC_REVIEW_START_TERMS = (
     "你可以先告诉我",
     "可以先告诉我",
     "你想要",
+    "你想",
     "你打算",
     "下一步",
 )
 SEMANTIC_REVIEW_CONNECTORS = ("还是", "或者", "或是", "或者同时", "或同时")
+SOFT_ROUTE_CHOICE_RE = re.compile(r"你(?:想|打算).{0,80}(?:还是|或者|或是|或只是).{1,80}[？?]?$")
+INLINE_CAN_DO_CHOICE_RE = re.compile(
+    r"你可以.{0,120}(?:、|或者|或是|或只是).{1,120}"
+    r"(?:你(?:选择|想|打算).{0,12}怎么(?:做|处理|应对)|你选哪个|你的选择)[？?]?$"
+)
 
 HELP_REQUEST_TERMS = (
     "我能做什么",
@@ -767,6 +773,8 @@ def _looks_like_inline_action_menu(line: str) -> bool:
         sep in text for sep in ("、", "或者", "或是", "，", ",")
     ):
         return True
+    if SOFT_ROUTE_CHOICE_RE.search(text) or INLINE_CAN_DO_CHOICE_RE.search(text):
+        return True
     action_hits = sum(1 for term in ACTION_TERMS if term in text)
     return action_hits >= 2 and any(sep in text for sep in ("、", "或者", "或是", "，", ","))
 
@@ -814,6 +822,15 @@ def _hidden_menu_start_index(line: str) -> int:
     if soft_framed_match and any(connector in text for connector in ("还是", "或者", "或是")):
         if question_count >= 1 and _sentence_like_action_count(text) >= 2:
             return soft_framed_match.start()
+    inline_can_do_match = INLINE_CAN_DO_CHOICE_RE.search(text)
+    if inline_can_do_match:
+        return inline_can_do_match.start()
+    soft_route_match = SOFT_ROUTE_CHOICE_RE.search(text)
+    if soft_route_match and (
+        _sentence_like_action_count(soft_route_match.group(0)) >= 2
+        or any(term in soft_route_match.group(0) for term in ("跟着", "跟随", "四处看看", "看看", "等待"))
+    ):
+        return soft_route_match.start()
     next_match = re.search(r"下一步\s*[？?]", text)
     if next_match and _sentence_like_action_count(text) >= 2:
         return next_match.start()
@@ -832,6 +849,8 @@ def _looks_like_non_numbered_action_suggestion(line: str, player_wants_help: boo
     if not text or _looks_like_open_world_reminder(text) or _line_should_be_preserved(text):
         return False
     if "你可以" not in text and "接下来" not in text and "下一步" not in text:
+        return False
+    if _hidden_menu_start_index(text) > 0:
         return False
     menu_terms = ("选择", "选项", "路线", "条路", "告诉我", "让我", "行动")
     return any(term in text for term in menu_terms) and (
