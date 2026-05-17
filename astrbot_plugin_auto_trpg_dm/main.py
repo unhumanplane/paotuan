@@ -59,7 +59,7 @@ from .tools.registry import ToolRegistry
 from .tools.turn_tools import TurnTools
 
 
-PLUGIN_VERSION = "0.1.114"
+PLUGIN_VERSION = "0.1.115"
 
 DEFAULT_REASSURANCE_PHRASES = (
     "正在翻找合适的骰子。",
@@ -397,10 +397,10 @@ class AutoTrpgDmPlugin(Star):
     @filter.event_message_type(filter.EventMessageType.ALL)
     async def on_any_message(self, event: AstrMessageEvent):
         """只接收显式 /dm 入口，避免普通群聊进入 LLM。"""
-        message = (event.message_str or "").strip()
+        message = _event_best_plain_text(event)
         if not message:
             return
-        routed_message = self._extract_routed_message(event, message)
+        routed_message = self._extract_best_routed_message(event, message)
         if not routed_message:
             return
         async for result in self._handle_dm_event(event, routed_message):
@@ -2404,6 +2404,14 @@ class AutoTrpgDmPlugin(Star):
                 return stripped[len(prefix) :].strip()
         return ""
 
+    def _extract_best_routed_message(self, event: AstrMessageEvent, message: str) -> str:
+        best = self._extract_routed_message(event, message)
+        for candidate in _event_plain_text_candidates(event):
+            routed = self._extract_routed_message(event, candidate)
+            if len(routed) > len(best):
+                best = routed
+        return best
+
     async def _send_independent_ambient_image(self, session_id: str, result: dict[str, Any]) -> bool:
         if not result.get("ok") or not result.get("available") or not result.get("send_to_chat"):
             return False
@@ -4317,14 +4325,93 @@ def _event_has_empty_dm_command(event: AstrMessageEvent | None) -> bool:
 
 
 def _dm_command_argument_from_event(event: AstrMessageEvent | None) -> str | None:
-    message = str(getattr(event, "message_str", "") or "").strip()
-    if not message:
-        return None
-    normalized = message.replace("\u3000", " ")
-    match = re.fullmatch(r"/[dD][mM](?:\s+(?P<argument>.*))?", normalized, flags=re.DOTALL)
-    if not match:
-        return None
-    return str(match.group("argument") or "").strip()
+    best: str | None = None
+    for message in _event_plain_text_candidates(event):
+        normalized = message.replace("\u3000", " ")
+        match = re.fullmatch(r"/[dD][mM](?:\s+(?P<argument>.*))?", normalized, flags=re.DOTALL)
+        if not match:
+            continue
+        argument = str(match.group("argument") or "").strip()
+        if best is None or len(argument) > len(best):
+            best = argument
+    return best
+
+
+def _event_best_plain_text(event: AstrMessageEvent | None) -> str:
+    best = ""
+    for candidate in _event_plain_text_candidates(event):
+        if len(candidate) > len(best):
+            best = candidate
+    return best
+
+
+def _event_plain_text_candidates(event: AstrMessageEvent | None) -> list[str]:
+    if event is None:
+        return []
+    candidates: list[str] = []
+    _append_text_candidate(candidates, getattr(event, "message_str", None))
+    getter = getattr(event, "get_message_str", None)
+    if callable(getter):
+        try:
+            _append_text_candidate(candidates, getter())
+        except Exception:
+            pass
+    message_obj = getattr(event, "message_obj", None)
+    if message_obj is not None:
+        _append_text_candidate(candidates, getattr(message_obj, "message_str", None))
+        _append_text_candidate(candidates, _plain_text_from_message_value(getattr(message_obj, "message", None)))
+        _append_text_candidate(candidates, _plain_text_from_message_value(getattr(message_obj, "raw_message", None)))
+    return candidates
+
+
+def _append_text_candidate(candidates: list[str], value: object) -> None:
+    text = str(value or "").strip()
+    if text and text not in candidates:
+        candidates.append(text)
+
+
+def _plain_text_from_message_value(value: object) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, dict):
+        direct = _plain_text_from_message_dict(value)
+        if direct:
+            return direct
+        parts = []
+        for key in ("message", "raw_message", "messages"):
+            if key in value:
+                text = _plain_text_from_message_value(value.get(key))
+                if text:
+                    parts.append(text)
+        return "".join(parts)
+    if isinstance(value, (list, tuple)):
+        return "".join(_plain_text_from_message_value(item) for item in value)
+    text_attr = getattr(value, "text", None)
+    if isinstance(text_attr, str):
+        return text_attr
+    data_attr = getattr(value, "data", None)
+    if data_attr is not None:
+        return _plain_text_from_message_value(data_attr)
+    return ""
+
+
+def _plain_text_from_message_dict(value: dict) -> str:
+    component_type = str(value.get("type") or value.get("msg_type") or value.get("message_type") or "").lower()
+    if component_type in {"text", "plain"}:
+        data = value.get("data")
+        if isinstance(data, dict):
+            return str(data.get("text") or data.get("content") or "")
+        if isinstance(data, str):
+            return data
+        return str(value.get("text") or value.get("content") or "")
+    if not component_type:
+        if isinstance(value.get("text"), str):
+            return str(value.get("text") or "")
+        if isinstance(value.get("content"), str):
+            return str(value.get("content") or "")
+    return ""
 
 
 def _is_legacy_generic_character_id(character_id: str) -> bool:

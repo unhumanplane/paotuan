@@ -865,6 +865,71 @@ def test_dm_command_prefers_full_multiline_event_argument_when_greedystr_is_trun
     assert "第三幕 未知小岛探索遗迹" in routed_message
 
 
+def test_dm_command_recovers_multiline_argument_from_message_obj_string():
+    plugin = AutoTrpgDmPlugin.__new__(AutoTrpgDmPlugin)
+    full = (
+        "/dm 来一盘新游戏，剧情按照这个来搞:新剧本\n"
+        "时代背景：明朝\n"
+        "基本概括：老徐是锦衣卫百户，真实任务是寻访建文余孽。\n"
+        "玩家组成：明朝船队随员、西方背景雇佣兵、中东背景雇佣兵。\n"
+        "友方NPC组成：锦衣卫百户老徐、本地部落猎手、通译。\n"
+        "敌对NPC组成：波斯山贼、桃源教低级教徒、史东。\n"
+        "模组限定：武器严格遵守时代特征。"
+    )
+    event = FakeEvent(message_str="/dm 来一盘新游戏，剧情按照这个来搞:新剧本")
+    event.message_obj.message_str = full
+
+    routed_message = plugin._routed_message_from_command_content(
+        "来一盘新游戏，剧情按照这个来搞:新剧本",
+        event=event,
+    )
+
+    assert "时代背景：明朝" in routed_message
+    assert "玩家组成：明朝船队随员" in routed_message
+    assert "敌对NPC组成：波斯山贼" in routed_message
+    assert "模组限定：武器严格遵守时代特征" in routed_message
+
+
+def test_dm_command_recovers_multiline_argument_from_message_chain_plain_text():
+    plugin = AutoTrpgDmPlugin.__new__(AutoTrpgDmPlugin)
+    full = (
+        "/dm 来一盘新游戏，剧情按照这个来搞:新剧本\n"
+        "时代背景：明朝\n"
+        "基本概括：老徐是锦衣卫百户，真实任务是寻访建文余孽。\n"
+        "玩家组成：明朝船队随员、西方背景雇佣兵、中东背景雇佣兵。\n"
+        "友方NPC组成：锦衣卫百户老徐、本地部落猎手、通译。\n"
+        "敌对NPC组成：波斯山贼、桃源教低级教徒、史东。\n"
+        "模组限定：武器严格遵守时代特征。"
+    )
+    event = FakeEvent(message_str="/dm 来一盘新游戏，剧情按照这个来搞:新剧本")
+    event.message_obj.message = [types.SimpleNamespace(text=full)]
+
+    routed_message = plugin._routed_message_from_command_content(
+        "来一盘新游戏，剧情按照这个来搞:新剧本",
+        event=event,
+    )
+
+    assert "时代背景：明朝" in routed_message
+    assert "友方NPC组成：锦衣卫百户老徐" in routed_message
+    assert "模组限定：武器严格遵守时代特征" in routed_message
+
+
+def test_any_message_extracts_multiline_dm_from_message_chain_when_message_str_is_truncated():
+    plugin = AutoTrpgDmPlugin.__new__(AutoTrpgDmPlugin)
+    plugin.trigger_prefixes = ["/dm"]
+    event = FakeEvent(message_str="/dm 来一盘新游戏，剧情按照这个来搞:新剧本")
+    event.message_obj.message = [
+        {"type": "text", "data": {"text": "/dm 来一盘新游戏，剧情按照这个来搞:新剧本\n"}},
+        {"type": "text", "data": {"text": "时代背景：明朝\n"}},
+        {"type": "text", "data": {"text": "基本概括：老徐是锦衣卫百户，真实任务是寻访建文余孽。"}},
+    ]
+
+    routed_message = plugin._extract_best_routed_message(event, event.message_str)
+
+    assert "时代背景：明朝" in routed_message
+    assert "基本概括：老徐是锦衣卫百户" in routed_message
+
+
 class FakeLogger:
     def info(self, *args, **kwargs):
         pass

@@ -2,6 +2,18 @@
 
 所有已经合入 `main` 的用户可见变更都记录在这里。日期使用香港时区对应的开发日期。
 
+## [0.1.115] - 2026-05-17
+
+### Fixed
+
+- 修复 `/dm` 多行开团正文可能只取到首行的问题；命令入口现在会从 AstrBot 事件的 `message_str`、`message_obj.message_str`、消息链 `message` 和 `raw_message` 中恢复最长的 `/dm` 参数。
+- `on_any_message` 入口也复用同一套多行恢复逻辑，避免 command handler 与普通事件入口拿到的文本不一致。
+
+### Verified
+
+- `python -m pytest tests/test_dm_ack_and_outputs.py tests/test_scenario_templates.py -q`
+- `python -m compileall -q astrbot_plugin_auto_trpg_dm tests`
+
 ## [0.1.114] - 2026-05-17
 
 ### Fixed
