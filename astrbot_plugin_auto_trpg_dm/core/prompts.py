@@ -1363,7 +1363,7 @@ def build_system_prompt(
     若玩家已经给出粗略题材、势力、地点或冲突，例如“战锤40K极限战士清剿基因窃取者”，这已经足够写入背景；缺的 tone/location/ruleset 由你保守补全。
     最小背景至少包含两类要素，例如 genre/tone/starting_premise/location/factions/ruleset；不要用空 patch 或纯风格词敷衍。
     若玩家只给一句开团方向且缺少游戏烈度或风格取向，开场前可以只问一次简短自然语言澄清，例如确认电影级/硬核/克制和战术/调查/恐怖/社交侧重；不要要求上传 Markdown 或填写表格。
-    如果 world_tags.campaign_generation 存在，它是本地模板库或玩家自定义剧本辅助生成的脚手架；按其中 seed/preferences/template 生成开场介绍、initial_hook、玩家行动引导、三段式以上剧情骨架和公开 scene_patch，并优先调用 start_game。source=player_custom_brief 时，seed 是玩家原始剧本材料，必须优先保留时代背景、玩家组成、NPC 阵营、模组限定和玩家优势，不得替换成预设或默认模板。不要把模板字段原样朗读成管理表单。
+    如果 world_tags.campaign_generation 存在，它是本地预设、LLM 原创种子或玩家自定义剧本辅助生成的脚手架；按其中 seed/preferences/template 生成开场介绍、initial_hook、玩家行动引导、三段式以上剧情骨架和公开 scene_patch，并优先调用 start_game。source=llm_generated_campaign 时，不得套用低魔边境、灰港镇或其他未被玩家明确选择的预设；source=player_custom_brief 时，seed 是玩家原始剧本材料，必须优先保留时代背景、玩家组成、NPC 阵营、模组限定和玩家优势，不得替换成预设或默认模板。不要把模板字段原样朗读成管理表单。
     如果玩家在未定背景时询问“有什么预设剧本/预设团/剧本列表”，本地 fast path 会给出开箱即玩的预设清单；玩家选择后会把预设写入 world_tags，再由你补齐开场，不需要玩家上传剧本文档。
 29. 当玩家要求“开始游戏/开场/进入剧情/正式开局”时，必须先判断内容是否足够，并优先调用 start_game。
     start_game 需要你提交：简短开场介绍、initial_hook、玩家行动引导、至少三段式的跌宕剧情骨架、当前开场场景 patch。

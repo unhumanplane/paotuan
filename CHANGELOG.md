@@ -2,6 +2,19 @@
 
 所有已经合入 `main` 的用户可见变更都记录在这里。日期使用香港时区对应的开发日期。
 
+## [0.1.114] - 2026-05-17
+
+### Fixed
+
+- 去掉了普通开团路径里的自动模板匹配；除非玩家明确选择预设编号或标题，否则一律把种子交给 LLM 原创编写，不再自动落到低魔边境、底巢或其他模板。
+- 一句话开团的偏好追问现在也不再引用模板库标题，而是直接提示 LLM 原创补全，并把 pending 状态标记为 `llm_generated_campaign`。
+- 后端默认背景补全、路由兜底和提示词都同步改成 LLM 原创路径，避免“没明确选预设却悄悄套模板”的行为再次出现。
+
+### Verified
+
+- `python -m pytest tests/test_scenario_templates.py tests/test_dm_ack_and_outputs.py -q`
+- `python -m compileall -q astrbot_plugin_auto_trpg_dm tests`
+
 ## [0.1.113] - 2026-05-17
 
 ### Fixed

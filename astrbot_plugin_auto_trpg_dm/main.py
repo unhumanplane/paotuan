@@ -38,7 +38,6 @@ from .core.scenario_templates import (
     looks_like_campaign_generation_request,
     looks_like_campaign_preference_answer,
     looks_like_custom_campaign_brief,
-    match_campaign_template,
     select_campaign_preset,
     should_ask_campaign_preferences,
     template_by_key,
@@ -60,7 +59,7 @@ from .tools.registry import ToolRegistry
 from .tools.turn_tools import TurnTools
 
 
-PLUGIN_VERSION = "0.1.113"
+PLUGIN_VERSION = "0.1.114"
 
 DEFAULT_REASSURANCE_PHRASES = (
     "正在翻找合适的骰子。",
@@ -1054,8 +1053,8 @@ class AutoTrpgDmPlugin(Star):
             background_patch = {}
             background_action = "guided_background_bootstrap"
             if looks_like_campaign_generation_request(text):
-                background_patch = build_campaign_seed_patch(text, template=match_campaign_template(text))
-                background_action = "campaign_template_bootstrap"
+                background_patch = build_campaign_seed_patch(text)
+                background_action = "campaign_llm_bootstrap"
             if not background_patch:
                 background_patch = _guided_background_patch_from_text(text)
             if not background_patch and visual_map_request:
@@ -1270,8 +1269,6 @@ class AutoTrpgDmPlugin(Star):
                 template = None
                 if pending_template_key and pending_template_key != "custom_player_brief":
                     template = template_by_key(pending_template_key)
-                if template is None and not looks_like_custom_campaign_brief(seed):
-                    template = match_campaign_template(seed)
                 patch = build_campaign_seed_patch(seed, preference_text=text, template=template)
                 patch["campaign_preferences"] = {
                     "intensity_and_style": text[:1200],
@@ -1312,12 +1309,15 @@ class AutoTrpgDmPlugin(Star):
                 return str(pending.get("question") or "先确认一下这场团的烈度和玩法取向，一句话回我就行。")
 
         if should_ask_campaign_preferences(text):
-            template = None if looks_like_custom_campaign_brief(text) else match_campaign_template(text)
+            template = None
+            is_custom_brief = looks_like_custom_campaign_brief(text)
+            template_key = "custom_player_brief" if is_custom_brief else "llm_generated_campaign"
+            template_title = "玩家自定义剧本" if is_custom_brief else "LLM 原创剧本"
             question = build_campaign_preference_question(text, template)
             session.scene["_pending_campaign_preferences"] = {
                 "seed": text[:12000],
-                "template_key": template.key if template else "custom_player_brief",
-                "template_title": template.title if template else "玩家自定义剧本",
+                "template_key": template_key,
+                "template_title": template_title,
                 "question": question,
                 "actor_id": actor_id,
                 "asked_at": _utc_now_iso(),
@@ -1329,7 +1329,7 @@ class AutoTrpgDmPlugin(Star):
                     "type": "local_fast_path",
                     "action": "campaign_preference_question",
                     "actor": actor,
-                    "template_key": template.key if template else "custom_player_brief",
+                    "template_key": template_key,
                     "text": text[:240],
                 },
             )
@@ -1337,7 +1337,7 @@ class AutoTrpgDmPlugin(Star):
                 "campaign_preference_question session=%s sender=%s template=%s",
                 session_id,
                 actor_id,
-                template.key if template else "custom_player_brief",
+                template_key,
             )
             return question
         return ""
@@ -4768,13 +4768,19 @@ def _guided_background_patch_from_text(text: str) -> dict:
         return patch
     if delegated_background:
         return {
-            "genre": "低魔边境冒险",
-            "tone": "克制、危险、重选择后果",
-            "starting_premise": "玩家授权 DM 自动生成：一份异常委托把角色带到边境港镇，第一幕从失踪货船与封锁码头开始。",
-            "location": "边境港镇与近海航道",
-            "factions": "港务行会、旧贵族私兵、海盗残党、沉默教团",
+            "genre": "LLM 原创跑团",
+            "tone": "由 LLM 按玩家授权原创生成；保持可裁定、可推进、不过度追问",
+            "starting_premise": "玩家授权 DM 原创生成一个新团；第一幕、地点、阵营、威胁和开场钩子由 LLM 按当前输入补齐。",
+            "location": "由 LLM 原创生成；不得替换为默认边境港镇或未被明确选择的预设地点",
+            "factions": "由 LLM 原创整理玩家阵营、友方 NPC、敌对势力和初始冲突",
             "ruleset": "以 d20 检定为基础；概率、风险和对抗行动必须投骰。",
-            "campaign_background": "玩家未指定细节，DM 自动生成一个易开场、可裁定的低魔边境冒险背景。",
+            "campaign_background": "玩家未指定细节但授权 DM 原创生成；不得自动套用低魔边境、灰港镇或预设剧本。",
+            "campaign_generation": {
+                "source": "llm_generated_campaign",
+                "status": "ready_for_opening",
+                "seed": _compact_starting_premise(text),
+                "opening_instruction": "由 LLM 原创补齐世界背景、开场介绍、initial_hook、玩家行动引导、三段式以上剧情骨架和公开 scene_patch，然后优先调用 start_game。",
+            },
         }
     return {}
 

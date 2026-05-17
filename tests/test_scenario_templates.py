@@ -10,30 +10,28 @@ from astrbot_plugin_auto_trpg_dm.core.scenario_templates import (
     looks_like_campaign_generation_request,
     looks_like_campaign_preference_answer,
     looks_like_custom_campaign_brief,
-    match_campaign_template,
     select_campaign_preset,
     should_ask_campaign_preferences,
 )
 
 
-def test_warhammer_seed_matches_underhive_template_and_asks_preferences():
+def test_warhammer_seed_asks_preferences_without_auto_template_matching():
     text = "开一个战锤40K底巢清剿团，我是极限战士喷火兵，队里还有一个技术军士。"
 
-    template = match_campaign_template(text)
-    question = build_campaign_preference_question(text, template)
+    question = build_campaign_preference_question(text, None)
 
-    assert template.key in {"underhive_rusted_chapel", "grimdark_underhive_purge"}
     assert looks_like_campaign_generation_request(text) is True
-    assert should_ask_campaign_preferences(text, template) is True
+    assert should_ask_campaign_preferences(text) is True
     assert "烈度" in question
-    assert "清剿" in question
-    assert "恐怖" in question
+    assert "LLM" in question
+    assert "不自动套预设剧本" in question
+    assert "哥特科幻底巢清剿" not in question
 
 
 def test_seed_with_style_preferences_does_not_need_followup_question():
     text = "开一个硬核战锤40K底巢清剿团，战术清剿和恐怖调查均衡，别太多规则书细节。"
 
-    assert campaign_preference_gaps(text, match_campaign_template(text)) == []
+    assert campaign_preference_gaps(text) == []
     assert should_ask_campaign_preferences(text) is False
 
 
@@ -44,17 +42,19 @@ def test_preference_answer_is_accepted_without_being_new_campaign_seed():
     assert looks_like_campaign_generation_request(text) is False
 
 
-def test_campaign_seed_patch_uses_template_as_llm_scaffold_not_markdown_upload():
+def test_campaign_seed_patch_without_direct_preset_uses_llm_original_source():
     patch = build_campaign_seed_patch(
         "开一个战锤40K底巢清剿团，我是极限战士喷火兵。",
         preference_text="硬核，战术和恐怖均衡，别太多规则书细节。",
     )
 
-    assert patch["genre"] == "grimdark_sci_fi"
-    assert patch["campaign_contract"]["template_key"] in {"underhive_rusted_chapel", "grimdark_underhive_purge"}
+    assert patch["genre"] == "LLM 原创跑团"
+    assert patch["campaign_generation"]["source"] == "llm_generated_campaign"
+    assert patch["campaign_contract"]["template_key"] == "llm_generated_campaign"
     assert "硬核" in patch["tone"]
     assert "玩家一句话种子" in patch["campaign_background"]
-    assert "不要要求玩家上传或填写 Markdown" in patch["campaign_generation"]["opening_instruction"]
+    assert "不要套用预设库" in patch["campaign_generation"]["opening_instruction"]
+    assert "模板骨架" not in patch["campaign_background"]
 
 
 def test_structured_custom_campaign_brief_uses_player_source_instead_of_low_magic_template():
@@ -98,11 +98,13 @@ def test_preset_list_is_player_visible_and_contains_multiple_styles():
 def test_preset_selection_by_number_and_title():
     by_number = select_campaign_preset("跑 3 号")
     by_title = select_campaign_preset("就跑暖炉酒馆小镇奇案")
+    not_direct_selection = select_campaign_preset("开一个战锤40K底巢清剿团")
 
     assert by_number is not None
     assert by_number.title == "雾港悬疑调查"
     assert by_title is not None
     assert by_title.key == "cozy_tavern_mystery"
+    assert not_direct_selection is None
 
 
 def test_preset_patch_marks_quickstart_scaffold():

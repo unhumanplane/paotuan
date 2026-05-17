@@ -2788,16 +2788,19 @@ def _infer_scene_patch_from_text(message: str) -> dict[str, Any]:
 def _default_generated_background_patch(message: str) -> dict[str, Any]:
     source = _short_inferred_text(" ".join(str(message or "").strip().split()), 180)
     return {
-        "genre": "低魔边境冒险",
-        "tone": "克制、危险、重选择后果",
-        "starting_premise": "一份来历不明的委托把玩家聚到边境港镇；第一幕从失踪货船与封锁码头开始。",
-        "location": "边境港镇与近海航道",
-        "factions": "港务行会、旧贵族私兵、海盗残党、沉默教团",
+        "genre": "LLM 原创跑团",
+        "tone": "由 LLM 按玩家授权原创生成；保持可裁定、可推进、不过度追问",
+        "starting_premise": "玩家授权 DM 原创生成一个新团；第一幕、地点、阵营、威胁和开场钩子由 LLM 按当前输入补齐。",
+        "location": "由 LLM 原创生成；不得替换为默认边境港镇或未被明确选择的预设地点",
+        "factions": "由 LLM 原创整理玩家阵营、友方 NPC、敌对势力和初始冲突",
         "ruleset": "以 d20 检定为基础；概率、风险和对抗行动必须投骰。",
-        "campaign_background": (
-            "玩家授权 DM 自动生成背景。默认采用低魔边境冒险：边境港镇、失踪货船、封锁码头、"
-            "互相牵制的港务行会与海盗残党。"
-        ),
+        "campaign_background": "玩家授权 DM 原创生成背景；不得自动套用低魔边境、灰港镇或预设剧本。",
+        "campaign_generation": {
+            "source": "llm_generated_campaign",
+            "status": "ready_for_opening",
+            "seed": source,
+            "opening_instruction": "由 LLM 原创补齐世界背景、开场介绍、initial_hook、玩家行动引导、三段式以上剧情骨架和公开 scene_patch，然后优先调用 start_game。",
+        },
         "background_source": source or "dm_generated_fallback",
     }
 

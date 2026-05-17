@@ -324,13 +324,7 @@ PRESET_SELECTION_TERMS = (
     "内置",
     "选",
     "选择",
-    "就这个",
-    "就那个",
-    "这个",
-    "那个",
     "载入",
-    "用",
-    "用这个",
     "就跑",
 )
 PRESET_START_TERMS = (
@@ -360,6 +354,8 @@ CHINESE_NUMBERS = {
 }
 CUSTOM_CAMPAIGN_BRIEF_KEY = "custom_player_brief"
 CUSTOM_CAMPAIGN_BRIEF_TITLE = "玩家自定义剧本"
+LLM_CAMPAIGN_KEY = "llm_generated_campaign"
+LLM_CAMPAIGN_TITLE = "LLM 原创剧本"
 CUSTOM_CAMPAIGN_BRIEF_SECTION_TERMS = (
     "时代背景",
     "基本概括",
@@ -391,7 +387,7 @@ def format_campaign_preset_list() -> str:
             f"{index}. 《{template.title}》：{_template_summary(template)}"
             f"（{tags}，{template.recommended_players}）"
         )
-    lines.append("也可以直接给一句新方向；我会按最接近的模板补成可开场剧本。")
+    lines.append("也可以直接给一句新方向；我会让 LLM 原创补成可开场剧本，不自动套这些预设。")
     return "\n".join(lines)
 
 
@@ -414,8 +410,8 @@ def select_campaign_preset(text: str) -> Optional[CampaignTemplate]:
             best_score = score
     if not best_template:
         return None
-    has_selection_context = _contains_any(normalized, PRESET_SELECTION_TERMS)
-    concise_title_pick = len(normalized) <= 20 and best_score >= 3
+    has_selection_context = _looks_like_preset_selection_context(normalized)
+    concise_title_pick = _looks_like_direct_preset_title(normalized, best_template, best_score)
     if has_selection_context or concise_title_pick:
         return best_template
     return None
@@ -582,7 +578,13 @@ def build_campaign_preference_question(text: str, template: Optional[CampaignTem
             "开场前确认一下取向：烈度偏电影级冒险、硬核伤亡，还是克制一点？"
             "玩法更想偏战术推进、调查/社交，还是两者均衡？一句话回我就行。"
         )
-    chosen = template or match_campaign_template(text)
+    if template is None:
+        return (
+            "可以。这个新团我会让 LLM 按你的种子原创编写，不自动套预设剧本或默认低魔模板。"
+            "开场前确认一下取向：烈度偏电影级冒险、硬核伤亡，还是克制一点？"
+            "玩法更想偏战术推进、调查/社交、探索生存，还是几者均衡？一句话回我就行。"
+        )
+    chosen = template
     first_focus, second_focus = chosen.focus_axes
     return (
         f"可以。这个{chosen.title}我先按“{chosen.default_tone}”搭骨架。"
@@ -598,7 +600,17 @@ def build_campaign_seed_patch(
 ) -> Dict[str, Any]:
     if looks_like_custom_campaign_brief(seed_text):
         return _build_custom_campaign_seed_patch(seed_text, preference_text=preference_text)
-    chosen = template or match_campaign_template(seed_text)
+    if template is None:
+        return _build_llm_campaign_seed_patch(seed_text, preference_text=preference_text)
+    return _build_template_campaign_seed_patch(seed_text, preference_text=preference_text, template=template)
+
+
+def _build_template_campaign_seed_patch(
+    seed_text: str,
+    preference_text: str = "",
+    template: Optional[CampaignTemplate] = None,
+) -> Dict[str, Any]:
+    chosen = template or DEFAULT_TEMPLATE
     seed = _short(seed_text, 12000)
     preferences = _short(preference_text, 1200)
     tone_parts = [chosen.default_tone]
@@ -633,6 +645,49 @@ def build_campaign_seed_patch(
             "opening_instruction": (
                 "不要要求玩家上传或填写 Markdown；把预设模板当作内部脚手架，"
                 "补齐开场介绍、initial_hook、玩家行动引导、三段式以上剧情骨架和公开 scene_patch，然后调用 start_game。"
+            ),
+        },
+    }
+
+
+def _build_llm_campaign_seed_patch(seed_text: str, preference_text: str = "") -> Dict[str, Any]:
+    seed = _short(seed_text, 12000)
+    preferences = _short(preference_text, 1200)
+    tone_parts = ["LLM 原创生成；不套用预设模板；按玩家种子和取向补齐可开场、可裁定、可推进的剧本"]
+    if preferences:
+        tone_parts.append(f"玩家取向：{preferences}")
+    campaign_background_parts = [f"玩家一句话种子：{seed}" if seed else "玩家授权 DM 原创生成一个新团"]
+    if preferences:
+        campaign_background_parts.insert(0, f"玩家风格取向：{preferences}")
+    campaign_background = "；".join(campaign_background_parts)
+    return {
+        "genre": "LLM 原创跑团",
+        "tone": "；".join(tone_parts),
+        "location": "由 LLM 根据玩家种子原创生成；不得替换为默认边境港镇或未被明确选择的预设地点",
+        "factions": ["由 LLM 根据玩家种子和风格取向原创整理玩家阵营、NPC、敌对势力和初始冲突"],
+        "ruleset": "以 d20 检定为基础；概率、风险和对抗行动必须投骰，规则细节服务于当前剧本而不是预设模板。",
+        "starting_premise": _short(campaign_background, 6000),
+        "campaign_background": campaign_background,
+        "campaign_contract": {
+            "genre": "LLM 原创跑团",
+            "premise": _short(seed, 800),
+            "tone": _short("；".join(tone_parts), 800),
+            "template_key": LLM_CAMPAIGN_KEY,
+            "template_title": LLM_CAMPAIGN_TITLE,
+            "source": "llm_generated_campaign",
+        },
+        "campaign_generation": {
+            "source": "llm_generated_campaign",
+            "status": "ready_for_opening",
+            "template_key": LLM_CAMPAIGN_KEY,
+            "template_title": LLM_CAMPAIGN_TITLE,
+            "seed": _short(seed, 1200),
+            "preferences": _short(preferences, 500),
+            "preserve_player_seed": True,
+            "opening_instruction": (
+                "不要套用预设库、默认低魔边境、灰港镇或其他未被玩家明确选择的模板。"
+                "把 seed 和 preferences 当作创作约束，由 LLM 原创补齐世界背景、开场介绍、initial_hook、"
+                "玩家行动引导、三段式以上剧情骨架和公开 scene_patch，然后优先调用 start_game。"
             ),
         },
     }
@@ -710,6 +765,37 @@ def _selected_preset_number(text: str) -> Optional[int]:
         if re.search(rf"(?:第|选|选择|预设|模板|跑|就跑)?\s*{re.escape(word)}\s*(?:号|个|本|号本)", stripped):
             return number
     return None
+
+
+def _looks_like_preset_selection_context(text: str) -> bool:
+    normalized = _normalize(text)
+    if not normalized:
+        return False
+    if _contains_any(normalized, PRESET_SELECTION_TERMS):
+        return True
+    if normalized.startswith("跑") and not normalized.startswith("跑团"):
+        return True
+    if ("用" in normalized or "按" in normalized) and _contains_any(normalized, ("预设", "模板", "内置")):
+        return True
+    if _contains_any(normalized, ("就这个", "就那个", "用这个", "用那个")) and _contains_any(
+        normalized,
+        ("预设", "模板", "剧本", "团本"),
+    ):
+        return True
+    return False
+
+
+def _looks_like_direct_preset_title(text: str, template: CampaignTemplate, score: int) -> bool:
+    normalized = _normalize(text)
+    if not normalized or len(normalized) > 24 or score < 8:
+        return False
+    if _contains_any(normalized, ("开一个", "来一个", "来一盘", "新团", "新游戏", "跑团", "帮我", "给我", "剧情按照")):
+        return False
+    compact_text = re.sub(r"[\s《》:：，,。.!！?？、\-—_]+", "", normalized)
+    compact_title = re.sub(r"[\s《》:：，,。.!！?？、\-—_]+", "", template.title.lower())
+    if compact_text == compact_title:
+        return True
+    return len(compact_text) >= 4 and compact_text in compact_title
 
 
 def _preset_selection_score(text: str, template: CampaignTemplate) -> int:

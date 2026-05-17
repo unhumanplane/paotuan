@@ -465,11 +465,52 @@ def test_new_campaign_seed_asks_style_preferences_before_background_write():
     )
 
     assert "烈度" in reply
-    assert "战术清剿" in reply
-    assert "恐怖调查" in reply
+    assert "LLM" in reply
+    assert "不自动套预设剧本" in reply
     assert "_pending_campaign_preferences" in repo.session.scene
+    assert repo.session.scene["_pending_campaign_preferences"]["template_key"] == "llm_generated_campaign"
     assert "_background_ready" not in repo.session.world_tags
     assert any(record.get("action") == "campaign_preference_question" for record in repo.audits)
+
+
+def test_campaign_preference_answer_writes_llm_generated_background_without_template_match():
+    session = GameSession.new("group")
+    session.scene["_pending_campaign_preferences"] = {
+        "seed": "开一个战锤40K底巢清剿团，我是极限战士喷火兵，队里还有一个技术军士。",
+        "template_key": "llm_generated_campaign",
+        "template_title": "LLM 原创剧本",
+        "question": "先确认烈度。",
+        "actor_id": "player-a",
+        "asked_at": "2026-05-17T00:00:00+00:00",
+    }
+    repo = FakeRepository(session)
+    plugin = AutoTrpgDmPlugin.__new__(AutoTrpgDmPlugin)
+    plugin.repository = repo
+    plugin.ambient_image_config = AmbientImageConfig(enabled=False)
+    plugin.plugin_logger = FakeLogger()
+    plugin.honcho_config = types.SimpleNamespace(
+        enabled=False,
+        read_enabled=False,
+        max_context_chars=0,
+    )
+
+    reply = asyncio.run(
+        plugin._local_fast_path(
+            FakeEvent(),
+            "group",
+            {"player_id": "player-a"},
+            "硬核，战术和恐怖均衡，别太多规则书细节。",
+        )
+    )
+
+    assert reply == ""
+    assert repo.session.world_tags["_background_ready"] is True
+    assert repo.session.world_tags["campaign_generation"]["source"] == "llm_generated_campaign"
+    assert repo.session.world_tags["campaign_contract"]["template_key"] == "llm_generated_campaign"
+    assert "模板骨架" not in repo.session.world_tags["campaign_background"]
+    assert "硬核" in repo.session.world_tags["campaign_preferences"]["intensity_and_style"]
+    assert "_pending_campaign_preferences" not in repo.session.scene
+    assert any(record.get("action") == "campaign_preference_answered" for record in repo.audits)
 
 
 def test_campaign_preference_answer_writes_template_background_and_continues_to_router():
