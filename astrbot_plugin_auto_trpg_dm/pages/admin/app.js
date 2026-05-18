@@ -2,6 +2,7 @@
   "use strict";
 
   var bridge = null;
+  var bridgeReady = false;
   var selectedSessionKey = "";
 
   var els = {
@@ -159,7 +160,7 @@
         '<div class="event-head"><span class="event-title">' + esc(title) + "</span>" + status + "</div>" +
         '<div class="event-time">' + esc(record.at || "") + "</div>" +
         (record.message ? '<div class="event-message">' + esc(record.message) + "</div>" : "") +
-        (record.error ? '<div class="event-message">错误：' + esc(record.error) + "</div>" : "") +
+        (record.error ? '<div class="event-message">错误: ' + esc(record.error) + "</div>" : "") +
         '<pre class="json-panel">' + esc(pretty(record.record || {})) + "</pre>" +
         "</article>";
     }).join("");
@@ -187,12 +188,31 @@
 
   async function apiGet(endpoint) {
     try {
-      var result = await bridge.apiGet(endpoint, {});
+      var result = bridgeReady
+        ? await bridge.apiGet(endpoint, {})
+        : await fetchPluginApi(endpoint);
       return unwrap(result);
     } catch (error) {
       toast(error.message || "请求失败");
       return null;
     }
+  }
+
+  async function fetchPluginApi(endpoint) {
+    var token = window.localStorage ? localStorage.getItem("token") : "";
+    if (!token) {
+      throw new Error("未登录 AstrBot Dashboard");
+    }
+    var response = await fetch("/api/plug/auto_trpg_dm/" + endpoint.replace(/^\/+/, ""), {
+      headers: { Authorization: "Bearer " + token },
+    });
+    var data = await response.json().catch(function () {
+      return { status: "error", message: "响应不是 JSON" };
+    });
+    if (!response.ok) {
+      throw new Error(data.message || ("HTTP " + response.status));
+    }
+    return data;
   }
 
   function unwrap(result) {
@@ -265,15 +285,19 @@
 
   async function init() {
     try {
-      bridge = await waitForBridge(10000);
+      bridge = await waitForBridge(1200);
       await Promise.race([
         bridge.ready(),
-        new Promise(function (resolve) { setTimeout(resolve, 8000); }),
+        new Promise(function (resolve) { setTimeout(resolve, 3000); }),
       ]);
-      await refreshAll();
-    } catch (error) {
-      toast(error.message || "初始化失败");
-      els.sessionList.innerHTML = emptyHtml("请从 AstrBot Dashboard 的插件页面打开。");
+      bridgeReady = true;
+    } catch (_error) {
+      bridgeReady = false;
+    }
+
+    await refreshAll();
+    if (!bridgeReady) {
+      toast("已使用直接访问模式");
     }
   }
 

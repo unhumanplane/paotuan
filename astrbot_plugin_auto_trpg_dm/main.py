@@ -60,127 +60,127 @@ from .tools.registry import ToolRegistry
 from .tools.turn_tools import TurnTools
 
 
-PLUGIN_VERSION = "0.1.124"
+PLUGIN_VERSION = "0.1.126"
 
 DEFAULT_REASSURANCE_PHRASES = (
-    "??????????",
-    "????????????",
-    "???????????",
-    "??????",
-    "???????",
-    "??????",
-    "??????????",
-    "??????????",
-    "????????",
-    "????????",
+    "正在翻找合适的骰子。",
+    "正在把旁白调到合适音量。",
+    "正在等灵感从杯底冒泡。",
+    "骰子热身中。",
+    "规则书翻页中。",
+    "灵感加载中。",
+    "幕布只拉开了一条缝。",
+    "茶还烫，故事也一样。",
+    "便签纸挤成一排。",
+    "下一句还在路上。",
 )
 DEFAULT_REASSURANCE_MAP_PHRASES = (
-    "????????",
-    "?????????",
-    "???????????",
-    "????",
-    "??????",
-    "??????",
-    "????????",
-    "???????",
-    "SVG?????",
-    "????????",
+    "正在把铅笔削尖。",
+    "正在把小旗子摆正。",
+    "正在擦掉多余的橡皮屑。",
+    "制图中。",
+    "格线对齐中。",
+    "地形描边中。",
+    "地图纸刚刚摊平。",
+    "标尺还差一格。",
+    "SVG小心装订。",
+    "战场草图还没干。",
 )
 DEFAULT_REASSURANCE_STYLE_POOLS = {
     "fantasy": (
-        "?????????",
-        "????????",
-        "??????????",
-        "??????",
-        "????????",
-        "??????",
-        "????????",
-        "???????",
-        "?????????",
-        "???????",
+        "正在吹干魔法墨水。",
+        "正在把卷轴摊平。",
+        "正在给旅店铃铛擦灰。",
+        "少女祈祷中。",
+        "吟游诗人清嗓中。",
+        "卷轴防潮中。",
+        "羊皮卷翻到一半。",
+        "法杖靠墙充电。",
+        "冒险日志夹着书签。",
+        "旧墨水还没干。",
     ),
     "grimdark_scifi": (
-        "???????????",
-        "???????????",
-        "?????????",
-        "???????",
-        "????????",
-        "??????",
-        "??????????",
-        "?????????",
-        "????????",
-        "????????",
+        "正在擦战术屏上的指纹。",
+        "正在给数据板找充电口。",
+        "正在过滤信号噪声。",
+        "鸟卜仪读条中。",
+        "舰桥记录加载中。",
+        "机仆重启中。",
+        "等离子灯管闪了两下。",
+        "舰桥广播试了个音。",
+        "螺丝刀暂时失踪。",
+        "警示灯还在眨眼。",
     ),
     "urban_occult": (
-        "????????",
-        "??????????",
-        "????????",
-        "???????",
-        "????????",
-        "????????",
-        "??????",
-        "??????",
-        "????????",
-        "???????",
+        "正在拆封档案袋。",
+        "正在给手电筒换电池。",
+        "正在调午夜电台。",
+        "档案袋拆封中。",
+        "录音带还在倒带。",
+        "午夜电台调频中。",
+        "电梯还没到。",
+        "便签贴歪了。",
+        "档案夹还没合上。",
+        "旧报纸摊开中。",
     ),
     "post_apocalyptic": (
-        "?????????",
-        "????????",
-        "??????????",
-        "???????",
-        "????????",
-        "???????",
-        "???????",
-        "????????",
-        "????????",
-        "?????????",
+        "正在给旧终端拍灰。",
+        "正在拧紧水壶盖。",
+        "正在哄发电机别熄火。",
+        "旧终端加载中。",
+        "补给清单翻页中。",
+        "收音机调频中。",
+        "罐头开了一半。",
+        "轮胎还差两口气。",
+        "沙尘滤网堵住了。",
+        "收音机只剩沙沙声。",
     ),
 }
 REASSURANCE_STYLE_ALIASES = {
-    "fantasy": ("fantasy", "dnd", "d&d", "??", "??", "??", "??"),
-    "grimdark_scifi": ("grimdark_scifi", "grimdark", "warhammer", "40k", "??", "??", "??"),
-    "urban_occult": ("urban_occult", "urban", "occult", "??", "??", "??", "??"),
-    "post_apocalyptic": ("post_apocalyptic", "apocalypse", "wasteland", "??", "??", "????"),
+    "fantasy": ("fantasy", "dnd", "d&d", "奇幻", "地城", "魔法", "冒险"),
+    "grimdark_scifi": ("grimdark_scifi", "grimdark", "warhammer", "40k", "战锤", "科幻", "星际"),
+    "urban_occult": ("urban_occult", "urban", "occult", "都市", "现代", "神秘", "异常"),
+    "post_apocalyptic": ("post_apocalyptic", "apocalypse", "wasteland", "废土", "末世", "后启示录"),
 }
 REASSURANCE_MAP_TERMS = (
-    "??",
-    "????",
-    "??",
+    "地图",
+    "生成地图",
+    "制图",
     "svg",
-    "????",
-    "????",
-    "???",
-    "???",
+    "战场示意",
+    "战术地图",
+    "站位图",
+    "地形图",
     "battle map",
     "map",
     "tactical layout",
     "terrain sketch",
 )
 REASSURANCE_UNSAFE_TERMS = (
-    "???",
-    "????",
-    "??",
-    "????",
-    "??",
-    "??",
-    "????",
-    "????",
-    "???",
-    "????",
-    "????",
-    "?????",
-    "????",
-    "????",
+    "避难点",
+    "隐藏密道",
+    "密道",
+    "敌人正在",
+    "伏击",
+    "宝藏",
+    "出口已经",
+    "入口已经",
+    "线索是",
+    "一定成功",
+    "保证成功",
+    "马上会看到",
+    "两个选择",
+    "三个选择",
 )
 REASSURANCE_CHOICE_TERMS = (
-    "???",
-    "?????",
-    "????",
-    "??????",
-    "??",
-    "?????",
-    "???",
-    "???",
+    "请选择",
+    "你可以选择",
+    "你要选择",
+    "你有以下选择",
+    "选项",
+    "下一步可以",
+    "建议你",
+    "你应该",
     "what do you do",
     "choose",
     "option",
@@ -190,7 +190,7 @@ REASSURANCE_CHOICE_TERMS = (
 @register(
     "auto_trpg_dm",
     "codex",
-    "????? TRPG DM?????????????Tag ?????????",
+    "全自然语言 TRPG DM：动态规则、战棋物理验证、Tag 角色卡与自动剧本。",
     PLUGIN_VERSION,
 )
 class AutoTrpgDmPlugin(Star):
@@ -216,7 +216,7 @@ class AutoTrpgDmPlugin(Star):
         self.reassurance_enabled = self._config_bool("reassurance_enabled", True)
         self.reassurance_delay_seconds = max(0, self._config_int("reassurance_delay_seconds", 30))
         self.reassurance_cooldown_seconds = max(0, self._config_int("reassurance_cooldown_seconds", 300))
-        self.reassurance_prefix = self._config_str("reassurance_prefix", "??????") or "??????"
+        self.reassurance_prefix = self._config_str("reassurance_prefix", "请等待回复：") or "请等待回复："
         self.reassurance_phrases = tuple(self._config_list("reassurance_phrases") or DEFAULT_REASSURANCE_PHRASES)
         self.reassurance_map_phrases = tuple(
             self._config_list("reassurance_map_phrases") or DEFAULT_REASSURANCE_MAP_PHRASES
@@ -338,28 +338,45 @@ class AutoTrpgDmPlugin(Star):
         registered = self.admin_web.register_routes(self.astr_context)
         if registered:
             self.plugin_logger.info("admin_web_routes_registered count=%s", registered)
+        try:
+            static_dashboard = self.admin_web.install_static_dashboard()
+            if static_dashboard.get("installed"):
+                self.plugin_logger.info(
+                    "admin_web_static_dashboard_installed url=%s path=%s files=%s",
+                    static_dashboard.get("url"),
+                    static_dashboard.get("path"),
+                    len(static_dashboard.get("files") or []),
+                )
+            else:
+                self.plugin_logger.warning(
+                    "admin_web_static_dashboard_skipped reason=%s path=%s",
+                    static_dashboard.get("reason"),
+                    static_dashboard.get("path"),
+                )
+        except Exception as exc:
+            self.plugin_logger.warning("admin_web_static_dashboard_failed error=%s", exc)
 
     @filter.command("dm")
     async def on_dm_command(self, event: AstrMessageEvent, content: GreedyStr):
-        """???????/dm ?????????????"""
+        """唯一显式入口：/dm 后面全部交给自然语言路由。"""
         async for result in self._handle_dm_command_content(event, content):
             yield result
 
     @filter.command("DM")
     async def on_dm_command_upper(self, event: AstrMessageEvent, content: GreedyStr):
-        """?????? /DM??????? AstrBot ?????"""
+        """兼容玩家误用 /DM，避免请求落到 AstrBot 默认聊天。"""
         async for result in self._handle_dm_command_content(event, content):
             yield result
 
     @filter.command("Dm")
     async def on_dm_command_title(self, event: AstrMessageEvent, content: GreedyStr):
-        """?????? /Dm?"""
+        """兼容玩家误用 /Dm。"""
         async for result in self._handle_dm_command_content(event, content):
             yield result
 
     @filter.command("dM")
     async def on_dm_command_mixed(self, event: AstrMessageEvent, content: GreedyStr):
-        """?????? /dM?"""
+        """兼容玩家误用 /dM。"""
         async for result in self._handle_dm_command_content(event, content):
             yield result
 
@@ -370,7 +387,7 @@ class AutoTrpgDmPlugin(Star):
                 "empty_dm_command_ignored session=%s",
                 IntentRouter.session_id_for_event(event),
             )
-            yield self._quoted_result(event, "??? `/dm` ????????????????")
+            yield self._quoted_result(event, "请输入 `/dm` 后面的具体行动、问题或开局需求。")
             event.stop_event()
             return
         if not self._claim_dm_event_route(event, "command"):
@@ -401,7 +418,7 @@ class AutoTrpgDmPlugin(Star):
 
     @filter.event_message_type(filter.EventMessageType.ALL)
     async def on_any_message(self, event: AstrMessageEvent):
-        """????? /dm ??????????? LLM?"""
+        """只接收显式 /dm 入口，避免普通群聊进入 LLM。"""
         message = _event_best_plain_text(event)
         if not message:
             return
@@ -530,7 +547,7 @@ class AutoTrpgDmPlugin(Star):
         reassurance_task = None
         try:
             if self._should_send_dm_ack(session_id, sender_id):
-                yield self._quoted_result(event, "????????????")
+                yield self._quoted_result(event, "收到，正在结算这一幕……")
             reassurance_task = self._start_long_running_reassurance_task(session_id, actor, routed_message)
             completion = await self.router.handle_message(
                 event,
@@ -557,7 +574,7 @@ class AutoTrpgDmPlugin(Star):
         sent_any = False
         if completion or other_outputs or dice_summary:
             if not completion and other_outputs:
-                completion = "??????????"
+                completion = "地图已生成，已附上。"
             self.plugin_logger.info(
                 "dm_completed session=%s sender=%s reply_chars=%s pending_outputs=%s",
                 session_id,
@@ -785,7 +802,7 @@ class AutoTrpgDmPlugin(Star):
         return safe[index]
 
     def _format_long_running_reassurance_text(self, phrase: str) -> str:
-        prefix = str(getattr(self, "reassurance_prefix", "") or "??????").strip() or "??????"
+        prefix = str(getattr(self, "reassurance_prefix", "") or "请等待回复：").strip() or "请等待回复："
         body = str(phrase or "").strip()
         while body.startswith(prefix):
             body = body[len(prefix) :].strip()
@@ -860,7 +877,7 @@ class AutoTrpgDmPlugin(Star):
                     "text": text[:240],
                 },
             )
-            return "???????????????????? `/dm status`?`/dm token`?`/dm ????` ????????????????????????????"
+            return "当前叙事周期正在结算或过渡中。我可以回答 `/dm status`、`/dm token`、`/dm 当前轮次` 这类只读查询；新的行动、重置、备份恢复或推进轮次请稍候。"
 
         if not has_campaign_background(session):
             preset_reply = await self._campaign_preset_fast_path(session_id, session, actor, text)
@@ -884,14 +901,14 @@ class AutoTrpgDmPlugin(Star):
                 },
             )
             return (
-                "??????????? AI ?????????????????"
-                "????? DM ???????????? 120 ????????????????"
+                "不能把所有玩家角色交给 AI 全权托管，也不能自动推完整段剧情。"
+                "我会继续当 DM 引导局势；单个行动者超过 120 秒未响应时，才会按规则保守代管。"
             )
 
         if _looks_like_manual_ambient_image_request(text):
             return self._handle_manual_ambient_image_request(event, session_id, session, actor, text)
 
-        if normalized in {"pause", "??", "????", "????"}:
+        if normalized in {"pause", "暂停", "暂停流程", "暂停游戏"}:
             session.scene["_dm_paused"] = True
             session.scene["_dm_pause_reason"] = text
             session.scene["_dm_paused_by"] = actor
@@ -903,10 +920,10 @@ class AutoTrpgDmPlugin(Star):
                 session_id,
                 actor,
                 text,
-                story_moment="???????????????????",
-                rationale="????????????? 2 ??????????",
+                story_moment="跑团流程暂停，角色和场景进入短暂静止。",
+                rationale="暂停是特殊剧情节奏事件，按 2 小时冷却尝试氛围图。",
             )
-            return "?????????????????????????????? `/dm resume` ? `/dm ??`?"
+            return "流程已暂停。我不会推进轮次、替人行动或调用模型；需要继续时发 `/dm resume` 或 `/dm 恢复`。"
 
         if _looks_like_resume_flow_command(normalized, paused=paused):
             if paused:
@@ -922,10 +939,10 @@ class AutoTrpgDmPlugin(Star):
                 session_id,
                 actor,
                 text,
-                story_moment="??????????????????????",
-                rationale="??????????????? 2 ??????????",
+                story_moment="跑团流程从暂停中恢复，镜头重新回到当前场景。",
+                rationale="暂停恢复是特殊剧情节奏事件，按 2 小时冷却尝试氛围图。",
             )
-            return "????????? `/dm` ???????????"
+            return "流程已恢复。下一句 `/dm` 会按当前存档继续裁定。"
 
         if _looks_like_restart_latest_backup_story_request(text):
             result = await MemoryTools(self.repository, session_id, actor=actor, message=text).session_control(
@@ -943,7 +960,7 @@ class AutoTrpgDmPlugin(Star):
                 result.get("ok"),
                 result.get("error", ""),
             )
-            return str(result.get("message") or "???????????")
+            return str(result.get("message") or "重开旧故事请求已处理。")
 
         if _looks_like_backup_preview_request(text):
             result = await MemoryTools(self.repository, session_id, actor=actor, message=text).session_control(
@@ -954,7 +971,7 @@ class AutoTrpgDmPlugin(Star):
                 session_id,
                 {"type": "local_fast_path", "action": "backup_preview", "actor": actor, "result": result},
             )
-            return str(result.get("message") or "??????????")
+            return str(result.get("message") or "备份预览请求已处理。")
 
         if _looks_like_backup_list_request(text):
             result = await MemoryTools(self.repository, session_id, actor=actor, message=text).session_control(
@@ -967,11 +984,11 @@ class AutoTrpgDmPlugin(Star):
             )
             backups = result.get("backups") or []
             if not backups:
-                return "??????????"
-            lines = ["?????"]
+                return "当前还没有自动备份。"
+            lines = ["最近备份："]
             for item in backups[:5]:
                 size = int(item.get("size") or 0)
-                lines.append(f"- {item.get('mtime', '')}?{size // 1024}K?{item.get('reason', '') or item.get('name', '')}")
+                lines.append(f"- {item.get('mtime', '')}；{size // 1024}K；{item.get('reason', '') or item.get('name', '')}")
             return "\n".join(lines)
 
         if _looks_like_manual_backup_request(text):
@@ -986,7 +1003,7 @@ class AutoTrpgDmPlugin(Star):
                 result.get("ok"),
                 result.get("backup_path", ""),
             )
-            return str(result.get("message") or "????????")
+            return str(result.get("message") or "备份请求已处理。")
 
         if _looks_like_restore_latest_backup_request(text):
             result = await MemoryTools(self.repository, session_id, actor=actor, message=text).session_control(
@@ -1000,7 +1017,7 @@ class AutoTrpgDmPlugin(Star):
                 result.get("ok"),
                 result.get("error", ""),
             )
-            return str(result.get("message") or "????????")
+            return str(result.get("message") or "恢复请求已处理。")
 
         reset_token = _extract_reset_confirmation_token(text)
         if not reset_token and _looks_like_reset_confirmation_request(text):
@@ -1018,9 +1035,9 @@ class AutoTrpgDmPlugin(Star):
                 result.get("ok"),
                 result.get("action"),
             )
-            message = str(result.get("message") or "??????")
+            message = str(result.get("message") or "存档未改动。")
             if result.get("ok"):
-                message += "\n???????????????????????/?????`/dm ?????40K????????????????`?"
+                message += "\n新团可以直接给一句方向，我会先补背景再引导建卡/开场。例：`/dm 来一个战锤40K底巢清剿剧本，我是极限战士喷火兵`。"
             return message
 
         if _looks_like_reset_request(text):
@@ -1034,7 +1051,7 @@ class AutoTrpgDmPlugin(Star):
                 actor.get("player_id", ""),
                 result.get("action"),
             )
-            return str(result.get("message") or "????????????????")
+            return str(result.get("message") or "重开需要二次确认，存档暂未改动。")
 
         if (
             _looks_like_new_campaign_seed_request(text)
@@ -1043,7 +1060,7 @@ class AutoTrpgDmPlugin(Star):
         ):
             result = await MemoryTools(self.repository, session_id, actor=actor, message=text).session_control(
                 "reset",
-                reason=f"?????????{text}",
+                reason=f"开新团前清空旧团：{text}",
             )
             self.repository.append_audit(
                 session_id,
@@ -1055,8 +1072,8 @@ class AutoTrpgDmPlugin(Star):
                     "result": result,
                 },
             )
-            message = str(result.get("message") or "????????????????")
-            return "??????????????????????????????????????????\n" + message
+            message = str(result.get("message") or "重开需要二次确认，存档暂未改动。")
+            return "当前群已有一场跑团存档；同群只能同时保留一场。若要把这句作为新团开场，需先清空旧团。\n" + message
 
         if not has_campaign_background(session):
             background_patch = {}
@@ -1091,9 +1108,9 @@ class AutoTrpgDmPlugin(Star):
                 )
                 if result.get("ok"):
                     return ""
-                return str(result.get("message") or "????????????????????")
+                return str(result.get("message") or "背景写入失败；请换一句更明确的背景方向。")
 
-        if normalized in {"status", "??", "????"}:
+        if normalized in {"status", "状态", "当前状态"}:
             self.repository.append_audit(session_id, {"type": "local_fast_path", "action": "status", "actor": actor})
             return self._format_local_status(session)
 
@@ -1101,7 +1118,7 @@ class AutoTrpgDmPlugin(Star):
             self.repository.append_audit(session_id, {"type": "local_fast_path", "action": "scene_tracking_status", "actor": actor})
             return format_scene_tracking_status(session.scene or {})
 
-        if normalized in {"token", "tokens", "token??", "???", "?????"}:
+        if normalized in {"token", "tokens", "token消耗", "上下文", "上下文消耗"}:
             usage = await DiagnosticTools(
                 self.repository,
                 session_id,
@@ -1116,19 +1133,19 @@ class AutoTrpgDmPlugin(Star):
             external_note = ""
             if external_memory.get("enabled") and external_memory.get("read_enabled"):
                 external_note = (
-                    f"Honcho ?????????? {external_memory.get('configured_max_context_chars', 0)} ??"
-                    "???????? router ?????"
+                    f"Honcho 外置记忆本轮预算上限 {external_memory.get('configured_max_context_chars', 0)} 字；"
+                    "实际读取字符数以 router 日志为准。"
                 )
             self.repository.append_audit(session_id, {"type": "local_fast_path", "action": "token", "actor": actor})
             return (
-                "Token ???"
-                f"?? {current.get('compact_snapshot_chars', 0)} ??? {rough.get('heuristic', 0)} token?"
-                f"???? {current.get('full_save_chars', 0)} ??"
-                f"?????? {compression.get('snapshot_chars_remaining_before_compression', 0)} ??"
+                "Token 粗算："
+                f"快照 {current.get('compact_snapshot_chars', 0)} 字，约 {rough.get('heuristic', 0)} token；"
+                f"完整存档 {current.get('full_save_chars', 0)} 字。"
+                f"距自动压缩约 {compression.get('snapshot_chars_remaining_before_compression', 0)} 字。"
                 f"{external_note}"
             )
 
-        if normalized in {"????", "????", "??", "??", "???", "???", "????", "????", "????"} or _looks_like_turn_status_request(text):
+        if normalized in {"当前轮次", "当前回合", "轮次", "回合", "谁行动", "轮到谁", "行动顺序", "战斗顺序", "轮动顺序"} or _looks_like_turn_status_request(text):
             self.repository.append_audit(session_id, {"type": "local_fast_path", "action": "turn_status", "actor": actor})
             return self._format_turn_status(session, include_order=_looks_like_turn_order_request(text))
 
@@ -1189,11 +1206,11 @@ class AutoTrpgDmPlugin(Star):
                     "text": text[:240],
                 },
             )
-            return "?????????????????????????????????????????????????????????"
+            return "游戏已经开场，背景、题材和主线已锁定；我不会把这句当成改剧本请求。你可以声明角色行动、调查目标，或作为新玩家加入。"
 
         if paused:
             self.repository.append_audit(session_id, {"type": "local_fast_path", "action": "paused_block", "actor": actor})
-            return "???????????????????????? `/dm status`?`/dm token`?`/dm ????` ?????? `/dm resume` ???"
+            return "当前流程处于暂停状态，我不会把这句送进模型。可用 `/dm status`、`/dm token`、`/dm 当前轮次` 查看信息，或 `/dm resume` 恢复。"
 
         if (
             not has_campaign_background(session)
@@ -1210,8 +1227,8 @@ class AutoTrpgDmPlugin(Star):
                 },
             )
             return (
-                "????????????????????????/???"
-                "??????`/dm ?????40K??????`??? `/dm ???????`?"
+                "我先需要一句背景方向，之后会自动补细节并引导建卡/开场。"
+                "可以直接说：`/dm 来一个战锤40K底巢清剿剧本`，或问 `/dm 有什么预设剧本`。"
             )
 
         return ""
@@ -1267,7 +1284,7 @@ class AutoTrpgDmPlugin(Star):
             template.key,
         )
         if not result.get("ok"):
-            return str(result.get("message") or "??????????????????????????")
+            return str(result.get("message") or "预设剧本载入失败；请换一个预设或直接给一句新团方向。")
         if campaign_preset_start_requested(text):
             return ""
         return format_campaign_preset_loaded_reply(template)
@@ -1324,17 +1341,17 @@ class AutoTrpgDmPlugin(Star):
                 )
                 if result.get("ok"):
                     return ""
-                return str(result.get("message") or "??????????????????????")
+                return str(result.get("message") or "剧本偏好写入失败；请换一句更明确的开场方向。")
             if looks_like_campaign_generation_request(text):
                 _clear_pending_campaign_preferences(self.repository, session_id, session)
             else:
-                return str(pending.get("question") or "?????????????????????????")
+                return str(pending.get("question") or "先确认一下这场团的烈度和玩法取向，一句话回我就行。")
 
         if should_ask_campaign_preferences(text):
             template = None
             is_custom_brief = looks_like_custom_campaign_brief(text)
             template_key = "custom_player_brief" if is_custom_brief else "llm_generated_campaign"
-            template_title = "???????" if is_custom_brief else "LLM ????"
+            template_title = "玩家自定义剧本" if is_custom_brief else "LLM 原创剧本"
             question = build_campaign_preference_question(text, template)
             session.scene["_pending_campaign_preferences"] = {
                 "seed": text[:12000],
@@ -1372,7 +1389,7 @@ class AutoTrpgDmPlugin(Star):
         text: str,
         normalized: str,
     ) -> str:
-        if normalized in {"status", "??", "????"}:
+        if normalized in {"status", "状态", "当前状态"}:
             self.repository.append_audit(
                 session_id,
                 {
@@ -1396,7 +1413,7 @@ class AutoTrpgDmPlugin(Star):
             )
             return format_scene_tracking_status(session.scene or {})
 
-        if normalized in {"token", "tokens", "token??", "???", "?????"}:
+        if normalized in {"token", "tokens", "token消耗", "上下文", "上下文消耗"}:
             usage = await DiagnosticTools(self.repository, session_id).estimate_token_usage("summary")
             current = usage.get("current", {})
             rough = usage.get("rough_token_estimate", {})
@@ -1411,13 +1428,13 @@ class AutoTrpgDmPlugin(Star):
                 },
             )
             return (
-                "Token ???"
-                f"?? {current.get('compact_snapshot_chars', 0)} ??? {rough.get('heuristic', 0)} token?"
-                f"???? {current.get('full_save_chars', 0)} ??"
-                f"?????? {compression.get('snapshot_chars_remaining_before_compression', 0)} ??"
+                "Token 粗算："
+                f"快照 {current.get('compact_snapshot_chars', 0)} 字，约 {rough.get('heuristic', 0)} token；"
+                f"完整存档 {current.get('full_save_chars', 0)} 字。"
+                f"距自动压缩约 {compression.get('snapshot_chars_remaining_before_compression', 0)} 字。"
             )
 
-        if normalized in {"????", "????", "??", "??", "???", "???", "????", "????", "????"} or _looks_like_turn_status_request(text):
+        if normalized in {"当前轮次", "当前回合", "轮次", "回合", "谁行动", "轮到谁", "行动顺序", "战斗顺序", "轮动顺序"} or _looks_like_turn_status_request(text):
             self.repository.append_audit(
                 session_id,
                 {
@@ -1458,11 +1475,11 @@ class AutoTrpgDmPlugin(Star):
             )
             backups = result.get("backups") or []
             if not backups:
-                return "??????????"
-            lines = ["?????"]
+                return "当前还没有自动备份。"
+            lines = ["最近备份："]
             for item in backups[:5]:
                 size = int(item.get("size") or 0)
-                lines.append(f"- {item.get('mtime', '')}?{size // 1024}K?{item.get('reason', '') or item.get('name', '')}")
+                lines.append(f"- {item.get('mtime', '')}；{size // 1024}K；{item.get('reason', '') or item.get('name', '')}")
             return "\n".join(lines)
 
         return ""
@@ -1504,7 +1521,7 @@ class AutoTrpgDmPlugin(Star):
                     action="record_action",
                     current_entity_id=acting_id,
                     summary=summary,
-                    reason=f"??????????{text[:80]}",
+                    reason=f"玩家本地直路由声明：{text[:80]}",
                     output_limit_chars=1440,
                     advance_after=True,
                 )
@@ -1521,16 +1538,16 @@ class AutoTrpgDmPlugin(Star):
                         "result": result,
                     },
                 )
-                return self._format_turn_advance_result(result, f"{acting_label}??????")
+                return self._format_turn_advance_result(result, f"{acting_label}本回合结束。")
 
         if _looks_like_local_turn_push(text):
             if owner_id and actor_id == owner_id:
-                summary = f"{current_label}???????????????"
+                summary = f"{current_label}声明结束本回合，保持当前态势。"
                 result = await TurnTools(self.repository, session_id, actor=actor).turn_control(
                     action="record_action",
                     current_entity_id=current_id,
                     summary=summary,
-                    reason=f"??????????{text[:80]}",
+                    reason=f"当前行动者请求推进：{text[:80]}",
                     output_limit_chars=1440,
                     advance_after=True,
                 )
@@ -1545,20 +1562,20 @@ class AutoTrpgDmPlugin(Star):
                         "result": result,
                     },
                 )
-                return self._format_turn_advance_result(result, f"{current_label}??????")
+                return self._format_turn_advance_result(result, f"{current_label}本回合结束。")
             deadline = _parse_datetime(turn.get("deadline_at"))
             now = datetime.now(timezone.utc)
             if deadline is not None and now >= deadline:
                 elapsed = int((now - (_parse_datetime(turn.get("waiting_since_at")) or deadline)).total_seconds())
                 summary = (
-                    f"{current_label}?? 120 ????????????"
-                    "?????????????????????"
+                    f"{current_label}超过 120 秒未响应，采取保守行动："
+                    "保持警戒、防御或跟随队伍，不消耗稀缺资源。"
                 )
                 result = await TurnTools(self.repository, session_id, actor=actor).turn_control(
                     action="auto_act_current",
                     current_entity_id=current_id,
                     summary=summary,
-                    reason=f"????????????? {max(120, elapsed)} ??{text[:80]}",
+                    reason=f"其他玩家请求推进且已超时约 {max(120, elapsed)} 秒：{text[:80]}",
                     output_limit_chars=1440,
                     auto_policy="defend_or_follow",
                     advance_after=True,
@@ -1610,35 +1627,35 @@ class AutoTrpgDmPlugin(Star):
             remaining = max(0, int((deadline - datetime.now(timezone.utc)).total_seconds()))
         else:
             remaining = int(turn.get("timeout_seconds") or 120)
-        owner_name = str((session.participants.get(owner_id) or {}).get("display_name") or owner_id or "???")
-        return f"?????? {current_label}?{owner_name}????? {remaining} ?????????????????????????? `/dm ???` ???????"
+        owner_name = str((session.participants.get(owner_id) or {}).get("display_name") or owner_id or "未绑定")
+        return f"当前建议等待 {current_label}（{owner_name}），剩余约 {remaining} 秒；本轮未行动的本人角色可以直接声明行动，超时后可用 `/dm 下一位` 保守推进锚点。"
 
     def _format_turn_advance_result(self, result: dict, prefix: str) -> str:
         if not result.get("ok"):
-            return str(result.get("message") or f"???????{result.get('error', 'unknown_error')}")
+            return str(result.get("message") or f"轮次推进失败：{result.get('error', 'unknown_error')}")
         turn = dict(result.get("turn") or {})
         phase = str(turn.get("phase") or "")
         if phase == "scene_resolution":
-            return f"{prefix}\n??? {turn.get('round', '?')} ??????"
+            return f"{prefix}\n进入第 {turn.get('round', '?')} 轮场面结算。"
         current_id = str(turn.get("current_entity_id") or "")
         if turn.get("current_label"):
             current_label = str(turn["current_label"])
         else:
             current_label = fallback_turn_entity_label(current_id)
-        return f"{prefix}\n?????{current_label}??????????????"
+        return f"{prefix}\n建议行动：{current_label}；本轮未行动者也可直接行动。"
 
     def _format_local_status(self, session) -> str:
         battle = session.battle or {}
         turn = dict(battle.get("turn") or {})
-        paused = "???" if (session.scene or {}).get("_dm_paused") else "???"
+        paused = "暂停中" if (session.scene or {}).get("_dm_paused") else "运行中"
         if turn.get("active"):
             turn_text = self._format_turn_status(session)
         else:
-            turn_text = "?????????"
+            turn_text = "当前没有启用轮次。"
         return (
-            f"???{session.title}????{session.mode.value}????{paused}????{_game_started_text(session)}?\n"
-            f"????{timeline_status_text(session.timeline)}?\n"
-            f"?? {len(session.participants)}??? {len(session.characters)}??? {len(session.rules)}?\n"
+            f"团名：{session.title}；模式：{session.mode.value}；流程：{paused}；开场：{_game_started_text(session)}。\n"
+            f"时间线：{timeline_status_text(session.timeline)}。\n"
+            f"玩家 {len(session.participants)}，角色 {len(session.characters)}，规则 {len(session.rules)}。\n"
             f"{turn_text}"
         )
 
@@ -1646,21 +1663,21 @@ class AutoTrpgDmPlugin(Star):
         battle = session.battle or {}
         turn = dict(battle.get("turn") or {})
         if not turn.get("active"):
-            return "?????????"
+            return "当前没有启用轮次。"
         current_id = str(turn.get("current_entity_id") or battle.get("turn_entity_id") or "")
         entities = load_active_strict_grid_entities(session.maps, battle)
-        label = _entity_label(session, current_id, entities) if current_id else "???"
+        label = _entity_label(session, current_id, entities) if current_id else "未指定"
         owner_id = _entity_owner(session, current_id, entities) if current_id else ""
-        owner_name = str((session.participants.get(owner_id) or {}).get("display_name") or owner_id or "???")
+        owner_name = str((session.participants.get(owner_id) or {}).get("display_name") or owner_id or "未绑定")
         deadline = _parse_datetime(turn.get("deadline_at"))
         if deadline:
             remaining = max(0, int((deadline - datetime.now(timezone.utc)).total_seconds()))
-            wait_text = f"????? {remaining} ??"
+            wait_text = f"等待剩余约 {remaining} 秒。"
         else:
-            wait_text = "??????????? /dm ???? 120 ??"
+            wait_text = "等待计时会在下一次相关 /dm 时补齐为 120 秒。"
         base = (
-            f"? {int(turn.get('round') or 0)} ?????{turn.get('phase', 'idle')}?\n"
-            f"????/?????{label}?{current_id or '?'}??????{owner_name}?\n"
+            f"第 {int(turn.get('round') or 0)} 轮，阶段：{turn.get('phase', 'idle')}。\n"
+            f"建议行动/超时锚点：{label}（{current_id or '无'}），持有人：{owner_name}。\n"
             f"{wait_text}"
         )
         if not include_order:
@@ -1672,25 +1689,25 @@ class AutoTrpgDmPlugin(Star):
         order_labels = []
         for index, entity_id in enumerate(order, start=1):
             entity_label = _entity_label(session, str(entity_id), entities)
-            marker = "????" if str(entity_id) == current_id else ""
-            acted = "???" if str(entity_id) in actions else "???"
-            order_labels.append(f"{index}. {entity_label}{marker}?{acted}")
+            marker = "（当前）" if str(entity_id) == current_id else ""
+            acted = "已行动" if str(entity_id) in actions else "未行动"
+            order_labels.append(f"{index}. {entity_label}{marker}：{acted}")
         return base + "\n" + "\n".join(order_labels)
 
     def _format_player_roster(self, session) -> str:
         participants = session.participants or {}
         if not participants:
-            return "??????????"
-        lines = ["?????"]
+            return "当前还没有登记玩家。"
+        lines = ["玩家登记："]
         for index, (player_id, participant) in enumerate(participants.items(), start=1):
             display_name = str(participant.get("display_name") or player_id)
             character_id = str(session.player_character_map.get(player_id, "") or "")
             character = session.characters.get(character_id) if character_id else None
             if character:
                 character_name = character.name or character.id
-                lines.append(f"{index}. {display_name}?{player_id}? -> {character_name} [{character.id}]")
+                lines.append(f"{index}. {display_name}（{player_id}） -> {character_name} [{character.id}]")
             else:
-                lines.append(f"{index}. {display_name}?{player_id}? -> ?????")
+                lines.append(f"{index}. {display_name}（{player_id}） -> 未绑定角色")
         return "\n".join(lines)
 
     def _action_pacing_reply(self, session_id: str, actor: dict[str, str], routed_message: str) -> str:
@@ -1724,8 +1741,8 @@ class AutoTrpgDmPlugin(Star):
                     },
                 )
                 return (
-                    f"???????????????????? {remaining} ??"
-                    "?????????????????????????????? `/dm status` ? `/dm ????`?"
+                    f"你的上一段行动还在场内时间里结算，先等约 {remaining} 秒。"
+                    "如果是补充说明，请把它合并到上一动作；如果只是查状态，可以用 `/dm status` 或 `/dm 当前轮次`。"
                 )
         pacing[player_id] = {
             "last_action_at": now.isoformat(),
@@ -1930,11 +1947,11 @@ class AutoTrpgDmPlugin(Star):
             summary = str(scene.get("summary") or "")
             if scene.get("_game_started") or scene.get("_legacy_live_campaign"):
                 continue
-            if summary and not summary.startswith("????"):
+            if summary and not summary.startswith("尚未开局"):
                 continue
             scene["_legacy_live_campaign"] = True
             scene["_legacy_live_campaign_marked_at"] = _utc_now_iso()
-            scene["summary"] = "??????????????????????????????????????????"
+            scene["summary"] = "跑团已在进行；这是旧存档兼容标记，具体事实以最近事件、角色状态、战棋与裁定记录为准。"
             session.scene = scene
             try:
                 self.repository.save_session(session)
@@ -2078,9 +2095,9 @@ class AutoTrpgDmPlugin(Star):
             return {"active": True, "phase": phase}
 
         if phase == "scene_resolution":
-            result = await TurnTools(self.repository, session_id, actor={"player_id": "__heartbeat__", "display_name": "????"}).turn_control(
+            result = await TurnTools(self.repository, session_id, actor={"player_id": "__heartbeat__", "display_name": "本地心跳"}).turn_control(
                 action="finish_scene_resolution",
-                reason="??????????????? 120 ????????????????",
+                reason="本地心跳检查：场面结算阶段超过 120 秒未推进，自动进入下一角色回合。",
                 output_limit_chars=int(turn.get("output_limit_chars") or 1440),
             )
             self.repository.append_audit(
@@ -2100,7 +2117,7 @@ class AutoTrpgDmPlugin(Star):
             notice = ""
             if result.get("ok"):
                 notice = (
-                    "????????? 120 ?????????????????\n"
+                    "场面结算超时：超过 120 秒未推进，已由本地心跳进入下一步。\n"
                     + self._format_turn_destination(self.repository.load_session(session_id))
                 )
             return {"active": True, "advanced": bool(result.get("ok")), "phase": phase, "notice": notice}
@@ -2114,20 +2131,20 @@ class AutoTrpgDmPlugin(Star):
         elapsed = max(120, int((now - waiting_since).total_seconds()))
         actor_kind = turn_actor_kind(session, current_id, entities)
         if actor_kind == "player":
-            summary = f"{current_label}?? 120 ?????????????????????????????????????"
+            summary = f"{current_label}超过 120 秒未响应，本地心跳采取保守行动：防御、保持掩体或跟随队伍，不消耗稀缺资源。"
         elif actor_kind == "enemy":
-            summary = f"{current_label}????????? {elapsed} ????????????????????????????????????"
+            summary = f"{current_label}的敌方回合已等待约 {elapsed} 秒，本地心跳按保守策略推进：保持掩体、压制最近威胁，不触发新的复杂机制。"
         else:
-            summary = f"{current_label}??????? {elapsed} ??????????????????????????????????"
+            summary = f"{current_label}的回合已等待约 {elapsed} 秒，本地心跳按保守策略推进：保持当前位置、跟随局势，不消耗稀缺资源。"
         result = await TurnTools(
             self.repository,
             session_id,
-            actor={"player_id": "__heartbeat__", "display_name": "????"},
+            actor={"player_id": "__heartbeat__", "display_name": "本地心跳"},
         ).turn_control(
             action="auto_act_current",
             current_entity_id=current_id,
             summary=summary,
-            reason=f"?????????????????????? {elapsed} ??deadline ??????????",
+            reason=f"本地心跳检查：当前行动者从轮到自己起已等待约 {elapsed} 秒，deadline 已过，自动保守推进。",
             output_limit_chars=int(turn.get("output_limit_chars") or 1440),
             auto_policy="defend_or_follow",
             advance_after=True,
@@ -2140,7 +2157,7 @@ class AutoTrpgDmPlugin(Star):
             entities,
             result,
             source="heartbeat_timeout",
-            actor={"player_id": "__heartbeat__", "display_name": "????"},
+            actor={"player_id": "__heartbeat__", "display_name": "本地心跳"},
         )
         self.repository.append_audit(
             session_id,
@@ -2248,11 +2265,11 @@ class AutoTrpgDmPlugin(Star):
         )
 
         if post_game:
-            notice = "?????????????/???????????????????????????"
+            notice = "检测到当前场面已经进入终章/间幕，轮次心跳已停止；不会再因超时自动代管或推进战斗。"
         elif reason == "social_or_political_scene":
-            notice = "???????????????????????????????????????????????????"
+            notice = "当前冲突更像谈判、征税或社会场面，不适合按战斗心跳代打；我已停止本轮自动超时推进，后续按普通叙事裁定。"
         else:
-            notice = "??????????????????????????????????????????"
+            notice = "检测到重复超时或旧终局信号，轮次心跳已停止；需要继续战斗时可由玩家重新明确进入轮次。"
         return {"active": False, "suspended": True, "reason": reason, "notice": notice}
 
     def _apply_turn_timeout_pause_if_needed(
@@ -2294,7 +2311,7 @@ class AutoTrpgDmPlugin(Star):
             scene = dict(updated_session.scene or {})
             scene["_dm_paused"] = True
             scene["_dm_pause_reason"] = self._format_timeout_pause_line(info)
-            scene["_dm_paused_by"] = actor or {"player_id": "__system__", "display_name": "??????"}
+            scene["_dm_paused_by"] = actor or {"player_id": "__system__", "display_name": "本地轮次系统"}
             scene["_dm_paused_at"] = _utc_now_iso()
             scene["_dm_pause_source"] = "turn_timeout"
             updated_session.scene = scene
@@ -2347,12 +2364,12 @@ class AutoTrpgDmPlugin(Star):
             scope = "player"
             universe = owner_order
             current_key = owner_by_entity.get(current_id, "")
-            unit = "???"
+            unit = "名玩家"
         else:
             scope = "entity"
             universe = order
             current_key = current_id if current_id in order else ""
-            unit = "????"
+            unit = "个行动者"
 
         timeout_keys: set[str] = set()
         if (
@@ -2398,11 +2415,11 @@ class AutoTrpgDmPlugin(Star):
         actor_kind: str = "player",
     ) -> str:
         if actor_kind == "player":
-            first_line = f"?????{current_label}?? {max(120, elapsed)} ?????????????"
+            first_line = f"轮次超时：{current_label}超过 {max(120, elapsed)} 秒未响应，已采取保守行动。"
         elif actor_kind == "enemy":
-            first_line = f"?????{current_label}??????? {max(120, elapsed)} ????????????"
+            first_line = f"轮次推进：{current_label}的敌方回合等待 {max(120, elapsed)} 秒后，已按保守策略推进。"
         else:
-            first_line = f"?????{current_label}????? {max(120, elapsed)} ????????????"
+            first_line = f"轮次推进：{current_label}的回合等待 {max(120, elapsed)} 秒后，已按保守策略推进。"
         lines = [first_line]
         if timeout_pause.get("auto_paused"):
             lines.append(self._format_timeout_pause_line(timeout_pause))
@@ -2414,30 +2431,30 @@ class AutoTrpgDmPlugin(Star):
     def _format_timeout_pause_line(self, timeout_pause: dict[str, object]) -> str:
         count = int(timeout_pause.get("count") or 0)
         total = int(timeout_pause.get("total") or 0)
-        unit = str(timeout_pause.get("unit") or "????")
+        unit = str(timeout_pause.get("unit") or "个行动者")
         if total <= 0:
-            return "?????????????????????? `/dm resume`?"
-        return f"???? {count}/{total}{unit}???????????????????? `/dm resume`?"
+            return "本轮半数行动者超时，流程已自动暂停。恢复时发 `/dm resume`。"
+        return f"本轮已有 {count}/{total}{unit}超时，达到半数，流程已自动暂停。恢复时发 `/dm resume`。"
 
     def _format_turn_destination(self, session, *, paused: bool = False) -> str:
         battle = session.battle or {}
         turn = dict(battle.get("turn") or {})
         if not turn.get("active"):
-            return "????????"
+            return "当前轮次已结束。"
         phase = str(turn.get("phase") or "")
         if phase == "character_turn":
             current_id = str(turn.get("current_entity_id") or battle.get("turn_entity_id") or "").strip()
             entities = load_active_strict_grid_entities(session.maps, battle)
-            label = _entity_label(session, current_id, entities) if current_id else "???"
+            label = _entity_label(session, current_id, entities) if current_id else "未指定"
             if paused:
-                return f"??????{label}?"
-            return f"?????{label}??????????????"
+                return f"暂停前停在：{label}。"
+            return f"建议行动：{label}；本轮未行动者也可直接行动。"
         if phase == "scene_resolution":
             round_no = _int_or_default(turn.get("round"), 1)
             if paused:
-                return f"?????? {round_no} ??????"
-            return f"??? {round_no} ??????"
-        return f"?????{phase or '???'}?"
+                return f"暂停前进入第 {round_no} 轮场面结算。"
+            return f"进入第 {round_no} 轮场面结算。"
+        return f"当前阶段：{phase or '未指定'}。"
 
     def _extract_routed_message(self, event: AstrMessageEvent, message: str) -> str:
         stripped = message.strip()
@@ -2484,7 +2501,7 @@ class AutoTrpgDmPlugin(Star):
         if not result.get("ok") or not result.get("available") or not result.get("send_to_chat"):
             return False
         file_path = str(result.get("file_path") or "")
-        title = str(result.get("title") or "").strip() or "???"
+        title = str(result.get("title") or "").strip() or "氛围图"
         if not file_path or not Path(file_path).exists():
             self.plugin_logger.warning(
                 "ambient_image_independent_send_missing_file session=%s file=%s",
@@ -2565,7 +2582,7 @@ class AutoTrpgDmPlugin(Star):
             )
             return _format_ambient_image_failure_reply(gate)
         story_moment = _ambient_image_story_moment_from_manual_request(text, session)
-        rationale = "???????????? API ??????????"
+        rationale = "玩家显式请求使用独立图片 API 生成当前跑团氛围图。"
         self.router._mark_ambient_image_generation_started(session)
         self._schedule_manual_ambient_image(
             event,
@@ -2585,7 +2602,7 @@ class AutoTrpgDmPlugin(Star):
                 "story_moment": story_moment,
             },
         )
-        return "?????????????? API key??????????????"
+        return "已开始生成氛围图，走独立图片 API key；完成后会作为独立消息发送。"
 
     def _ambient_image_provider_unavailable(self) -> dict[str, Any]:
         provider = getattr(self.router, "ambient_image_provider", None)
@@ -2749,25 +2766,25 @@ class AutoTrpgDmPlugin(Star):
                     components.append(ImageComponent.fromFileSystem(png_path))
                     self.plugin_logger.info("map_preview_attached path=%s", png_path)
                 else:
-                    components.append(Plain(text=f"\n??????{name}"))
+                    components.append(Plain(text=f"\n地图已生成：{name}"))
         return event.chain_result(components)
 
     def _format_dice_check(self, item: dict) -> str:
         rolls = item.get("rolls") or []
         if not rolls:
             return ""
-        reason = _compact_text(item.get("reason") or "??????????", 120)
+        reason = _compact_text(item.get("reason") or "本轮行动需要随机裁定", 120)
         rule_name = _compact_text(item.get("rule_name") or "unknown_rule", 80)
         version = item.get("version")
-        roll_text = "?".join(_format_roll_record(record) for record in rolls[:6])
+        roll_text = "；".join(_format_roll_record(record) for record in rolls[:6])
         if len(rolls) > 6:
-            roll_text += f"??? {len(rolls) - 6} ???"
+            roll_text += f"；另有 {len(rolls) - 6} 次掷骰"
         if item.get("ok"):
             result_text = _compact_result(item.get("rule_result"))
         else:
-            result_text = _compact_text(item.get("error_reason") or item.get("error") or "??????", 160)
+            result_text = _compact_text(item.get("error_reason") or item.get("error") or "规则执行失败", 160)
         suffix = f" v{version}" if version else ""
-        return f"?????{reason}\n???{rule_name}{suffix}\n???{roll_text}\n???{result_text}"
+        return f"骰子检定：{reason}\n规则：{rule_name}{suffix}\n掷骰：{roll_text}\n结果：{result_text}"
 
     def _format_dice_summary(self, items: list[dict]) -> str:
         lines = []
@@ -2778,8 +2795,8 @@ class AutoTrpgDmPlugin(Star):
         if not lines:
             return ""
         if len(items) > 3:
-            lines.append(f"?? {len(items) - 3} ???????")
-        return "???????\n" + "\n".join(lines)
+            lines.append(f"另有 {len(items) - 3} 条检定已省略。")
+        return "本轮检定摘要：\n" + "\n".join(lines)
 
     def _should_send_dm_ack(self, session_id: str, sender_id: str, now: float | None = None) -> bool:
         current = monotonic() if now is None else now
@@ -3180,13 +3197,13 @@ class AutoTrpgDmPlugin(Star):
             return ""
         key = (session_id, sender_id, normalized)
         if key in inflight:
-            return "???????????????????????????????????? `/dm` ???"
+            return "这句还在结算中，我不会把同一句动作排队再处理一次。要改动作，请换一句新的 `/dm` 意图。"
         last_seen = recent.get(key)
         recent[key] = now
         inflight[key] = now
         if last_seen is not None and now - last_seen <= self.DEDUP_WINDOW_SECONDS:
             inflight.pop(key, None)
-            return "?????????????????????????????? `/dm` ???"
+            return "这句刚才已经进入结算，我不会重复处理。要改动作，请换一句新的 `/dm` 意图。"
         return ""
 
     def _mark_message_finished(self, session_id: str, sender_id: str, routed_message: str) -> None:
@@ -3206,11 +3223,11 @@ class AutoTrpgDmPlugin(Star):
     def _friendly_error_message(exc: Exception) -> str:
         text = str(exc)
         lowered = text.lower()
-        if "quota" in lowered or "rate limit" in lowered or "429" in lowered or "??" in text:
-            return "DM ???????/??????????????????????????????"
+        if "quota" in lowered or "rate limit" in lowered or "429" in lowered or "额度" in text:
+            return "DM 这边的模型额度/频率被打满了，这轮没有写入新结果。稍等一会儿后重发刚才那句。"
         if "badrequest" in lowered or "invalid_request" in lowered or "400" in lowered:
-            return "DM ????????????????????????????????????????????"
-        return "DM ?????????????????????????????????"
+            return "DM 这轮请求被模型接口拒绝了，当前存档未改动。请把刚才的动作换个更短、更明确的说法再发一次。"
+        return "DM 内核这轮没跑完，当前存档未改动。请稍后重试，或把动作说得更短一点。"
 
     def _config_list(self, key: str) -> List[str]:
         if not self.config:
@@ -3234,9 +3251,9 @@ class AutoTrpgDmPlugin(Star):
             value = getattr(self.config, key, default)
         if isinstance(value, str):
             normalized = value.strip().lower()
-            if normalized in {"false", "0", "no", "off", "?", "??"}:
+            if normalized in {"false", "0", "no", "off", "否", "关闭"}:
                 return False
-            if normalized in {"true", "1", "yes", "on", "?", "??"}:
+            if normalized in {"true", "1", "yes", "on", "是", "开启"}:
                 return True
         return bool(value)
 
@@ -3358,7 +3375,7 @@ def _looks_like_reassurance_map_request(text: str) -> bool:
     return any(term in normalized for term in REASSURANCE_MAP_TERMS)
 
 
-def _is_safe_reassurance_phrase(phrase: str, prefix: str = "??????") -> bool:
+def _is_safe_reassurance_phrase(phrase: str, prefix: str = "请等待回复：") -> bool:
     body = str(phrase or "").strip()
     if not body:
         return False
@@ -3374,9 +3391,9 @@ def _is_safe_reassurance_phrase(phrase: str, prefix: str = "??????") -> bool:
         return False
     if any(term in body or str(term).lower() in lowered for term in REASSURANCE_CHOICE_TERMS):
         return False
-    if "?" in body or "?" in body:
+    if "？" in body or "?" in body:
         return False
-    if re.search(r"(^|\s|[?:])([0-9]+[.?)]|[?????????])", body):
+    if re.search(r"(^|\s|[：:])([0-9]+[.、)]|[①②③④⑤⑥⑦⑧⑨])", body):
         return False
     return True
 
@@ -3390,47 +3407,47 @@ def _looks_like_manual_ambient_image_request(text: str) -> bool:
     if not normalized:
         return False
     diagnostic_terms = (
-        "???",
-        "??",
-        "??",
-        "??",
-        "??",
-        "??",
-        "??",
-        "???",
-        "??",
-        "??",
+        "为什么",
+        "为何",
+        "怎么",
+        "如何",
+        "失败",
+        "无法",
+        "不能",
+        "不可用",
+        "配置",
+        "设置",
         "debug",
         "diagnose",
-        "??",
+        "诊断",
     )
     if any(term in normalized for term in diagnostic_terms):
         return False
     negative_terms = (
-        "????",
-        "???",
-        "????",
-        "?????",
-        "????",
-        "???",
-        "??????",
-        "????",
-        "????",
+        "不要配图",
+        "别配图",
+        "无需配图",
+        "不需要配图",
+        "不要生图",
+        "别生图",
+        "不要生成图片",
+        "关闭配图",
+        "停止配图",
     )
     if any(term in normalized for term in negative_terms):
         return False
     leading_terms = (
-        "??",
-        "??",
-        "??",
-        "??",
-        "???",
-        "????",
-        "?????",
-        "????",
-        "???",
-        "???",
-        "???",
+        "配图",
+        "生图",
+        "出图",
+        "画图",
+        "氛围图",
+        "生成图片",
+        "生成一张图",
+        "画一张图",
+        "画张图",
+        "发张图",
+        "来张图",
         "generate image",
         "draw image",
         "make an image",
@@ -3439,32 +3456,32 @@ def _looks_like_manual_ambient_image_request(text: str) -> bool:
         return True
     if any(normalized.startswith(term) for term in leading_terms):
         return True
-    image_terms = ("??", "???", "??", "??", "??", "??", "??", "image", "illustration", "picture")
-    if any(term in normalized for term in ("???", "???")) and any(term in normalized for term in image_terms):
+    image_terms = ("配图", "氛围图", "图片", "插图", "生图", "出图", "画图", "image", "illustration", "picture")
+    if any(term in normalized for term in ("走独立", "用独立")) and any(term in normalized for term in image_terms):
         return True
-    if any(term in normalized for term in ("????", "???", "??", "??", "??")) and any(
+    if any(term in normalized for term in ("当前场景", "这一幕", "这幕", "现在", "此刻")) and any(
         term in normalized for term in image_terms
     ):
         return True
-    action_terms = ("??", "?", "??", "?", "??", "???", "??", "???", "?????", "???", "????")
+    action_terms = ("生成", "画", "绘制", "发", "来张", "来一张", "来个", "做一张", "给当前场景", "给这幕", "给这一幕")
     return any(term in normalized for term in action_terms) and any(term in normalized for term in image_terms)
 
 
 def _ambient_image_story_moment_from_manual_request(text: str, session) -> str:
     cleaned = str(text or "").strip()
     cleaned = re.sub(
-        r"^(?|??|??|??|???(?:apikey|api key|api)?|???(?:apikey|api key|api)?)?\s*",
+        r"^(请|帮我|给我|麻烦|走独立(?:apikey|api key|api)?|用独立(?:apikey|api key|api)?)?\s*",
         "",
         cleaned,
         flags=re.IGNORECASE,
     )
     cleaned = re.sub(
-        r"^(??|?|??|?|?|?)?\s*(??|??|?|?)?\s*(???|??|??|??|??|??|image|illustration|picture)\s*",
+        r"^(生成|画|绘制|发|来|做)?\s*(一张|一幅|张|个)?\s*(氛围图|配图|生图|出图|图片|插图|image|illustration|picture)\s*",
         "",
         cleaned,
         flags=re.IGNORECASE,
     )
-    cleaned = cleaned.strip(" ?:?,?.-")
+    cleaned = cleaned.strip(" ：:，,。.-")
     if cleaned and len(cleaned) >= 2:
         return _compact_text(cleaned, 500)
     scene = getattr(session, "scene", {}) or {}
@@ -3477,71 +3494,71 @@ def _ambient_image_story_moment_from_manual_request(text: str, session) -> str:
         last_resolution_text = str(last_resolution or "")
     sections = []
     if summary:
-        sections.append(f"?????{summary}")
+        sections.append(f"当前场景：{summary}")
     if conflict:
-        sections.append(f"?????{conflict}")
+        sections.append(f"当前冲突：{conflict}")
     if last_resolution_text:
-        sections.append(f"?????{last_resolution_text}")
+        sections.append(f"最近结算：{last_resolution_text}")
     if sections:
-        return _compact_text("?".join(sections), 500)
-    return "??????????????????"
+        return _compact_text("；".join(sections), 500)
+    return "根据当前跑团场景生成一张视觉氛围图。"
 
 
 def _format_ambient_image_failure_reply(result: dict[str, Any]) -> str:
     code = _ambient_image_reason_code(result)
     if code == "ambient_image_disabled":
-        return "??????????????????? `ambient_image_enabled`???????? API key?"
+        return "氛围图功能当前未启用；请在插件配置打开 `ambient_image_enabled`，再配置独立生图 API key。"
     if code == "ambient_image_api_key_missing":
         env_name = str(result.get("api_key_env") or "PACKYAPI_SORA_API_KEY").strip()
         if not _looks_like_env_var_name(env_name):
             return (
-                "???? API key ??????"
-                "?????????? `ambient_image_api_key` ??? key?"
-                "`ambient_image_api_key_env` ????????????????"
+                "独立生图 API key 没有读取到。"
+                "可以直接在插件配置的 `ambient_image_api_key` 填真实 key；"
+                "`ambient_image_api_key_env` 只在你想用环境变量时填写变量名。"
             )
         return (
-            "???? API key ??????"
-            "?????????????? `ambient_image_api_key` ???? key?"
-            f"?????????????????? `{env_name}`?????? key ??? AstrBot ????????????????"
+            "独立生图 API key 没有读取到。"
+            "最简单的填法：在插件配置里把 `ambient_image_api_key` 填成真实 key。"
+            f"如果你想继续用环境变量，则当前会读取 `{env_name}`，需要把真实 key 设置到 AstrBot 运行进程的这个环境变量里并重启。"
         )
     if code == "ambient_image_api_mode_invalid":
-        return "???? API ?????`ambient_image_api_mode` ??? `images` ? `chat_completions`?"
+        return "独立生图 API 模式无效；`ambient_image_api_mode` 只能是 `images` 或 `chat_completions`。"
     if code == "ambient_image_base_url_missing":
-        return "???? API base URL ????????? `ambient_image_base_url`???? `https://www.packyapi.com`?"
+        return "独立生图 API base URL 为空或无效；请检查 `ambient_image_base_url`，默认是 `https://www.packyapi.com`。"
     if code == "ambient_image_send_disabled":
-        return "?????????????????? `ambient_image_send_to_chat` ?? `true`?????????????????"
+        return "氛围图生成后的聊天发送被关闭了；请把 `ambient_image_send_to_chat` 设为 `true`，否则手动配图会看起来像没有结果。"
     if code == "ambient_image_combat_active":
-        return "??????/????????????????????????????? API?"
+        return "当前处于战斗/战棋模式，氛围图不会生成；战棋地图走地图工具，不走独立生图 API。"
     if code == "ambient_image_generation_in_progress":
         elapsed = result.get("generation_minutes_elapsed", 0)
         required = result.get("generation_minutes_required", 5)
-        return f"????????????????????? {elapsed} ???? {required} ??????????"
+        return f"已有氛围图生成任务在进行中；当前锁定已过约 {elapsed} 分钟，满 {required} 分钟会自动允许重试。"
     if code == "ambient_image_prompt_model_missing":
-        return "??? prompt ?????????? API ?????????????????????? prompt?"
+        return "氛围图 prompt 模型不可用；独立图片 API 只负责出图，前面还需要当前对话模型先生成图片 prompt。"
     if code == "ambient_image_prompt_model_failed":
         reason = _compact_text(result.get("reason", ""), 180)
-        return f"??? prompt ????????? API ??????{reason}"
+        return f"氛围图 prompt 生成失败，独立图片 API 尚未被调用。{reason}"
     if code == "ambient_image_http_error":
         status = result.get("status", "")
         reason = _compact_text(result.get("reason", ""), 180)
-        return f"???? API ?? HTTP ?? {status}?{reason}"
+        return f"独立生图 API 返回 HTTP 错误 {status}；{reason}"
     if code == "ambient_image_network_error":
         reason = _compact_text(result.get("reason", ""), 180)
-        return f"???? API ???????{reason}"
+        return f"独立生图 API 网络请求失败；{reason}"
     if code == "ambient_image_timeout":
-        return "???? API ????????????????????????"
+        return "独立生图 API 请求超时；本轮没有生成图片，跑团存档不会受影响。"
     if code == "ambient_image_result_missing":
-        return "???? API ????????? URL ? base64 ???????????API ??????????"
+        return "独立生图 API 返回里没有可用图片 URL 或 base64 图片数据；请检查模型、API 模式和返回格式配置。"
     if code == "ambient_image_content_type_invalid":
-        return "???? API ???????????????????? provider ??? URL ? `response_format`?"
+        return "独立生图 API 返回的图片地址下载后不是图片内容；请检查 provider 返回的 URL 或 `response_format`。"
     if code == "ambient_image_too_large":
-        return "???? API ??????????????????????????"
+        return "独立生图 API 返回的图片或响应体超过插件安全大小限制，本轮已跳过。"
     if code in {"ambient_image_send_failed", "ambient_image_sender_missing"}:
-        return "?????????????????????????? `ambient_image_independent_send_failed` ???"
+        return "氛围图已生成，但独立消息发送失败；请查看插件日志里的 `ambient_image_independent_send_failed` 记录。"
     detail = _compact_text(result.get("reason") or result.get("message") or "", 180)
     if detail:
-        return f"?????????????? `{code}`?{detail}"
-    return f"?????????????? `{code}`?"
+        return f"氛围图这次没有生成；失败项是 `{code}`：{detail}"
+    return f"氛围图这次没有生成；失败项是 `{code}`。"
 
 
 def _ambient_image_reason_code(result: dict[str, Any]) -> str:
@@ -3557,30 +3574,30 @@ def _looks_like_local_turn_end(text: str) -> bool:
     if not normalized:
         return False
     exact = {
-        "????",
-        "????",
-        "??????",
-        "?????",
-        "??????",
-        "?????",
-        "????",
-        "????",
-        "????",
-        "??",
-        "??",
-        "????",
-        "????",
-        "????",
-        "????",
-        "????",
-        "????",
-        "????",
-        "??",
-        "????",
-        "?",
-        "???",
-        "???",
-        "???",
+        "回合结束",
+        "结束回合",
+        "结束当前回合",
+        "本回合结束",
+        "我的回合结束",
+        "我回合结束",
+        "行动结束",
+        "结束行动",
+        "本轮结束",
+        "待机",
+        "防御",
+        "防御待机",
+        "保持防御",
+        "保持警戒",
+        "警戒待机",
+        "警戒待射",
+        "守望待机",
+        "放弃行动",
+        "跳过",
+        "跳过回合",
+        "过",
+        "过回合",
+        "下一位",
+        "下一个",
         "pass",
         "skip",
         "done",
@@ -3589,14 +3606,14 @@ def _looks_like_local_turn_end(text: str) -> bool:
     if normalized in exact:
         return True
     end_patterns = (
-        "?????",
-        "???????",
-        "??????",
-        "?????",
-        "?????",
-        "???",
-        "?????",
-        "?????",
+        "我结束回合",
+        "我结束当前回合",
+        "我本回合结束",
+        "我放弃行动",
+        "我跳过回合",
+        "我待机",
+        "我保持警戒",
+        "我保持防御",
     )
     return any(pattern in normalized for pattern in end_patterns)
 
@@ -3605,11 +3622,11 @@ def _looks_like_turn_status_request(text: str) -> bool:
     normalized = str(text or "").strip().lower()
     if not normalized:
         return False
-    if any(term in normalized for term in ("???", "??", "??", "???", "??", "??", "??", "??", "??", "??", "??", "??")):
+    if any(term in normalized for term in ("我发动", "我要", "我想", "我进行", "攻击", "移动", "侦察", "观察", "搜索", "调查", "检定", "判定")):
         return False
     return (
-        any(term in normalized for term in ("????", "????", "????", "????", "????", "??", "???"))
-        or ("??" in normalized and any(term in normalized for term in ("??", "??", "??")))
+        any(term in normalized for term in ("行动顺序", "战斗顺序", "轮动顺序", "当前轮次", "当前回合", "轮到", "谁行动"))
+        or ("汇报" in normalized and any(term in normalized for term in ("当前", "轮到", "行动")))
     )
 
 
@@ -3618,23 +3635,23 @@ def _looks_like_scene_tracking_status_request(text: str) -> bool:
     if not normalized:
         return False
     exact = {
-        "????",
-        "????",
-        "????",
-        "????",
-        "????",
-        "??",
-        "??",
-        "??",
-        "????",
-        "????",
-        "????",
-        "???????",
-        "?????",
-        "???",
-        "????",
-        "????",
-        "????",
+        "当前目标",
+        "当前任务",
+        "当前线索",
+        "当前钩子",
+        "开放钩子",
+        "线索",
+        "任务",
+        "目标",
+        "未解问题",
+        "现在目标",
+        "现在任务",
+        "现在有什么线索",
+        "有什么线索",
+        "查线索",
+        "线索状态",
+        "任务状态",
+        "目标状态",
         "current objective",
         "current clues",
         "clues",
@@ -3643,8 +3660,8 @@ def _looks_like_scene_tracking_status_request(text: str) -> bool:
     }
     if normalized in exact:
         return True
-    tracking_terms = ("??", "??", "??", "??", "??", "??", "objective", "clue", "hook", "mystery")
-    query_terms = ("??", "??", "???", "??", "??", "?", "??", "summary", "current", "status", "what")
+    tracking_terms = ("目标", "任务", "线索", "钩子", "未解", "谜团", "objective", "clue", "hook", "mystery")
+    query_terms = ("当前", "现在", "有什么", "哪些", "状态", "列", "总结", "summary", "current", "status", "what")
     return any(term in normalized for term in tracking_terms) and any(term in normalized for term in query_terms)
 
 
@@ -3654,31 +3671,31 @@ def _authoritative_state_fast_reply(session, text: str) -> str:
     scene = session.scene or {}
     timeline = timeline_status_text(session.timeline)
     location = _authoritative_state_location_text(scene)
-    summary = _compact_text(scene.get("summary") or "?????????", 260)
-    objective = _compact_text(scene.get("current_objective") or "???????", 220)
-    conflict = _compact_text(scene.get("current_conflict") or "???????", 220)
+    summary = _compact_text(scene.get("summary") or "当前没有可读摘要。", 260)
+    objective = _compact_text(scene.get("current_objective") or "暂无明确目标。", 220)
+    conflict = _compact_text(scene.get("current_conflict") or "暂无直接冲突。", 220)
     lines = [
-        f"?????{timeline}?",
+        f"权威状态：{timeline}。",
     ]
     if location:
-        lines.append(f"???{location}")
+        lines.append(f"位置：{location}")
     lines.extend([
-        f"???{summary}",
-        f"???{objective}",
-        f"???{conflict}",
+        f"场面：{summary}",
+        f"目标：{objective}",
+        f"冲突：{conflict}",
     ])
     hooks_text = _authoritative_state_visible_hooks_text(scene)
     if hooks_text:
-        lines.append(f"???{hooks_text}")
-    if any(term in str(text or "") for term in ("???", "?2?", "? 2 ?", "??", "??", "??", "??", "??", "??", "??")):
-        lines.append("??????????????????????????????????????")
+        lines.append(f"线索：{hooks_text}")
+    if any(term in str(text or "") for term in ("第二天", "第2天", "第 2 天", "天亮", "入夜", "已经", "现在", "核实", "确认", "查证")):
+        lines.append("当前存档没有确认进入你说的下一时段；如果你是在核实剧情，我按存档读的是这里。")
     battle = session.battle or {}
     turn = dict(battle.get("turn") or {})
     if bool(battle.get("active")) or bool(turn.get("active")):
         phase = str(turn.get("phase") or "unknown")
         round_no = int(turn.get("round") or 0)
         current_id = str(turn.get("current_entity_id") or battle.get("turn_entity_id") or "")
-        lines.append(f"???? {round_no} ???? {phase}????? {current_id or '?'}?")
+        lines.append(f"轮次：第 {round_no} 轮，阶段 {phase}，当前锚点 {current_id or '无'}。")
     return "\n".join(lines)
 
 
@@ -3719,57 +3736,57 @@ def _authoritative_state_visible_hooks_text(scene: dict) -> str:
             if text:
                 parts.append(_compact_text(text, 100))
             if len(parts) >= 3:
-                return "?".join(parts)
-    return "?".join(parts)
+                return "；".join(parts)
+    return "；".join(parts)
 
 
 def _looks_like_authoritative_state_request(text: str) -> bool:
     normalized = str(text or "").strip().lower()
     if not normalized:
         return False
-    if any(term in normalized for term in ("??", "??", "???", "??", "??", "??", "??", "??", "??", "??", "????")):
+    if any(term in normalized for term in ("我要", "我想", "我进行", "攻击", "移动", "搜索", "调查", "检定", "判定", "开打", "继续攻打")):
         return False
     direct_terms = (
-        "???",
-        "?????",
-        "????",
-        "????",
-        "????",
-        "??????",
+        "我在哪",
+        "我现在在哪",
+        "我在哪儿",
+        "我的位置",
+        "当前位置",
+        "现在什么情况",
     )
     if any(term in normalized for term in direct_terms):
         return True
     state_terms = (
-        "???",
-        "?2?",
-        "? 2 ?",
-        "??",
-        "??",
-        "????",
-        "???",
-        "????",
-        "????",
-        "??????",
-        "????",
-        "????",
-        "????",
-        "????",
-        "???",
-        "?????",
-        "?????",
-        "???",
-        "?????",
-        "????",
-        "????",
-        "???",
+        "第二天",
+        "第2天",
+        "第 2 天",
+        "天亮",
+        "入夜",
+        "现在不是",
+        "已经是",
+        "当前状态",
+        "当前局势",
+        "现在什么情况",
+        "剧情线索",
+        "核实剧情",
+        "核实线索",
+        "确认剧情",
+        "时间线",
+        "回营地没有",
+        "回营地了吗",
+        "我在哪",
+        "我现在在哪",
+        "我的位置",
+        "当前位置",
+        "在哪儿",
     )
-    query_terms = ("?", "?", "?", "??", "??", "??", "??", "???", "??", "??", "??", "??")
+    query_terms = ("吗", "？", "?", "核实", "确认", "查证", "复核", "是不是", "是否", "已经", "现在", "当前")
     return any(term in normalized for term in state_terms) and any(term in normalized for term in query_terms)
 
 
 def _looks_like_turn_order_request(text: str) -> bool:
     normalized = str(text or "").strip().lower()
-    return any(term in normalized for term in ("????", "????", "????", "??", "??", "??"))
+    return any(term in normalized for term in ("行动顺序", "战斗顺序", "轮动顺序", "顺序", "队列", "所有"))
 
 
 def _looks_like_local_turn_push(text: str) -> bool:
@@ -3777,25 +3794,25 @@ def _looks_like_local_turn_push(text: str) -> bool:
     if not normalized:
         return False
     exact = {
-        "??",
-        "????",
-        "??",
-        "????",
-        "???",
-        "???",
-        "?????",
-        "????",
-        "???",
-        "???",
-        "??",
-        "????",
-        "????",
-        "????",
-        "????",
-        "??",
-        "???",
-        "????",
-        "?",
+        "继续",
+        "继续推进",
+        "推进",
+        "推进流程",
+        "下一位",
+        "下一个",
+        "轮到下一个",
+        "到下一个",
+        "别等了",
+        "超时了",
+        "超时",
+        "没人响应",
+        "无人响应",
+        "自动行动",
+        "自动代管",
+        "跳过",
+        "跳过他",
+        "跳过当前",
+        "过",
         "skip",
         "next",
         "continue",
@@ -3805,23 +3822,23 @@ def _looks_like_local_turn_push(text: str) -> bool:
     return any(
         pattern in normalized
         for pattern in (
-            "?????",
-            "????",
-            "????",
-            "??????",
-            "??????",
-            "???????",
+            "推进到下一",
+            "让下一个",
+            "让下一位",
+            "当前玩家超时",
+            "当前角色超时",
+            "当前行动者超时",
         )
     )
 
 
 def _local_turn_end_summary(text: str, current_label: str) -> str:
     normalized = str(text or "").strip().lower()
-    if any(term in normalized for term in ("??", "??", "skip", "pass")):
-        return f"{current_label}?????????????"
-    if any(term in normalized for term in ("??", "??", "??", "??", "?")):
-        return f"{current_label}????/???????????"
-    return f"{current_label}????????"
+    if any(term in normalized for term in ("跳过", "放弃", "skip", "pass")):
+        return f"{current_label}放弃剩余行动，结束本回合。"
+    if any(term in normalized for term in ("待机", "防御", "警戒", "守望", "射")):
+        return f"{current_label}保持警戒/防御态势，结束本回合。"
+    return f"{current_label}声明结束本回合。"
 
 
 def _utc_now_iso() -> str:
@@ -3902,8 +3919,8 @@ def _clean_turn_order(order: list[str]) -> list[str]:
 
 def _game_started_text(session) -> str:
     if _campaign_game_started(session):
-        return "????????????????????????????????"
-    return "????????????/??????????"
+        return "开场后（主线与既有角色卡锁定，只记录场内状态；新玩家可建新角色）"
+    return "开场前（可设定背景、建卡/补卡，尚未进入主线）"
 
 
 def _campaign_game_started(session) -> bool:
@@ -3939,58 +3956,58 @@ def _post_start_reasonableness_fast_reply(session, text: str) -> str:
         or _looks_like_self_cleansing_overreach(normalized)
     ):
         return (
-            "????????????????????????????????????????????"
-            "?????????????????????????????????????????/??????????"
-            "?????????????????"
+            "这个主张不能直接进入场内事实。开场后允许新玩家加入，但只能创建符合当前团尺度的个人角色；"
+            "不能自带军队、传奇随从、跨作品神级身份，不能路过式改写阵营胜负，也不能用“世界意志/规则修正”清除现实。"
+            "请改成一个有限、可检定的个人目标。"
         )
     return ""
 
 
 def _looks_like_late_join_power_overreach(text: str) -> bool:
     mythic_identity = (
-        "??",
-        "??",
-        "??",
-        "??",
-        "????",
-        "????",
-        "??",
-        "???",
-        "???",
-        "????",
-        "??",
-        "??",
-        "??",
-        "??",
+        "帝皇",
+        "神皇",
+        "原体",
+        "禁军",
+        "星际战士",
+        "阿斯塔特",
+        "战锤",
+        "创世神",
+        "造物主",
+        "世界意志",
+        "神格",
+        "半神",
+        "神明",
+        "神祇",
     )
     force_terms = (
-        "?????",
-        "?????",
-        "13???",
-        "13???",
-        "????",
-        "????",
-        "????",
-        "????",
-        "????",
-        "??",
-        "??",
-        "????",
+        "十三个原体",
+        "十三名原体",
+        "13个原体",
+        "13名原体",
+        "一队原体",
+        "带着原体",
+        "带着十三",
+        "带着军队",
+        "带着军团",
+        "随从",
+        "护卫",
+        "军团路过",
     )
     join_or_command = (
-        "???",
-        "????",
-        "???",
-        "??",
-        "???",
-        "????",
-        "????",
-        "??",
-        "??",
-        "??",
-        "??",
-        "???",
-        "???",
+        "我加入",
+        "我要加入",
+        "角色是",
+        "我是",
+        "我正好",
+        "路过这里",
+        "刚好路过",
+        "带着",
+        "降临",
+        "指挥",
+        "收走",
+        "征的税",
+        "砍卫兵",
     )
     return (
         any(term in text for term in mythic_identity)
@@ -3999,23 +4016,23 @@ def _looks_like_late_join_power_overreach(text: str) -> bool:
 
 
 def _looks_like_world_law_rewrite(text: str) -> bool:
-    law_terms = ("????", "???", "??", "??", "????", "????", "????", "dnd2024")
-    rewrite_terms = ("??", "??", "??", "??", "??", "??", "??", "??", "??", "??")
-    target_terms = ("???", "???", "??", "???", "??", "??", "??", "??")
+    law_terms = ("世界意志", "世界观", "现实", "法则", "底层逻辑", "位面基石", "宇宙规则", "dnd2024")
+    rewrite_terms = ("修正", "清除", "清理", "抹除", "排除", "踢出", "移除", "重塑", "改写", "纠正")
+    target_terms = ("不符合", "不合理", "异界", "跨作品", "所有", "一切", "事物", "存在")
     return any(term in text for term in law_terms) and any(term in text for term in rewrite_terms) and any(
         term in text for term in target_terms
     )
 
 
 def _looks_like_forced_scene_takeover(text: str) -> bool:
-    force_terms = ("????", "????", "???", "??", "??", "???", "????", "????")
-    outcome_terms = ("????", "???", "??", "??", "??", "??", "??", "????", "????")
+    force_terms = ("所有卫兵", "全部卫兵", "税务官", "军团", "平民", "所有人", "整个小镇", "所有事物")
+    outcome_terms = ("都听我的", "交给我", "收走", "清除", "臣服", "跪下", "投降", "全部消失", "直接成功")
     return any(term in text for term in force_terms) and any(term in text for term in outcome_terms)
 
 
 def _looks_like_self_cleansing_overreach(text: str) -> bool:
-    status_terms = ("debuff", "????", "????", "??", "??", "??", "??", "??")
-    cleanse_terms = ("????", "??", "??", "??", "??", "??", "??", "????")
+    status_terms = ("debuff", "负面状态", "负面效果", "震慑", "眩晕", "反噬", "劣势", "惩罚")
+    cleanse_terms = ("不受任何", "不受", "免疫", "无视", "清除", "消除", "解除", "不会受到")
     return any(term in text for term in status_terms) and any(term in text for term in cleanse_terms)
 
 
@@ -4036,9 +4053,9 @@ def _unbound_tactical_actor_reply(session, actor: dict[str, str], text: str) -> 
     if not _looks_like_unbound_scene_action(normalized):
         return ""
     return (
-        "????????????????????????"
-        "????????????? `/dm ?????????`?"
-        "???????????????? `/dm ????` ? `/dm ????`?"
+        "你还没有绑定本场角色，这句不能作为角色行动结算。"
+        "开场后仍可加入新角色：请发 `/dm 我加入，角色是……`；"
+        "如果只是交代旁观或问状态，可以用 `/dm 当前轮次` 或 `/dm 玩家列表`。"
     )
 
 
@@ -4057,72 +4074,72 @@ def _unbound_live_action_reply(session, actor: dict[str, str], text: str) -> str
     if not _looks_like_unbound_scene_action(normalized):
         return ""
     return (
-        "????????????????????????????"
-        "??? `/dm ?????????????????????`?"
-        "? `/dm ?????????` ?????????????????"
-        "?????????"
+        "你还没有绑定有效角色，这句我不会当作场内行动或检定结算。"
+        "请先发 `/dm 建卡：角色名、身份、擅长什么、怎么加入队伍`，"
+        "或 `/dm 我加入，角色名……` 让我先把角色卡和玩家绑定写进存档；"
+        "绑定完成后再行动。"
     )
 
 
 def _looks_like_unbound_scene_action(text: str) -> bool:
     action_terms = (
-        "??",
-        "??",
-        "??",
-        "??",
-        "??",
-        "??",
-        "??",
-        "??",
-        "??",
-        "??",
-        "??",
-        "?",
-        "??",
-        "??",
-        "??",
-        "?",
-        "??",
-        "?",
-        "?",
-        "?",
-        "?",
-        "??",
-        "???",
-        "??",
-        "??",
-        "??",
-        "??",
-        "??",
-        "??",
-        "??",
-        "??",
-        "??",
-        "??",
-        "??",
-        "??",
-        "??",
-        "??",
-        "??",
-        "??",
-        "??",
-        "??",
-        "?",
-        "??",
-        "??",
-        "?",
-        "??",
-        "??",
-        "??",
-        "??",
-        "??",
-        "??",
-        "??",
-        "????",
-        "??",
-        "??",
-        "?",
-        "?",
+        "上交",
+        "交出",
+        "交给",
+        "缴纳",
+        "支付",
+        "掏出",
+        "拿出",
+        "递给",
+        "捡起",
+        "拾取",
+        "带走",
+        "找",
+        "寻找",
+        "采集",
+        "收集",
+        "做",
+        "制作",
+        "烹",
+        "煮",
+        "炖",
+        "烙",
+        "分发",
+        "分一份",
+        "留一",
+        "攻击",
+        "射击",
+        "施法",
+        "念咒",
+        "掐诀",
+        "提振",
+        "鼓舞",
+        "移动",
+        "靠近",
+        "搜索",
+        "调查",
+        "侦查",
+        "防御",
+        "躲避",
+        "搭话",
+        "交谈",
+        "对话",
+        "喊",
+        "大喊",
+        "喊话",
+        "说",
+        "观察",
+        "等待",
+        "准备",
+        "继续",
+        "使用",
+        "装填",
+        "上弩",
+        "放松警惕",
+        "退进",
+        "退到",
+        "藏",
+        "躲",
     )
     return _looks_like_paced_player_action(text) or any(term in text for term in action_terms)
 
@@ -4132,64 +4149,64 @@ def _looks_like_terminal_or_interlude_for_pacing(text: str) -> bool:
     if not normalized:
         return False
     terminal_terms = (
-        "????",
-        "????",
-        "????",
-        "????",
-        "????",
-        "????",
-        "????",
-        "????",
-        "????",
-        "????",
-        "????",
-        "??",
-        "???",
-        "??",
-        "?????",
-        "?????",
-        "????",
-        "????",
-        "????",
-        "????",
-        "????",
-        "????",
-        "??????",
-        "????",
-        "??????",
-        "????",
-        "????",
-        "??????",
-        "?????",
-        "????",
-        "????",
-        "????",
-        "????",
-        "????",
-        "????",
-        "????",
-        "????",
-        "????",
+        "全局结算",
+        "展示结算",
+        "退出游戏",
+        "结束游戏",
+        "跑团结束",
+        "本场结束",
+        "本次结束",
+        "到此结束",
+        "正式落幕",
+        "圆满落幕",
+        "个人结局",
+        "结局",
+        "后日谈",
+        "尾声",
+        "下一段冒险",
+        "下一次冒险",
+        "下次冒险",
+        "下个冒险",
+        "下回冒险",
+        "下次开团",
+        "下回开团",
+        "战斗结束",
+        "战斗遭遇结束",
+        "危机解除",
+        "解除战斗状态",
+        "士气崩溃",
+        "士气溃散",
+        "士气检定溃散",
+        "判定为溃散",
+        "全线溃散",
+        "全线溃退",
+        "敌方溃散",
+        "敌方溃退",
+        "残敌溃退",
+        "残敌撤退",
+        "残敌逃窜",
+        "残敌逃离",
+        "所有残敌",
         "routed",
         "retreated",
         "fled",
     )
     interlude_terms = (
-        "????",
-        "????",
-        "????",
-        "???",
-        "????",
-        "????",
-        "????",
-        "????",
-        "????",
-        "??????",
-        "?????",
-        "??????",
-        "??????",
-        "??",
-        "??",
+        "休息一会",
+        "休息一下",
+        "休息到下",
+        "睡到下",
+        "沉睡直到",
+        "沉睡到下",
+        "休眠直到",
+        "休眠到下",
+        "直到下次",
+        "无人可以打扰",
+        "玩家们都累",
+        "来点背景剧情",
+        "背景剧情描述",
+        "间幕",
+        "休整",
     )
     return any(term in normalized for term in terminal_terms) or any(term in normalized for term in interlude_terms)
 
@@ -4212,38 +4229,38 @@ def _scene_looks_concluded_for_pacing(session) -> bool:
     return any(
         term in text
         for term in (
-            "???????",
-            "???????",
-            "????",
-            "??????",
-            "????",
-            "????",
-            "????",
-            "????",
-            "????",
-            "????",
-            "??????",
-            "????",
-            "??????",
-            "????",
-            "????",
-            "??????",
-            "?????",
-            "????",
-            "????",
-            "????",
-            "????",
-            "????",
-            "????",
-            "????",
-            "????",
-            "????",
+            "危机已正式解除",
+            "危机已落下帷幕",
+            "跑团到此",
+            "本场跑团到此",
+            "圆满结束",
+            "圆满落幕",
+            "正式落幕",
+            "全局结算",
+            "最终结局",
+            "战斗结束",
+            "战斗遭遇结束",
+            "危机解除",
+            "解除战斗状态",
+            "士气崩溃",
+            "士气溃散",
+            "士气检定溃散",
+            "判定为溃散",
+            "全线溃散",
+            "全线溃退",
+            "敌方溃散",
+            "敌方溃退",
+            "残敌溃退",
+            "残敌撤退",
+            "残敌逃窜",
+            "残敌逃离",
+            "所有残敌",
             "routed",
             "retreated",
             "fled",
-            "????????",
-            "????",
-            "???????",
+            "暂无。世界正处于",
+            "暂无冲突",
+            "当前冲突：暂无",
         )
     )
 
@@ -4277,41 +4294,41 @@ def _scene_looks_social_or_political_for_heartbeat(session) -> bool:
     if not current_conflict.strip():
         return False
     social_terms = (
-        "??",
-        "??",
-        "??",
-        "??",
-        "??",
-        "??",
-        "??",
-        "??",
-        "??",
-        "??",
-        "??",
-        "??",
-        "??",
-        "??",
-        "??",
-        "??",
-        "??",
-        "??",
-        "??",
+        "谈判",
+        "劝说",
+        "威吓",
+        "征税",
+        "税务",
+        "收缴",
+        "免税",
+        "军团",
+        "平民",
+        "镇民",
+        "抗议",
+        "骚乱",
+        "软禁",
+        "从军",
+        "审判",
+        "交涉",
+        "政治",
+        "秩序",
+        "统治",
     )
     combat_terms = (
-        "??",
-        "??",
-        "??",
-        "????",
-        "??",
-        "??",
-        "??",
-        "??",
-        "??",
-        "??",
+        "战斗",
+        "遭遇",
+        "先攻",
+        "敌方回合",
+        "攻击",
+        "命中",
+        "伤害",
+        "龙息",
+        "红龙",
+        "怪物",
         "hp",
-        "???",
-        "??",
-        "??",
+        "生命值",
+        "战棋",
+        "格子",
     )
     return any(term in current_conflict for term in social_terms) and not any(
         term in current_conflict for term in combat_terms
@@ -4321,7 +4338,7 @@ def _scene_looks_social_or_political_for_heartbeat(session) -> bool:
 def _repeated_timeout_after_auto_pause(session, turn: dict) -> bool:
     scene = session.scene or {}
     pause_reason = str(scene.get("_dm_pause_reason") or "")
-    if "??" not in pause_reason and "????" not in pause_reason and "??" not in pause_reason:
+    if "超时" not in pause_reason and "自动暂停" not in pause_reason and "半数" not in pause_reason:
         return False
     if not scene.get("_dm_resumed_at"):
         return False
@@ -4337,14 +4354,14 @@ def _repeated_timeout_after_auto_pause(session, turn: dict) -> bool:
 
 def _looks_like_resume_flow_command(normalized: str, *, paused: bool = False) -> bool:
     text = str(normalized or "").strip().lower()
-    if text in {"resume", "unpause", "??", "????", "????"}:
+    if text in {"resume", "unpause", "恢复", "继续流程", "解除暂停"}:
         return True
-    if paused and text == "??":
+    if paused and text == "继续":
         return True
-    tokens = [token.strip() for token in re.split(r"[\s/|,?;?]+", text) if token.strip()]
+    tokens = [token.strip() for token in re.split(r"[\s/|,，;；]+", text) if token.strip()]
     if not tokens:
         return False
-    resume_tokens = {"resume", "unpause", "??", "????", "????"}
+    resume_tokens = {"resume", "unpause", "恢复", "继续流程", "解除暂停"}
     if any(token in resume_tokens for token in tokens):
         return True
     return "dm" in tokens and any(token in {"resume", "unpause"} for token in tokens)
@@ -4359,7 +4376,7 @@ def _clear_stale_turn_timeout_pause(scene: dict[str, Any], *, resumed: bool = Fa
     is_timeout_pause = (
         source == "turn_timeout"
         or str(paused_by.get("player_id") or "") in {"__heartbeat__", "__system__"}
-        or any(term in reason for term in ("??", "????", "??"))
+        or any(term in reason for term in ("超时", "自动暂停", "半数"))
     )
     if not is_timeout_pause:
         return False
@@ -4386,16 +4403,16 @@ def _looks_like_plot_rewrite_request(text: str) -> bool:
     normalized = str(text or "").strip().lower()
     if not normalized:
         return False
-    if any(token in normalized for token in ("??", "??", "??", "????", "??")) and not any(
-        token in normalized for token in ("??", "??", "??", "??", "???")
+    if any(token in normalized for token in ("加入", "建卡", "角色", "我的名字", "我是")) and not any(
+        token in normalized for token in ("剧情", "剧本", "背景", "主线", "世界观")
     ):
         return False
     if _looks_like_in_character_clue_request(normalized):
         return False
-    plot_terms = ("??", "??", "??", "???", "??", "??", "??", "??", "??", "????", "??", "??")
-    rewrite_terms = ("??", "??", "??", "??", "??", "??", "???", "???", "??", "????", "???")
+    plot_terms = ("剧情", "剧本", "背景", "世界观", "题材", "类型", "风格", "主线", "设定", "幕后黑手", "真相", "结局")
+    rewrite_terms = ("改成", "换成", "变成", "调整", "修改", "重写", "换一个", "改一下", "不能", "可不可以", "能不能")
     direct_rewrite = any(term in normalized for term in plot_terms) and any(term in normalized for term in rewrite_terms)
-    fact_injection = any(term in normalized for term in ("??", "???", "??", "?????", "???")) and any(
+    fact_injection = any(term in normalized for term in ("其实", "真相是", "原来", "幕后黑手是", "结局是")) and any(
         term in normalized for term in plot_terms
     )
     return direct_rewrite or fact_injection
@@ -4403,26 +4420,26 @@ def _looks_like_plot_rewrite_request(text: str) -> bool:
 
 def _looks_like_in_character_clue_request(text: str) -> bool:
     speech_terms = (
-        "???",
-        "??",
-        "??",
-        "??",
-        "??",
-        "??",
-        "??",
-        "??",
-        "??",
-        "??",
-        "??",
-        "??",
-        "??",
-        "??",
-        "??",
-        "??",
-        "??",
+        "我这样",
+        "我对",
+        "我跟",
+        "我和",
+        "我向",
+        "说“",
+        "说：",
+        "问“",
+        "问：",
+        "请您",
+        "劳烦",
+        "帮我",
+        "找出",
+        "调查",
+        "线索",
+        "脚印",
+        "预言",
     )
-    investigation_terms = ("????", "??", "??", "???", "??", "??", "??", "??")
-    rewrite_terms = ("??", "??", "??", "??", "??", "??", "???", "???", "??", "??", "???", "??")
+    investigation_terms = ("幕后黑手", "真凶", "凶手", "嫌疑人", "线索", "脚印", "投毒", "找出")
+    rewrite_terms = ("改成", "换成", "变成", "调整", "修改", "重写", "换一个", "改一下", "剧情", "剧本", "世界观", "主线")
     if any(term in text for term in speech_terms) and any(term in text for term in investigation_terms):
         return not any(term in text for term in rewrite_terms)
     return False
@@ -4435,34 +4452,34 @@ def _looks_like_dm_autopilot_takeover(text: str) -> bool:
     all_player_scope = any(
         term in normalized
         for term in (
-            "????",
-            "????",
-            "????",
-            "????",
-            "????",
-            "????",
-            "????",
-            "?????",
-            "????",
+            "所有玩家",
+            "全部玩家",
+            "全体玩家",
+            "所有角色",
+            "全部角色",
+            "所有人物",
+            "全部人物",
+            "玩家将不再",
+            "玩家不再",
         )
     )
     takeover = any(
         term in normalized
         for term in (
-            "?????",
-            "?????",
-            "????",
-            "????",
-            "??ai",
-            "?? ai",
-            "????",
-            "????",
-            "????????",
-            "????????",
-            "???????",
-            "??????",
-            "???????",
-            "??????",
+            "交由你操作",
+            "交给你操作",
+            "由你操作",
+            "由你控制",
+            "交给ai",
+            "交给 ai",
+            "全权托管",
+            "全员托管",
+            "自动推演后续剧情",
+            "自动结算后续剧情",
+            "玩家将不再干预",
+            "玩家不再干预",
+            "玩家将不再介入",
+            "玩家不再介入",
         )
     )
     return all_player_scope and takeover
@@ -4474,73 +4491,73 @@ def _looks_like_paced_player_action(text: str) -> bool:
         return False
     if _looks_like_non_action_request(normalized):
         return False
-    actor_terms = ("?", "?", "?", "??", "??", "my ")
+    actor_terms = ("我", "俺", "咱", "角色", "自己", "my ")
     action_terms = (
-        "??",
-        "?",
-        "??",
-        "?",
-        "?",
-        "??",
-        "??",
-        "?",
-        "?",
-        "?",
-        "?",
-        "??",
-        "?",
-        "?",
-        "?",
-        "?",
-        "??",
-        "??",
-        "??",
-        "??",
-        "??",
-        "??",
-        "??",
-        "??",
-        "??",
-        "?",
-        "??",
-        "??",
-        "??",
-        "??",
-        "??",
-        "??",
-        "??",
-        "?",
-        "?",
-        "??",
-        "??",
-        "?",
-        "?",
-        "??",
-        "??",
-        "?",
-        "?",
-        "?",
-        "?",
-        "?",
-        "??",
-        "??",
-        "??",
-        "??",
-        "??",
-        "??",
-        "??",
-        "??",
-        "??",
-        "?",
-        "??",
-        "??",
-        "??",
-        "??",
-        "??",
-        "??",
-        "??",
-        "??",
-        "??",
+        "移动",
+        "走",
+        "出门",
+        "跑",
+        "冲",
+        "靠近",
+        "后退",
+        "撤",
+        "爬",
+        "跳",
+        "躲",
+        "攻击",
+        "射",
+        "砍",
+        "刺",
+        "打",
+        "施法",
+        "治疗",
+        "防御",
+        "掩护",
+        "观察",
+        "查看",
+        "侦查",
+        "搜索",
+        "调查",
+        "找",
+        "寻找",
+        "采集",
+        "收集",
+        "警告",
+        "示警",
+        "提醒",
+        "叫醒",
+        "喊",
+        "说",
+        "开门",
+        "关门",
+        "拿",
+        "捡",
+        "使用",
+        "制作",
+        "做",
+        "烹",
+        "煮",
+        "炖",
+        "烙",
+        "分发",
+        "点燃",
+        "潜行",
+        "隐藏",
+        "清醒",
+        "检定",
+        "判定",
+        "发现",
+        "注意",
+        "盯",
+        "准备",
+        "等待",
+        "继续",
+        "装填",
+        "上弩",
+        "念咒",
+        "掐诀",
+        "提振",
+        "鼓舞",
     )
     return any(term in normalized for term in action_terms) and (
         any(term in normalized for term in actor_terms) or len(normalized) <= 40
@@ -4556,44 +4573,44 @@ def _looks_like_non_action_request(text: str) -> bool:
         "status",
         "token",
         "tokens",
-        "????",
-        "????",
-        "??",
-        "??",
-        "????",
-        "????",
-        "?????",
-        "???",
-        "???",
-        "??",
+        "当前轮次",
+        "当前回合",
+        "轮次",
+        "回合",
+        "玩家列表",
+        "角色列表",
+        "有哪些玩家",
+        "谁行动",
+        "轮到谁",
+        "日志",
         "debug",
-        "??",
-        "??",
-        "????",
-        "????",
-        "??",
-        "??",
-        "????",
-        "????",
-        "???",
-        "???",
-        "????",
-        "????",
-        "???",
-        "????",
-        "????",
-        "???",
-        "??",
-        "????",
-        "????",
-        "????",
-        "??",
-        "????",
+        "地图",
+        "画图",
+        "生成地图",
+        "加入游戏",
+        "加入",
+        "建卡",
+        "给我创建",
+        "帮我创建",
+        "给我建",
+        "帮我建",
+        "创建角色",
+        "创建人物",
+        "角色卡",
+        "我的名字",
+        "我是一个",
+        "我是名",
+        "我叫",
+        "补充设定",
+        "背景设定",
+        "开始游戏",
+        "开场",
+        "正式开始",
     )
     if any(term in text for term in non_action_terms):
         return True
-    question_terms = ("?", "?", "??", "??", "??", "???", "???", "????", "???", "?")
-    action_verbs = ("??", "??", "?", "?", "?", "?", "??", "??", "??")
+    question_terms = ("吗", "呢", "什么", "多少", "怎么", "为什么", "能不能", "可不可以", "有没有", "?")
+    action_verbs = ("攻击", "移动", "射", "砍", "走", "跑", "侦查", "搜索", "调查")
     return any(term in text for term in question_terms) and not any(term in text for term in action_verbs)
 
 
@@ -4602,25 +4619,25 @@ def _looks_like_rules_or_adjudication_meta_request(text: str) -> bool:
     if not normalized:
         return False
     meta_terms = (
-        "????",
-        "??",
-        "????",
-        "????",
-        "????",
-        "????????",
-        "???",
-        "????",
-        "????",
-        "??????",
-        "????",
-        "????",
-        "dc???",
-        "dc ???",
-        "???????",
-        "??????",
-        "????????",
+        "重新判定",
+        "重判",
+        "重新计算",
+        "重新裁定",
+        "要求修复",
+        "修复或者重新判定",
+        "你误解",
+        "你的错误",
+        "规则错误",
+        "脚本中有错误",
+        "判定脚本",
+        "骰子判定",
+        "dc不合理",
+        "dc 不合理",
+        "加值你没有计算",
+        "没有计算加值",
+        "正确计算我的加值",
     )
-    rules_context = ("??", "??", "??", "?", "dc", "??", "??", "??", "???", "??")
+    rules_context = ("规则", "判定", "检定", "骰", "dc", "加值", "脚本", "错误", "不合理", "裁定")
     return any(term in normalized for term in meta_terms) and any(term in normalized for term in rules_context)
 
 
@@ -4629,23 +4646,23 @@ def _looks_like_player_roster_request(text: str) -> bool:
     if not normalized:
         return False
     exact = {
-        "????",
-        "????",
-        "????",
-        "????",
-        "????",
-        "???????",
-        "???????",
-        "??????????",
-        "????",
-        "????",
-        "???????",
-        "?????",
+        "玩家列表",
+        "角色列表",
+        "登记列表",
+        "当前玩家",
+        "当前角色",
+        "当前有哪些玩家",
+        "现在有哪些玩家",
+        "现在游戏里有哪些玩家",
+        "哪些玩家",
+        "谁加入了",
+        "谁还没绑定角色",
+        "谁没有角色",
     }
     if normalized in exact:
         return True
-    roster_terms = ("??", "??", "??", "??", "??", "??")
-    query_terms = ("??", "??", "??", "??", "??", "??", "??", "?", "???")
+    roster_terms = ("玩家", "成员", "登记", "加入", "绑定", "角色")
+    query_terms = ("哪些", "列表", "一览", "当前", "现在", "所有", "全部", "谁", "有没有")
     return any(term in normalized for term in roster_terms) and any(term in normalized for term in query_terms)
 
 
@@ -4861,7 +4878,7 @@ def _preview_text(value: object, font_size: int) -> str:
     limit = 28 if font_size >= 24 else 18 if font_size >= 18 else 12
     if len(text) <= limit:
         return text
-    return text[: max(1, limit - 1)].rstrip() + "?"
+    return text[: max(1, limit - 1)].rstrip() + "…"
 
 
 def _text_halo(fill: object):
@@ -4900,14 +4917,14 @@ def _format_roll_record(record: object) -> str:
 
 def _compact_result(value: object) -> str:
     if value is None:
-        return "??????"
+        return "规则执行完成"
     if isinstance(value, dict):
         preferred = []
         for key in ("total", "success", "degree", "outcome", "damage", "result", "message"):
             if key in value:
                 preferred.append(f"{key}={value[key]}")
         if preferred:
-            return _compact_text("?".join(preferred), 180)
+            return _compact_text("；".join(preferred), 180)
     return _compact_text(json.dumps(value, ensure_ascii=False, separators=(",", ":")), 180)
 
 
@@ -4915,7 +4932,7 @@ def _compact_text(value: object, limit: int) -> str:
     text = str(value or "").strip()
     if len(text) <= limit:
         return text
-    return text[: max(1, limit - 1)].rstrip() + "?"
+    return text[: max(1, limit - 1)].rstrip() + "…"
 
 
 def _compact_campaign_background(value: object) -> str:
@@ -4934,7 +4951,7 @@ def _extract_reset_confirmation_token(text: str) -> str:
     lowered = str(text or "").strip().lower()
     if not lowered:
         return ""
-    confirm_terms = ("????", "????", "????", "????", "confirm reset", "confirm-reset")
+    confirm_terms = ("确认重开", "确认清空", "确认重置", "确认新团", "confirm reset", "confirm-reset")
     if not any(term in lowered for term in confirm_terms):
         return ""
     match = re.search(r"\b(?:RESET-)?[A-Z0-9]{6,12}\b", str(text or ""), flags=re.IGNORECASE)
@@ -4950,7 +4967,7 @@ def _looks_like_reset_confirmation_request(text: str) -> bool:
     lowered = str(text or "").strip().lower()
     return bool(lowered) and any(
         term in lowered
-        for term in ("????", "????", "????", "????", "??", "confirm reset", "confirm-reset")
+        for term in ("确认重开", "确认清空", "确认重置", "确认新团", "确认", "confirm reset", "confirm-reset")
     )
 
 
@@ -4975,14 +4992,14 @@ def _looks_like_reset_request(text: str) -> bool:
     if not lowered:
         return False
     non_save_restart_terms = (
-        "????",
-        "?????",
-        "?? bot",
-        "??bot",
-        "????",
-        "????",
-        "?? astrbot",
-        "??astrbot",
+        "重启插件",
+        "重启机器人",
+        "重启 bot",
+        "重启bot",
+        "重启服务",
+        "重启容器",
+        "重启 astrbot",
+        "重启astrbot",
         "restart plugin",
         "restart bot",
         "restart service",
@@ -4990,19 +5007,19 @@ def _looks_like_reset_request(text: str) -> bool:
     )
     if any(term in lowered for term in non_save_restart_terms):
         return False
-    recovery_terms = ("????", "??", "????", "??", "??", "backup", "restore")
+    recovery_terms = ("恢复之前", "找回", "撤销重开", "误删", "备份", "backup", "restore")
     if any(term in lowered for term in recovery_terms):
         return False
     destructive_terms = (
-        "????",
-        "????",
-        "????",
-        "????",
-        "?????",
-        "????",
-        "????",
-        "???",
-        "????",
+        "清空存档",
+        "删除存档",
+        "重置存档",
+        "重开存档",
+        "重开当前团",
+        "重开跑团",
+        "重新开团",
+        "开新团",
+        "新开一团",
         "reset save",
         "reset campaign",
         "new campaign",
@@ -5017,20 +5034,20 @@ def _looks_like_restore_latest_backup_request(text: str) -> bool:
     if _looks_like_restart_latest_backup_story_request(text):
         return False
     restore_terms = (
-        "??",
-        "??",
-        "??",
-        "???",
-        "????",
-        "???",
-        "??",
-        "??",
-        "??",
-        "??",
+        "恢复",
+        "还原",
+        "找回",
+        "重新开",
+        "重新打开",
+        "继续开",
+        "打开",
+        "载入",
+        "读取",
+        "加载",
         "restore",
         "load",
     )
-    backup_terms = ("?????", "?????", "?????", "?????", "????", "?????", "????", "backup")
+    backup_terms = ("上一个存档", "之前的跑团", "之前的存档", "上一份存档", "上个存档", "上一个备份", "最新备份", "backup")
     return any(term in lowered for term in restore_terms) and any(term in lowered for term in backup_terms)
 
 
@@ -5039,37 +5056,37 @@ def _looks_like_restart_latest_backup_story_request(text: str) -> bool:
     if not lowered:
         return False
     restart_terms = (
-        "???",
-        "????",
-        "??",
-        "???",
-        "???",
-        "???",
-        "???",
-        "??",
-        "??",
+        "重新开",
+        "重新开始",
+        "重开",
+        "重置成",
+        "重置到",
+        "从头开",
+        "从开头",
+        "开头",
+        "开场",
         "restart",
         "start over",
     )
     source_terms = (
-        "?????",
-        "?????",
-        "?????",
-        "????",
-        "?????",
-        "????",
-        "?????",
-        "????",
-        "?????",
-        "???",
-        "??",
+        "上一个存档",
+        "之前的存档",
+        "上一份存档",
+        "上个存档",
+        "上一个备份",
+        "最新备份",
+        "上一个故事",
+        "上个故事",
+        "之前的故事",
+        "旧故事",
+        "旧团",
         "backup",
     )
-    story_scope_terms = ("??", "??", "??", "??", "??????", "?????", "????", "????", "????")
+    story_scope_terms = ("故事", "开头", "开场", "背景", "不包括角色卡", "不要角色卡", "无角色卡", "不带角色", "只要故事")
     return (
         any(term in lowered for term in restart_terms)
         and any(term in lowered for term in source_terms)
-        and (any(term in lowered for term in story_scope_terms) or "???" in lowered or "??" in lowered)
+        and (any(term in lowered for term in story_scope_terms) or "重新开" in lowered or "重开" in lowered)
     )
 
 
@@ -5077,11 +5094,11 @@ def _looks_like_backup_preview_request(text: str) -> bool:
     lowered = str(text or "").strip().lower()
     if not lowered:
         return False
-    list_terms = ("????", "?????", "????", "backup list", "list backups")
+    list_terms = ("备份列表", "有哪些备份", "最近备份", "backup list", "list backups")
     if any(term in lowered for term in list_terms):
         return False
-    view_terms = ("??", "??", "???", "??", "??", "???", "??", "??", "view", "preview", "show")
-    backup_terms = ("?????", "?????", "?????", "?????", "????", "?????", "????", "backup")
+    view_terms = ("查看", "看看", "看一下", "预览", "显示", "读一下", "讲讲", "回顾", "view", "preview", "show")
+    backup_terms = ("上一个存档", "之前的跑团", "之前的存档", "上一份存档", "上个存档", "上一个备份", "最新备份", "backup")
     return any(term in lowered for term in view_terms) and any(term in lowered for term in backup_terms)
 
 
@@ -5089,15 +5106,15 @@ def _looks_like_backup_list_request(text: str) -> bool:
     lowered = str(text or "").strip().lower()
     if not lowered:
         return False
-    return any(term in lowered for term in ("????", "?????", "????", "????", "backup list", "list backups"))
+    return any(term in lowered for term in ("备份列表", "有哪些备份", "查看备份", "最近备份", "backup list", "list backups"))
 
 
 def _looks_like_manual_backup_request(text: str) -> bool:
     lowered = str(text or "").strip().lower()
     if not lowered:
         return False
-    create_terms = ("????", "????", "????", "????", "backup save", "create backup")
-    list_terms = ("????", "????", "?????", "backup list")
+    create_terms = ("备份存档", "保存备份", "创建备份", "手动备份", "backup save", "create backup")
+    list_terms = ("备份列表", "查看备份", "有哪些备份", "backup list")
     return any(term in lowered for term in create_terms) and not any(term in lowered for term in list_terms)
 
 
@@ -5111,100 +5128,100 @@ def _guided_background_patch_from_text(text: str) -> dict:
         or _looks_like_new_campaign_seed_request(text)
     ):
         return {}
-    character_only = any(term in lowered for term in ("???", "???", "??", "??????", "????"))
+    character_only = any(term in lowered for term in ("角色卡", "人物卡", "建卡", "随机创建角色", "随机建卡"))
     delegated_background = any(
         term in lowered
         for term in (
-            "???",
-            "???",
-            "???",
-            "???",
-            "????",
-            "????",
-            "????",
-            "????",
-            "??",
-            "??",
-            "??",
-            "??",
-            "???",
+            "你来定",
+            "你定吧",
+            "你决定",
+            "随便定",
+            "自动生成",
+            "智能补完",
+            "不用多问",
+            "直接开始",
+            "故事",
+            "剧本",
+            "副本",
+            "背景",
+            "世界观",
         )
     )
     if character_only and not (_looks_like_enough_background_seed(text) or delegated_background):
         return {}
-    if any(term in lowered for term in ("??", "40k", "warhammer", "????", "????", "?????", "??", "??")):
-        location = "???Underhive?" if any(term in lowered for term in ("??", "??", "??")) else "??????"
+    if any(term in lowered for term in ("战锤", "40k", "warhammer", "极限战士", "阿斯塔特", "基因窃取者", "底巢", "巢都")):
+        location = "底巢（Underhive）" if any(term in lowered for term in ("底巢", "巢都", "下巢")) else "帝国边境战区"
         return {
             "genre": "grimdark_sci_fi",
-            "tone": "???????????????????",
-            "factions": ["Ultramarines??????", "Genestealer Cult?????????"],
+            "tone": "哥特军事恐怖、克制高压、重视火力与代价",
+            "factions": ["Ultramarines（极限战士）", "Genestealer Cult（基因窃取者教派）"],
             "starting_premise": _compact_starting_premise(text),
             "location": location,
-            "ruleset": "homebrew_warhammer40k_adaptation??????????????? d20/?????",
+            "ruleset": "homebrew_warhammer40k_adaptation；风险、命中、伤害和资源消耗用 d20/伤害骰裁定",
             "campaign_background": _compact_campaign_background(text),
         }
     patch: dict = {}
     genre_terms = _terms_found(
         lowered,
         (
-            "??",
-            "??",
-            "??",
-            "??",
-            "??",
-            "??",
-            "???",
-            "??",
-            "??",
-            "??",
-            "???",
-            "??",
-            "??",
-            "??",
-            "??",
-            "???",
-            "??",
-            "??",
-            "??",
+            "末世",
+            "废土",
+            "核战",
+            "科幻",
+            "奇幻",
+            "玄幻",
+            "异世界",
+            "穿越",
+            "现代",
+            "赛博",
+            "克苏鲁",
+            "悬疑",
+            "武侠",
+            "太空",
+            "蒸汽",
+            "中世纪",
+            "历史",
+            "低魔",
+            "无魔",
             "dnd",
             "coc",
         ),
     )
     if genre_terms:
-        patch["genre"] = "?".join(genre_terms)
-    tone_terms = _terms_found(lowered, ("??", "??", "??", "??", "??", "??", "??", "??", "??", "??", "??", "??", "??"))
+        patch["genre"] = "、".join(genre_terms)
+    tone_terms = _terms_found(lowered, ("严肃", "荒诞", "宏大", "危险", "恐怖", "轻松", "黑暗", "求生", "调查", "热血", "压抑", "幽默", "温馨"))
     if tone_terms:
-        patch["tone"] = "?".join(tone_terms)
-    location_terms = _terms_found(lowered, ("??", "??", "??", "??", "??", "??", "??", "??", "???", "???", "???", "??", "??", "??", "??"))
+        patch["tone"] = "、".join(tone_terms)
+    location_terms = _terms_found(lowered, ("地球", "海上", "港口", "王国", "城市", "村庄", "荒野", "废墟", "空间站", "中继站", "地下城", "酒馆", "学院", "宗门", "领地"))
     if location_terms:
-        patch["location"] = "?".join(location_terms)
-    if any(term in lowered for term in ("??", "??", "??", "??", "??", "??", "??", "??", "??", "??", "??")):
+        patch["location"] = "、".join(location_terms)
+    if any(term in lowered for term in ("势力", "组织", "公司", "教团", "军团", "帮派", "敌人", "怪物", "派系", "贵族", "朝廷")):
         patch["factions"] = _compact_background_factions(text)
-    if any(term in lowered for term in ("??", "??", "??", "?", "d20", "dnd", "coc", "??", "???")):
-        patch["ruleset"] = "? d20 ?????????????????????"
-    if any(term in lowered for term in ("????", "??", "??", "??", "??", "??", "??", "??", "??", "??", "??", "???", "??", "??")):
+    if any(term in lowered for term in ("规则", "系统", "检定", "骰", "d20", "dnd", "coc", "无魔", "没有魔")):
+        patch["ruleset"] = "以 d20 检定为基础；概率、风险和对抗行动必须投骰。"
+    if any(term in lowered for term in ("开始游戏", "开场", "开局", "故事", "剧本", "副本", "任务", "求救", "来到", "醒来", "我是", "我们是", "扮演", "担任")):
         patch["starting_premise"] = _compact_starting_premise(text)
     if patch:
-        patch.setdefault("tone", "? DM ????????????????????")
-        patch.setdefault("ruleset", "? d20 ?????????????????????")
+        patch.setdefault("tone", "由 DM 补全细节，保持可裁定、可推进、不过度追问")
+        patch.setdefault("ruleset", "以 d20 检定为基础；概率、风险和对抗行动必须投骰。")
         if _looks_like_enough_background_seed(text) or _looks_like_new_campaign_seed_request(text):
             patch.setdefault("starting_premise", _compact_starting_premise(text))
         patch.setdefault("campaign_background", _compact_campaign_background(text))
         return patch
     if delegated_background:
         return {
-            "genre": "LLM ????",
-            "tone": "? LLM ?????????????????????????",
-            "starting_premise": "???? DM ??????????????????????????? LLM ????????",
-            "location": "? LLM ????????????????????????????",
-            "factions": "? LLM ??????????? NPC??????????",
-            "ruleset": "? d20 ?????????????????????",
-            "campaign_background": "?????????? DM ?????????????????????????",
+            "genre": "LLM 原创跑团",
+            "tone": "由 LLM 按玩家授权原创生成；保持可裁定、可推进、不过度追问",
+            "starting_premise": "玩家授权 DM 原创生成一个新团；第一幕、地点、阵营、威胁和开场钩子由 LLM 按当前输入补齐。",
+            "location": "由 LLM 原创生成；不得替换为默认边境港镇或未被明确选择的预设地点",
+            "factions": "由 LLM 原创整理玩家阵营、友方 NPC、敌对势力和初始冲突",
+            "ruleset": "以 d20 检定为基础；概率、风险和对抗行动必须投骰。",
+            "campaign_background": "玩家未指定细节但授权 DM 原创生成；不得自动套用低魔边境、灰港镇或预设剧本。",
             "campaign_generation": {
                 "source": "llm_generated_campaign",
                 "status": "ready_for_opening",
                 "seed": _compact_starting_premise(text),
-                "opening_instruction": "? LLM ??????????????initial_hook???????????????????? scene_patch??????? start_game?",
+                "opening_instruction": "由 LLM 原创补齐世界背景、开场介绍、initial_hook、玩家行动引导、三段式以上剧情骨架和公开 scene_patch，然后优先调用 start_game。",
             },
         }
     return {}
@@ -5215,14 +5232,14 @@ def _terms_found(text: str, terms: tuple[str, ...]) -> list[str]:
 
 
 def _visual_map_background_patch_from_text(text: str) -> dict:
-    source = _compact_starting_premise(text or "????????")
+    source = _compact_starting_premise(text or "玩家请求绘制地图")
     return {
-        "genre": "??????",
-        "tone": "??????????",
-        "starting_premise": "??????????????DM ??????????????????????????",
-        "location": "???????",
-        "ruleset": "? d20 ???????? SVG ????????????????????????????",
-        "campaign_background": f"???????{source}???????????????? visual-only SVG ??????????????",
+        "genre": "待定跑团场景",
+        "tone": "清晰、克制、方便裁定",
+        "starting_premise": "玩家请求查看或绘制当前地图；DM 先建立最小场景上下文，再生成只作视觉参考的地图草图。",
+        "location": "当前未命名场景",
+        "ruleset": "以 d20 检定为基础；地图 SVG 只作视觉层，坐标、距离、移动和视线以结构化地图事实为准。",
+        "campaign_background": f"最小背景补全：{source}。若缺少结构化地图事实，只能生成 visual-only SVG 草图，不能据此改写物理坐标。",
         "background_source": "visual_map_request_bootstrap",
     }
 
@@ -5231,21 +5248,21 @@ def _looks_like_enough_background_seed(text: str) -> bool:
     lowered = str(text or "").strip().lower()
     if not lowered:
         return False
-    explicit = any(token in lowered for token in ("??", "???", "??", "??", "??", "??", "??", "premise", "setting"))
+    explicit = any(token in lowered for token in ("背景", "世界观", "设定", "题材", "类型", "风格", "环境", "premise", "setting"))
     buckets = 0
-    if any(token in lowered for token in ("??", "??", "??", "??", "??", "??", "????", "??", "??", "??", "??", "???", "??", "??", "??", "??", "???", "??", "??", "??", "??", "??", "???", "??", "??", "??", "??", "dnd", "coc", "d20", "??", "40k", "warhammer", "grimdark", "????", "????")):
+    if any(token in lowered for token in ("末世", "废土", "核战", "修仙", "仙侠", "文明", "文明重建", "科幻", "奇幻", "玄幻", "异界", "异世界", "穿越", "重生", "现代", "赛博", "克苏鲁", "悬疑", "武侠", "太空", "蒸汽", "欧洲", "中世纪", "历史", "低魔", "无魔", "纯剑", "dnd", "coc", "d20", "战锤", "40k", "warhammer", "grimdark", "暗黑科幻", "哥特科幻")):
         buckets += 1
-    if any(token in lowered for token in ("??", "??", "??", "??", "??", "??", "??", "??", "??", "??", "??", "??", "??", "??", "??", "??", "??", "??", "??", "??")):
+    if any(token in lowered for token in ("严肃", "荒诞", "宏大", "悲剧", "失败", "危险", "恐怖", "轻松", "日常", "经营", "种田", "后宫", "宫斗", "黑暗", "求生", "调查", "热血", "压抑", "幽默", "温馨")):
         buckets += 1
-    if any(token in lowered for token in ("????", "????", "??", "??", "???", "??", "??", "??", "??", "??", "??", "??", "??", "??", "??", "??", "??", "??", "??", "???", "??", "??")):
+    if any(token in lowered for token in ("开始游戏", "正式开始", "开场", "开局", "第一幕", "故事", "剧本", "副本", "因为", "为了", "想要", "最终", "任务", "求救", "聚集", "来到", "醒来", "退休", "我是", "我们是", "担任", "扮演")):
         buckets += 1
-    if any(token in lowered for token in ("??", "??", "??", "??", "??", "??", "??", "???", "???", "?", "???", "??", "???", "?", "??", "??", "??", "??", "??", "??", "??", "??", "??", "??", "??", "??", "??")):
+    if any(token in lowered for token in ("地点", "城市", "村庄", "荒野", "废墟", "船上", "游艇", "空间站", "中继站", "塔", "地下城", "酒馆", "咖啡馆", "店", "学院", "宗门", "宫廷", "领地", "地球", "海上", "海战", "港口", "王国", "底巢", "巢都", "星球", "战区")):
         buckets += 1
-    if any(token in lowered for token in ("??", "??", "??", "??", "??", "??", "??", "??", "??", "??", "??", "??", "??", "????", "?????", "????", "????")):
+    if any(token in lowered for token in ("势力", "组织", "公司", "教团", "军团", "帮派", "敌人", "怪物", "派系", "店员", "猫娘", "贵族", "朝廷", "极限战士", "基因窃取者", "阿斯塔特", "星际战士")):
         buckets += 1
-    if any(token in lowered for token in ("??", "??", "??", "?", "??", "??", "???", "????", "??????", "????", "?????")):
+    if any(token in lowered for token in ("规则", "系统", "检定", "骰", "属性", "等级", "没有魔", "没有魔法", "不存在超自然", "无超自然", "超自然力量")):
         buckets += 1
-    delegated_start = any(token in lowered for token in ("??", "??", "????", "????", "????", "????", "??", "??"))
+    delegated_start = any(token in lowered for token in ("补全", "补完", "智能补完", "不用多问", "直接开始", "开始游戏", "开局", "开场"))
     return buckets >= 2 and (explicit or delegated_start or buckets >= 3 or len(lowered) >= 28)
 
 
@@ -5254,66 +5271,66 @@ def _looks_like_background_authoring_request(text: str) -> bool:
     if not lowered:
         return False
     subject_terms = (
-        "??",
-        "???",
-        "??",
-        "??",
-        "??",
-        "??",
-        "??",
-        "??",
+        "背景",
+        "世界观",
+        "设定",
+        "环境",
+        "题材",
+        "类型",
+        "风格",
+        "世界",
         "campaign",
         "setting",
         "premise",
     )
     authoring_terms = (
-        "??",
-        "??",
-        "??",
-        "??",
-        "??",
-        "??",
-        "??",
-        "??",
-        "??",
-        "??",
-        "?",
-        "?",
-        "??",
-        "???",
-        "??",
-        "??",
-        "??",
-        "??",
-        "???",
-        "??",
-        "??",
-        "??",
-        "??",
-        "???",
-        "???",
-        "??",
+        "生成",
+        "创建",
+        "建立",
+        "补全",
+        "补完",
+        "完善",
+        "扩写",
+        "丰富",
+        "整理",
+        "随机",
+        "写",
+        "定",
+        "设定",
+        "我希望",
+        "我想",
+        "我要",
+        "你来",
+        "你定",
+        "你决定",
+        "帮我",
+        "替我",
+        "给我",
+        "自动",
+        "供选择",
+        "背景是",
+        "题材",
     )
     delegation_terms = (
-        "???",
-        "???",
-        "???",
-        "???",
-        "????",
-        "????",
-        "???",
-        "???",
-        "???",
-        "????",
-        "????",
-        "??????",
-        "????",
-        "????",
-        "????",
+        "你来定",
+        "你定吧",
+        "你决定",
+        "随便定",
+        "随机一个",
+        "随机几个",
+        "帮我定",
+        "替我定",
+        "直接定",
+        "你来补充",
+        "你来完善",
+        "补充更多细节",
+        "自动生成",
+        "智能补完",
+        "不用多问",
     )
     if any(token in lowered for token in delegation_terms):
         return True
-    if any(token in lowered for token in ("??", "??", "??", "??", "????", "??", "??")) and _looks_like_enough_background_seed(text):
+    if any(token in lowered for token in ("补全", "补完", "完善", "扩写", "开始游戏", "开局", "开场")) and _looks_like_enough_background_seed(text):
         return True
     if not any(token in lowered for token in subject_terms):
         return False
@@ -5329,18 +5346,18 @@ def _looks_like_new_campaign_seed_request(text: str) -> bool:
     start_or_delegate = any(
         token in lowered
         for token in (
-            "????",
-            "????",
-            "??",
-            "??",
-            "????",
-            "?????",
-            "?????",
-            "????",
-            "????",
-            "??",
-            "??",
-            "??",
+            "开始游戏",
+            "正式开始",
+            "开局",
+            "开场",
+            "进入剧情",
+            "补完后开始",
+            "补全后开始",
+            "智能补完",
+            "不用多问",
+            "故事",
+            "剧本",
+            "副本",
         )
     )
     return start_or_delegate and _looks_like_enough_background_seed(text)
@@ -5351,49 +5368,49 @@ def _looks_like_in_campaign_content_expansion_request(text: str) -> bool:
     if not lowered:
         return False
     expansion_terms = (
-        "??",
-        "??",
-        "??",
-        "??",
-        "??",
-        "??",
-        "??",
-        "??",
-        "??",
-        "??",
-        "??",
+        "补充",
+        "添加",
+        "增加",
+        "完善",
+        "扩展",
+        "扩写",
+        "生成",
+        "列出",
+        "整理",
+        "补全",
+        "设定",
     )
     current_content_terms = (
         "npc",
-        "??",
-        "??",
-        "??",
-        "??",
-        "???",
-        "??",
-        "??",
-        "??",
-        "??",
-        "??",
-        "??",
-        "??",
-        "??",
-        "???",
-        "??",
-        "??",
-        "????",
+        "船员",
+        "船长",
+        "大副",
+        "水手",
+        "服务员",
+        "厨师",
+        "名单",
+        "人物",
+        "角色",
+        "乘客",
+        "人员",
+        "船上",
+        "游艇",
+        "音速号",
+        "当前",
+        "本团",
+        "剧本要求",
     )
     start_terms = (
-        "???",
-        "???",
-        "??",
-        "??",
-        "??",
-        "????",
-        "????",
-        "????",
-        "??",
-        "??",
+        "来一个",
+        "开新团",
+        "新团",
+        "重开",
+        "清空",
+        "重新开始",
+        "开始游戏",
+        "正式开始",
+        "开局",
+        "开场",
     )
     return (
         any(term in lowered for term in expansion_terms)
@@ -5413,6 +5430,6 @@ def _session_has_meaningful_campaign_content(session) -> bool:
     if scene.get("_game_started") or scene.get("_plot_locked") or scene.get("_legacy_live_campaign"):
         return True
     summary = str(scene.get("summary", "") or "").strip()
-    if summary and not any(token in summary for token in ("????", "????", "???")):
+    if summary and not any(token in summary for token in ("尚未开局", "等待玩家", "未开始")):
         return True
     return False

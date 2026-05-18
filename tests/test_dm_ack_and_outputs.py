@@ -211,7 +211,7 @@ def test_format_dice_summary_combines_multiple_checks():
         {
             "type": "dice_check",
             "ok": True,
-            "reason": "??",
+            "reason": "潜行",
             "rule_name": "skill_check",
             "version": 2,
             "rolls": [{"expression": "1d20", "total": 14, "rolls": [14]}],
@@ -220,7 +220,7 @@ def test_format_dice_summary_combines_multiple_checks():
         {
             "type": "dice_check",
             "ok": True,
-            "reason": "??",
+            "reason": "伤害",
             "rule_name": "damage_roll",
             "version": 1,
             "rolls": [{"expression": "2d6", "total": 7, "rolls": [3, 4]}],
@@ -230,10 +230,10 @@ def test_format_dice_summary_combines_multiple_checks():
 
     summary = plugin._format_dice_summary(items)
 
-    assert summary.startswith("???????")
-    assert summary.count("?????") == 2
-    assert "??" in summary
-    assert "??" in summary
+    assert summary.startswith("本轮检定摘要：")
+    assert summary.count("骰子检定：") == 2
+    assert "潜行" in summary
+    assert "伤害" in summary
     assert "skill_check v2" in summary
     assert "damage_roll v1" in summary
 
@@ -244,13 +244,13 @@ def test_quoted_result_can_prefix_dice_summary_before_completion():
 
     result = plugin._quoted_result(
         event,
-        "??????",
-        dice_summary="???????\n1. ???????",
+        "主叙事结果。",
+        dice_summary="本轮检定摘要：\n1. 骰子检定：潜行",
     )
 
     text = _component_text(result)
-    assert text.startswith("???????")
-    assert "\n\n??????" in text
+    assert text.startswith("本轮检定摘要：")
+    assert "\n\n主叙事结果。" in text
 
 
 def test_quoted_result_does_not_expose_local_svg_path_when_preview_fails():
@@ -261,7 +261,7 @@ def test_quoted_result_does_not_expose_local_svg_path_when_preview_fails():
 
     result = plugin._quoted_result(
         event,
-        "??????",
+        "地图已附上。",
         pending_outputs=[
             {
                 "type": "svg_map",
@@ -272,14 +272,14 @@ def test_quoted_result_does_not_expose_local_svg_path_when_preview_fails():
     )
 
     text = _component_text(result)
-    assert "??????gate.svg" in text
+    assert "地图已生成：gate.svg" in text
     assert "C:/runtime/private" not in text
     assert "gate.svg" in text
 
 
 def test_manual_ambient_image_fast_path_schedules_independent_generation():
     session = GameSession.new("group")
-    session.scene["summary"] = "?????????????"
+    session.scene["summary"] = "黑塔城的雾夜调查仍在继续。"
     repo = FakeRepository(session)
     plugin = AutoTrpgDmPlugin.__new__(AutoTrpgDmPlugin)
     plugin.repository = repo
@@ -320,20 +320,20 @@ def test_manual_ambient_image_fast_path_schedules_independent_generation():
             FakeEvent(),
             "group",
             {"player_id": "player-a"},
-            "???apikey?? ??????",
+            "用独立apikey生图 当前雾夜街道",
         )
     )
 
-    assert "???? API key" in reply
+    assert "独立图片 API key" in reply
     assert scheduled["session_id"] == "group"
-    assert scheduled["story_moment"] == "??????"
+    assert scheduled["story_moment"] == "当前雾夜街道"
     assert repo.session.scene["ambient_image_state"]["generation_started_at"] == "now"
     assert repo.audits[-1]["action"] == "manual_ambient_image_scheduled"
 
 
 def test_manual_ambient_image_fast_path_reports_missing_independent_key():
     session = GameSession.new("group")
-    session.scene["summary"] = "?????????????"
+    session.scene["summary"] = "黑塔城的雾夜调查仍在继续。"
     repo = FakeRepository(session)
     plugin = AutoTrpgDmPlugin.__new__(AutoTrpgDmPlugin)
     plugin.repository = repo
@@ -356,11 +356,11 @@ def test_manual_ambient_image_fast_path_reports_missing_independent_key():
             FakeEvent(),
             "group",
             {"player_id": "player-a"},
-            "??",
+            "配图",
         )
     )
 
-    assert "???? API key ?????" in reply
+    assert "独立生图 API key 没有读取到" in reply
     assert "PACKYAPI_SORA_API_KEY" in reply
     assert repo.audits[-1]["action"] == "manual_ambient_image_blocked"
 
@@ -371,13 +371,13 @@ def test_scene_tracking_status_fast_path_returns_visible_hooks_without_advancing
     session.scene.update(
         {
             "_game_started": True,
-            "current_objective": "?????????????",
+            "current_objective": "确认旧剧院里失踪者的去向。",
             "clues": [
-                {"id": "mud", "text": "?????????", "status": "discovered", "visibility": "player"},
-                {"id": "truth", "text": "?????????", "visibility": "hidden"},
+                {"id": "mud", "text": "门口有新鲜泥脚印。", "status": "discovered", "visibility": "player"},
+                {"id": "truth", "text": "幕后黑手就是馆长。", "visibility": "hidden"},
             ],
-            "open_hooks": [{"id": "side-door", "text": "??????????", "status": "open"}],
-            "pressure_clock": {"label": "????", "text": "????????????", "status": "active"},
+            "open_hooks": [{"id": "side-door", "text": "侧门锁孔有新鲜刮痕。", "status": "open"}],
+            "pressure_clock": {"label": "巡警靠近", "text": "街角手电光正在转向剧院。", "status": "active"},
         }
     )
     repo = FakeRepository(session)
@@ -391,14 +391,14 @@ def test_scene_tracking_status_fast_path_returns_visible_hooks_without_advancing
             FakeEvent(),
             "group",
             {"player_id": "player-a"},
-            "????/??",
+            "当前目标/线索",
         )
     )
 
-    assert "?????????????????" in reply
-    assert "????????" in reply
-    assert "?????????" in reply
-    assert "????????" not in reply
+    assert "当前目标：确认旧剧院里失踪者的去向" in reply
+    assert "门口有新鲜泥脚印" in reply
+    assert "侧门锁孔有新鲜刮痕" in reply
+    assert "幕后黑手就是馆长" not in reply
     assert repo.session.cycle_state == CycleState.CYCLE_ACTIVE
     assert repo.audits[-1]["action"] == "scene_tracking_status"
 
@@ -409,13 +409,13 @@ def test_timeline_fact_claim_fast_path_returns_authoritative_state():
     session.scene.update(
         {
             "_game_started": True,
-            "summary": "??????????????????????",
-            "current_objective": "????????????????????????",
-            "current_conflict": "????????????????????????",
+            "summary": "伏击者溃退后，老徐下令不追击，全队撤回营地。",
+            "current_objective": "整理撤回营地后的态势，辨识缴获靴筒内的波斯字母。",
+            "current_conflict": "无直接威胁（伏击已结束，当前没有正在攻打据点）。",
             "open_hooks": [
                 {
                     "id": "boot-inscription",
-                    "text": "???????????????",
+                    "text": "靴筒内的波斯字母仍待通译辨识。",
                     "status": "open",
                     "visibility": "player",
                 }
@@ -425,7 +425,7 @@ def test_timeline_fact_claim_fast_path_returns_authoritative_state():
     session.timeline = {
         "day": 1,
         "time_of_day": "morning",
-        "label": "? 1 ???",
+        "label": "第 1 天清晨",
         "status": "global",
     }
     repo = FakeRepository(session)
@@ -439,15 +439,15 @@ def test_timeline_fact_claim_fast_path_returns_authoritative_state():
             FakeEvent(),
             "group",
             {"player_id": "player-a"},
-            "???????????",
+            "已经是第二天攻打据点了",
         )
     )
 
-    assert "????" in reply
-    assert "? 1 ???" in reply
-    assert "?????" in reply
-    assert "??????????" in reply
-    assert "??????" in reply
+    assert "权威状态" in reply
+    assert "第 1 天清晨" in reply
+    assert "伏击已结束" in reply
+    assert "当前没有正在攻打据点" in reply
+    assert "仍待通译辨识" in reply
     assert repo.audits[-1]["action"] == "authoritative_state_check"
 
 
@@ -457,14 +457,14 @@ def test_location_fact_query_fast_path_returns_authoritative_state():
     session.scene.update(
         {
             "_game_started": True,
-            "location": "????????????????????",
-            "summary": "???????????????",
-            "current_objective": "?????????????????",
-            "current_conflict": "???????",
+            "location": "山腰兽道灌木观察位，距断崖前哨约两百步。",
+            "summary": "伏击已结束，队伍正在回营整补。",
+            "current_objective": "等待通译辨认缴获靴筒里的波斯字母。",
+            "current_conflict": "暂无直接威胁。",
             "open_hooks": [
                 {
                     "id": "boot-inscription",
-                    "text": "????????????",
+                    "text": "缴获的靴筒字母仍待辨认。",
                     "status": "open",
                     "visibility": "player",
                 }
@@ -482,14 +482,14 @@ def test_location_fact_query_fast_path_returns_authoritative_state():
             FakeEvent(),
             "group",
             {"player_id": "player-a"},
-            "???",
+            "我在哪",
         )
     )
 
-    assert "????" in reply
-    assert "?????????" in reply
-    assert "?????" in reply
-    assert "???????????" in reply
+    assert "权威状态" in reply
+    assert "山腰兽道灌木观察位" in reply
+    assert "伏击已结束" in reply
+    assert "缴获的靴筒字母仍待辨认" in reply
     assert repo.audits[-1]["action"] == "authoritative_state_check"
 
 
@@ -498,7 +498,7 @@ def test_unbound_post_start_action_is_blocked_before_llm_tools():
     session.world_tags["_background_ready"] = True
     session.world_tags["_plot_locked"] = True
     session.scene["_game_started"] = True
-    session.characters["pc_chen_dahu"] = Character(id="pc_chen_dahu", name="???", player_id="bound-player")
+    session.characters["pc_chen_dahu"] = Character(id="pc_chen_dahu", name="陈大虎", player_id="bound-player")
     session.player_character_map["bound-player"] = "pc_chen_dahu"
     repo = FakeRepository(session)
     plugin = AutoTrpgDmPlugin.__new__(AutoTrpgDmPlugin)
@@ -510,13 +510,13 @@ def test_unbound_post_start_action_is_blocked_before_llm_tools():
         plugin._local_fast_path(
             FakeEvent(),
             "group",
-            {"player_id": "late-player", "display_name": "??"},
-            "??",
+            {"player_id": "late-player", "display_name": "老铂"},
+            "检定",
         )
     )
 
-    assert "?????????" in reply
-    assert "??" in reply
+    assert "还没有绑定有效角色" in reply
+    assert "建卡" in reply
     assert repo.audits[-1]["action"] == "unbound_actor_action"
 
 
@@ -525,7 +525,7 @@ def test_unbound_post_start_social_action_is_blocked_before_llm_tools():
     session.world_tags["_background_ready"] = True
     session.world_tags["_plot_locked"] = True
     session.scene["_game_started"] = True
-    session.characters["pc_chen_dahu"] = Character(id="pc_chen_dahu", name="???", player_id="bound-player")
+    session.characters["pc_chen_dahu"] = Character(id="pc_chen_dahu", name="陈大虎", player_id="bound-player")
     session.player_character_map["bound-player"] = "pc_chen_dahu"
     repo = FakeRepository(session)
     plugin = AutoTrpgDmPlugin.__new__(AutoTrpgDmPlugin)
@@ -537,12 +537,12 @@ def test_unbound_post_start_social_action_is_blocked_before_llm_tools():
         plugin._local_fast_path(
             FakeEvent(),
             "group",
-            {"player_id": "late-player", "display_name": "??"},
-            "?????",
+            {"player_id": "late-player", "display_name": "老铂"},
+            "主动去搭话",
         )
     )
 
-    assert "?????????" in reply
+    assert "还没有绑定有效角色" in reply
     assert repo.audits[-1]["action"] == "unbound_actor_action"
 
 
@@ -551,7 +551,7 @@ def test_unbound_post_start_camp_chore_action_is_blocked_before_llm_tools():
     session.world_tags["_background_ready"] = True
     session.world_tags["_plot_locked"] = True
     session.scene["_game_started"] = True
-    session.characters["pc_chen_dahu"] = Character(id="pc_chen_dahu", name="???", player_id="bound-player")
+    session.characters["pc_chen_dahu"] = Character(id="pc_chen_dahu", name="陈大虎", player_id="bound-player")
     session.player_character_map["bound-player"] = "pc_chen_dahu"
     repo = FakeRepository(session)
     plugin = AutoTrpgDmPlugin.__new__(AutoTrpgDmPlugin)
@@ -563,12 +563,12 @@ def test_unbound_post_start_camp_chore_action_is_blocked_before_llm_tools():
         plugin._local_fast_path(
             FakeEvent(),
             "group",
-            {"player_id": "late-player", "display_name": "???"},
-            "??????????????????????????",
+            {"player_id": "late-player", "display_name": "牛大蛋"},
+            "寻找补气类材料做健脾面饼，搭配滋补乱炖给所有人分一份",
         )
     )
 
-    assert "?????????" in reply
+    assert "还没有绑定有效角色" in reply
     assert repo.audits[-1]["action"] == "unbound_actor_action"
 
 
@@ -577,7 +577,7 @@ def test_unbound_post_start_join_request_still_reaches_character_creation():
     session.world_tags["_background_ready"] = True
     session.world_tags["_plot_locked"] = True
     session.scene["_game_started"] = True
-    session.characters["pc_chen_dahu"] = Character(id="pc_chen_dahu", name="???", player_id="bound-player")
+    session.characters["pc_chen_dahu"] = Character(id="pc_chen_dahu", name="陈大虎", player_id="bound-player")
     session.player_character_map["bound-player"] = "pc_chen_dahu"
     repo = FakeRepository(session)
     plugin = AutoTrpgDmPlugin.__new__(AutoTrpgDmPlugin)
@@ -589,8 +589,8 @@ def test_unbound_post_start_join_request_still_reaches_character_creation():
         plugin._local_fast_path(
             FakeEvent(),
             "group",
-            {"player_id": "late-player", "display_name": "?"},
-            "???????????????????",
+            {"player_id": "late-player", "display_name": "风"},
+            "我要加入，角色名风，是后续赶来的弓箭手",
         )
     )
 
@@ -603,8 +603,8 @@ def test_resume_fast_path_accepts_merged_resume_dm_resume_text():
     session.world_tags["_background_ready"] = True
     session.scene["_game_started"] = True
     session.scene["_dm_paused"] = True
-    session.scene["_dm_pause_reason"] = "???? 2/4??????????????????????? `/dm resume`?"
-    session.scene["_dm_paused_by"] = {"player_id": "__heartbeat__", "display_name": "????"}
+    session.scene["_dm_pause_reason"] = "本轮已有 2/4名玩家超时，达到半数，流程已自动暂停。恢复时发 `/dm resume`。"
+    session.scene["_dm_paused_by"] = {"player_id": "__heartbeat__", "display_name": "本地心跳"}
     session.scene["_dm_paused_at"] = "2026-05-18T02:45:03+00:00"
     repo = FakeRepository(session)
     plugin = AutoTrpgDmPlugin.__new__(AutoTrpgDmPlugin)
@@ -622,7 +622,7 @@ def test_resume_fast_path_accepts_merged_resume_dm_resume_text():
         )
     )
 
-    assert reply == "????????? `/dm` ???????????"
+    assert reply == "流程已恢复。下一句 `/dm` 会按当前存档继续裁定。"
     assert repo.session.scene["_dm_paused"] is False
     assert "_dm_pause_reason" not in repo.session.scene
     assert repo.session.scene["_dm_resume_command"] == "resume/dm resume"
@@ -630,16 +630,16 @@ def test_resume_fast_path_accepts_merged_resume_dm_resume_text():
 
 
 def test_backup_story_commands_are_classified_before_background_fallback():
-    assert _looks_like_restart_latest_backup_story_request("???????????") is True
-    assert _looks_like_restore_latest_backup_request("???????????") is False
+    assert _looks_like_restart_latest_backup_story_request("重新开上一个存档的故事") is True
+    assert _looks_like_restore_latest_backup_request("重新开上一个存档的故事") is False
 
-    assert _looks_like_backup_preview_request("??????????") is True
-    assert _looks_like_restart_latest_backup_story_request("??????????") is False
-    assert _looks_like_backup_preview_request("????") is False
+    assert _looks_like_backup_preview_request("查看上一个存档的故事") is True
+    assert _looks_like_restart_latest_backup_story_request("查看上一个存档的故事") is False
+    assert _looks_like_backup_preview_request("查看备份") is False
 
 
 def test_visual_map_requests_without_background_reach_tool_chain():
-    for message in ("??????", "??????"):
+    for message in ("显示现有地图", "画一下布局吧"):
         session = GameSession.new("group")
         repo = FakeRepository(session)
         plugin = AutoTrpgDmPlugin.__new__(AutoTrpgDmPlugin)
@@ -686,13 +686,13 @@ def test_new_campaign_seed_asks_style_preferences_before_background_write():
             FakeEvent(),
             "group",
             {"player_id": "player-a"},
-            "?????40K???????????????????????????",
+            "开一个战锤40K底巢清剿团，我是极限战士喷火兵，队里还有一个技术军士。",
         )
     )
 
-    assert "??" in reply
+    assert "烈度" in reply
     assert "LLM" in reply
-    assert "????????" in reply
+    assert "不自动套预设剧本" in reply
     assert "_pending_campaign_preferences" in repo.session.scene
     assert repo.session.scene["_pending_campaign_preferences"]["template_key"] == "llm_generated_campaign"
     assert "_background_ready" not in repo.session.world_tags
@@ -702,10 +702,10 @@ def test_new_campaign_seed_asks_style_preferences_before_background_write():
 def test_campaign_preference_answer_writes_llm_generated_background_without_template_match():
     session = GameSession.new("group")
     session.scene["_pending_campaign_preferences"] = {
-        "seed": "?????40K???????????????????????????",
+        "seed": "开一个战锤40K底巢清剿团，我是极限战士喷火兵，队里还有一个技术军士。",
         "template_key": "llm_generated_campaign",
-        "template_title": "LLM ????",
-        "question": "??????",
+        "template_title": "LLM 原创剧本",
+        "question": "先确认烈度。",
         "actor_id": "player-a",
         "asked_at": "2026-05-17T00:00:00+00:00",
     }
@@ -725,7 +725,7 @@ def test_campaign_preference_answer_writes_llm_generated_background_without_temp
             FakeEvent(),
             "group",
             {"player_id": "player-a"},
-            "????????????????????",
+            "硬核，战术和恐怖均衡，别太多规则书细节。",
         )
     )
 
@@ -733,8 +733,8 @@ def test_campaign_preference_answer_writes_llm_generated_background_without_temp
     assert repo.session.world_tags["_background_ready"] is True
     assert repo.session.world_tags["campaign_generation"]["source"] == "llm_generated_campaign"
     assert repo.session.world_tags["campaign_contract"]["template_key"] == "llm_generated_campaign"
-    assert "????" not in repo.session.world_tags["campaign_background"]
-    assert "??" in repo.session.world_tags["campaign_preferences"]["intensity_and_style"]
+    assert "模板骨架" not in repo.session.world_tags["campaign_background"]
+    assert "硬核" in repo.session.world_tags["campaign_preferences"]["intensity_and_style"]
     assert "_pending_campaign_preferences" not in repo.session.scene
     assert any(record.get("action") == "campaign_preference_answered" for record in repo.audits)
 
@@ -742,10 +742,10 @@ def test_campaign_preference_answer_writes_llm_generated_background_without_temp
 def test_campaign_preference_answer_writes_template_background_and_continues_to_router():
     session = GameSession.new("group")
     session.scene["_pending_campaign_preferences"] = {
-        "seed": "?????40K???????????????????????????",
+        "seed": "开一个战锤40K底巢清剿团，我是极限战士喷火兵，队里还有一个技术军士。",
         "template_key": "grimdark_underhive_purge",
-        "template_title": "????????",
-        "question": "??????",
+        "template_title": "哥特科幻底巢清剿",
+        "question": "先确认烈度。",
         "actor_id": "player-a",
         "asked_at": "2026-05-17T00:00:00+00:00",
     }
@@ -765,28 +765,28 @@ def test_campaign_preference_answer_writes_template_background_and_continues_to_
             FakeEvent(),
             "group",
             {"player_id": "player-a"},
-            "????????????????????",
+            "硬核，战术和恐怖均衡，别太多规则书细节。",
         )
     )
 
     assert reply == ""
     assert repo.session.world_tags["_background_ready"] is True
     assert repo.session.world_tags["campaign_contract"]["template_key"] == "grimdark_underhive_purge"
-    assert "??" in repo.session.world_tags["campaign_preferences"]["intensity_and_style"]
+    assert "硬核" in repo.session.world_tags["campaign_preferences"]["intensity_and_style"]
     assert "_pending_campaign_preferences" not in repo.session.scene
     assert any(record.get("action") == "campaign_preference_answered" for record in repo.audits)
 
 
 def test_structured_custom_campaign_brief_does_not_turn_into_low_magic_preset():
     custom_script = (
-        "???????????????:???\n"
-        "???????\n"
-        "??????????????????????????????????????"
-        "???????????????????????????????????????\n"
-        "????????????????????????????\n"
-        "??NPC??????????????????????????\n"
-        "??NPC??????????????????????????????????????????\n"
-        "??????????????????????????????????"
+        "来一盘新游戏，剧情按照这个来搞:新剧本\n"
+        "时代背景：明朝\n"
+        "基本概括：老徐是锦衣卫百户，官方身份是三宝船队随员，真实任务是寻访建文余孽。"
+        "舰队抵达伊朗沿岸后，当地长老提到十几年前有个自称史东的东方人路过，号称桃源公。\n"
+        "玩家组成：明朝船队随员、西方背景雇佣兵、中东背景雇佣兵。\n"
+        "友方NPC组成：锦衣卫百户老徐、本地部落猎手、通译、挑夫一队。\n"
+        "敌对NPC组成：波斯山贼、桃源教普通信众、桃源教低级教徒、具备低魔超自然能力的高级祭司、史东。\n"
+        "模组限定：武器严格遵守时代特征，没有通译时不同语言背景只能简单交流。"
     )
     session = GameSession.new("group")
     repo = FakeRepository(session)
@@ -809,8 +809,8 @@ def test_structured_custom_campaign_brief_does_not_turn_into_low_magic_preset():
         )
     )
 
-    assert "?????" in question
-    assert "??????" not in question
+    assert "自定义剧本" in question
+    assert "低魔边境冒险" not in question
     assert repo.session.scene["_pending_campaign_preferences"]["template_key"] == "custom_player_brief"
     assert "_background_ready" not in repo.session.world_tags
 
@@ -819,7 +819,7 @@ def test_structured_custom_campaign_brief_does_not_turn_into_low_magic_preset():
             FakeEvent(),
             "group",
             {"player_id": "player-a"},
-            "?????",
+            "硬核一些吧",
         )
     )
 
@@ -828,9 +828,9 @@ def test_structured_custom_campaign_brief_does_not_turn_into_low_magic_preset():
     assert repo.session.world_tags["genre"] == "player_custom_campaign"
     assert repo.session.world_tags["campaign_generation"]["source"] == "player_custom_brief"
     assert repo.session.world_tags["campaign_contract"]["template_key"] == "custom_player_brief"
-    assert "????" in repo.session.world_tags["campaign_background"]
-    assert "???" in repo.session.world_tags["campaign_background"]
-    assert "???????????????" not in repo.session.world_tags["campaign_background"]
+    assert "三宝船队" in repo.session.world_tags["campaign_background"]
+    assert "桃源教" in repo.session.world_tags["campaign_background"]
+    assert "一份异常委托把玩家带到边境地点" not in repo.session.world_tags["campaign_background"]
     assert "_pending_campaign_preferences" not in repo.session.scene
 
 
@@ -852,13 +852,13 @@ def test_preset_list_request_before_background_returns_template_menu():
             FakeEvent(),
             "group",
             {"player_id": "player-a"},
-            "???????",
+            "有什么预设剧本",
         )
     )
 
-    assert "????" in reply
-    assert "????????" in reply
-    assert "? 2 ?" in reply
+    assert "开箱即玩" in reply
+    assert "《霓虹债务夜奔》" in reply
+    assert "跑 2 号" in reply
     assert "_background_ready" not in repo.session.world_tags
     assert any(record.get("action") == "campaign_preset_list" for record in repo.audits)
 
@@ -881,11 +881,11 @@ def test_preset_selection_loads_background_without_extra_form():
             FakeEvent(),
             "group",
             {"player_id": "player-a"},
-            "??????????",
+            "就跑暖炉酒馆小镇奇案",
         )
     )
 
-    assert "?????????????????" in reply
+    assert "已载入预设剧本《暖炉酒馆小镇奇案》" in reply
     assert repo.session.world_tags["_background_ready"] is True
     assert repo.session.world_tags["campaign_preset"]["key"] == "cozy_tavern_mystery"
     assert repo.session.world_tags["campaign_generation"]["source"] == "preset_library"
@@ -910,7 +910,7 @@ def test_preset_selection_with_start_request_continues_to_router():
             FakeEvent(),
             "group",
             {"player_id": "player-a"},
-            "? 2 ???",
+            "跑 2 号开始",
         )
     )
 
@@ -938,41 +938,41 @@ def test_rusted_chapel_preset_selection_writes_objective_and_pressure():
             FakeEvent(),
             "group",
             {"player_id": "player-a"},
-            "??????",
+            "就跑锈蚀圣堂",
         )
     )
 
-    assert "??????????????????" in reply
+    assert "已载入预设剧本《底巢清剿：锈蚀圣堂》" in reply
     assert repo.session.world_tags["_background_ready"] is True
     assert repo.session.world_tags["campaign_preset"]["key"] == "underhive_rusted_chapel"
-    assert repo.session.world_tags["campaign_preset"]["current_objective"] == "?????????????"
-    assert repo.session.world_tags["campaign_preset"]["current_pressure"] == "????????????????????"
-    assert "????" in repo.session.world_tags["campaign_generation"]["opening_scene"]
+    assert repo.session.world_tags["campaign_preset"]["current_objective"] == "找到失联侦察队的记录核心。"
+    assert repo.session.world_tags["campaign_preset"]["current_pressure"] == "底巢通讯将在两小时后被轨道干扰彻底切断。"
+    assert "帝国圣歌" in repo.session.world_tags["campaign_generation"]["opening_scene"]
     assert any(record.get("action") == "campaign_preset_loaded" for record in repo.audits)
 
 
 def test_guided_background_preserves_full_three_act_campaign_seed():
     text = (
-        "??????????? ??? ?????? ?????????  "
-        "???? ??????????????????  "
-        "???? ??????????????\n"
-        "??? ??????????????? ?????? ???????? "
-        "??????? ???????????\n"
-        "??? ????????????????????????"
-        "??????????????????????????"
-        "????????????????????"
+        "来一个现代背景的跑团： 第一幕 游艇探险旅行 半路史东房间内身亡  "
+        "正在二爷 鹰酱等人寻找死因期间游艇深陷大雾迷航  "
+        "导航失灵 传统六分仪定位显示船在南极。\n"
+        "第二幕 扎古钓鱼发现神秘语言和遗迹地图 全员水下倒斗 老卡炸开墓室顶部 "
+        "找到神秘导航仪 引导游艇前往未知小岛。\n"
+        "第三幕 未知小岛探索遗迹，全员激斗邪教徒，发现事件真相，"
+        "合力驱散神秘外星生物。小岛沉没，众群友爬上游艇跑路，"
+        "一阵大雾之后回到南太平洋，导航恢复正常。"
     )
 
     patch = _guided_background_patch_from_text(text)
 
-    assert "??? ??????" in patch["campaign_background"]
-    assert "??? ???????????????" in patch["campaign_background"]
-    assert "??? ????????" in patch["campaign_background"]
-    assert "??? ????????" in patch["starting_premise"]
+    assert "第一幕 游艇探险旅行" in patch["campaign_background"]
+    assert "第二幕 扎古钓鱼发现神秘语言和遗迹地图" in patch["campaign_background"]
+    assert "第三幕 未知小岛探索遗迹" in patch["campaign_background"]
+    assert "第三幕 未知小岛探索遗迹" in patch["starting_premise"]
 
 
 def test_new_campaign_detector_ignores_in_campaign_npc_roster_expansion():
-    text = "??????110????????15-20???????????????????????????????NPC????????"
+    text = "请补充设法，110尺探险游艇通常有15-20名船员，包含船长、大副、水手和服务员、厨师等职业，请补充船上的NPC，符合剧本要求。"
 
     assert _looks_like_new_campaign_seed_request(text) is True
     assert _looks_like_in_campaign_content_expansion_request(text) is True
@@ -982,7 +982,7 @@ def test_in_campaign_npc_roster_expansion_does_not_trigger_reset_fast_path():
     session = GameSession.new("group")
     session.world_tags["_background_ready"] = True
     session.scene["_game_started"] = True
-    session.scene["summary"] = "????????????"
+    session.scene["summary"] = "音速号已经起航前准备中。"
     repo = FakeRepository(session)
     plugin = AutoTrpgDmPlugin.__new__(AutoTrpgDmPlugin)
     plugin.repository = repo
@@ -999,7 +999,7 @@ def test_in_campaign_npc_roster_expansion_does_not_trigger_reset_fast_path():
             FakeEvent(),
             "group",
             {"player_id": "player-a"},
-            "??????110????????15-20???????????????????????????????NPC????????",
+            "请补充设法，110尺探险游艇通常有15-20名船员，包含船长、大副、水手和服务员、厨师等职业，请补充船上的NPC，符合剧本要求。",
         )
     )
 
@@ -1058,7 +1058,7 @@ def test_empty_dm_command_returns_guidance_without_entering_router():
     results = asyncio.run(_collect_async_generator(plugin._handle_dm_command_content(event, "GreedyStr")))
 
     assert len(results) == 1
-    assert "??? `/dm` ???????" in _component_text(results[0])
+    assert "请输入 `/dm` 后面的具体行动" in _component_text(results[0])
     assert event.stopped is True
 
 
@@ -1076,84 +1076,84 @@ def test_explicit_greedystr_argument_is_preserved_from_event_message():
 def test_dm_command_prefers_full_multiline_event_argument_when_greedystr_is_truncated():
     plugin = AutoTrpgDmPlugin.__new__(AutoTrpgDmPlugin)
     full = (
-        "/dm ??????????? ??? ?????? ?????????\n"
-        "??? ???????????????\n"
-        "??? ????????"
+        "/dm 来一个现代背景的跑团： 第一幕 游艇探险旅行 半路史东房间内身亡\n"
+        "第二幕 扎古钓鱼发现神秘语言和遗迹地图\n"
+        "第三幕 未知小岛探索遗迹"
     )
 
     routed_message = plugin._routed_message_from_command_content(
-        "???????????",
+        "来一个现代背景的跑团：",
         event=FakeEvent(message_str=full),
     )
 
-    assert "??? ??????" in routed_message
-    assert "??? ???????????????" in routed_message
-    assert "??? ????????" in routed_message
+    assert "第一幕 游艇探险旅行" in routed_message
+    assert "第二幕 扎古钓鱼发现神秘语言和遗迹地图" in routed_message
+    assert "第三幕 未知小岛探索遗迹" in routed_message
 
 
 def test_dm_command_recovers_multiline_argument_from_message_obj_string():
     plugin = AutoTrpgDmPlugin.__new__(AutoTrpgDmPlugin)
     full = (
-        "/dm ???????????????:???\n"
-        "???????\n"
-        "??????????????????????????\n"
-        "????????????????????????????\n"
-        "??NPC?????????????????????\n"
-        "??NPC???????????????????\n"
-        "????????????????"
+        "/dm 来一盘新游戏，剧情按照这个来搞:新剧本\n"
+        "时代背景：明朝\n"
+        "基本概括：老徐是锦衣卫百户，真实任务是寻访建文余孽。\n"
+        "玩家组成：明朝船队随员、西方背景雇佣兵、中东背景雇佣兵。\n"
+        "友方NPC组成：锦衣卫百户老徐、本地部落猎手、通译。\n"
+        "敌对NPC组成：波斯山贼、桃源教低级教徒、史东。\n"
+        "模组限定：武器严格遵守时代特征。"
     )
-    event = FakeEvent(message_str="/dm ???????????????:???")
+    event = FakeEvent(message_str="/dm 来一盘新游戏，剧情按照这个来搞:新剧本")
     event.message_obj.message_str = full
 
     routed_message = plugin._routed_message_from_command_content(
-        "???????????????:???",
+        "来一盘新游戏，剧情按照这个来搞:新剧本",
         event=event,
     )
 
-    assert "???????" in routed_message
-    assert "???????????" in routed_message
-    assert "??NPC???????" in routed_message
-    assert "???????????????" in routed_message
+    assert "时代背景：明朝" in routed_message
+    assert "玩家组成：明朝船队随员" in routed_message
+    assert "敌对NPC组成：波斯山贼" in routed_message
+    assert "模组限定：武器严格遵守时代特征" in routed_message
 
 
 def test_dm_command_recovers_multiline_argument_from_message_chain_plain_text():
     plugin = AutoTrpgDmPlugin.__new__(AutoTrpgDmPlugin)
     full = (
-        "/dm ???????????????:???\n"
-        "???????\n"
-        "??????????????????????????\n"
-        "????????????????????????????\n"
-        "??NPC?????????????????????\n"
-        "??NPC???????????????????\n"
-        "????????????????"
+        "/dm 来一盘新游戏，剧情按照这个来搞:新剧本\n"
+        "时代背景：明朝\n"
+        "基本概括：老徐是锦衣卫百户，真实任务是寻访建文余孽。\n"
+        "玩家组成：明朝船队随员、西方背景雇佣兵、中东背景雇佣兵。\n"
+        "友方NPC组成：锦衣卫百户老徐、本地部落猎手、通译。\n"
+        "敌对NPC组成：波斯山贼、桃源教低级教徒、史东。\n"
+        "模组限定：武器严格遵守时代特征。"
     )
-    event = FakeEvent(message_str="/dm ???????????????:???")
+    event = FakeEvent(message_str="/dm 来一盘新游戏，剧情按照这个来搞:新剧本")
     event.message_obj.message = [types.SimpleNamespace(text=full)]
 
     routed_message = plugin._routed_message_from_command_content(
-        "???????????????:???",
+        "来一盘新游戏，剧情按照这个来搞:新剧本",
         event=event,
     )
 
-    assert "???????" in routed_message
-    assert "??NPC??????????" in routed_message
-    assert "???????????????" in routed_message
+    assert "时代背景：明朝" in routed_message
+    assert "友方NPC组成：锦衣卫百户老徐" in routed_message
+    assert "模组限定：武器严格遵守时代特征" in routed_message
 
 
 def test_any_message_extracts_multiline_dm_from_message_chain_when_message_str_is_truncated():
     plugin = AutoTrpgDmPlugin.__new__(AutoTrpgDmPlugin)
     plugin.trigger_prefixes = ["/dm"]
-    event = FakeEvent(message_str="/dm ???????????????:???")
+    event = FakeEvent(message_str="/dm 来一盘新游戏，剧情按照这个来搞:新剧本")
     event.message_obj.message = [
-        {"type": "text", "data": {"text": "/dm ???????????????:???\n"}},
-        {"type": "text", "data": {"text": "???????\n"}},
-        {"type": "text", "data": {"text": "??????????????????????????"}},
+        {"type": "text", "data": {"text": "/dm 来一盘新游戏，剧情按照这个来搞:新剧本\n"}},
+        {"type": "text", "data": {"text": "时代背景：明朝\n"}},
+        {"type": "text", "data": {"text": "基本概括：老徐是锦衣卫百户，真实任务是寻访建文余孽。"}},
     ]
 
     routed_message = plugin._extract_best_routed_message(event, event.message_str)
 
-    assert "???????" in routed_message
-    assert "?????????????" in routed_message
+    assert "时代背景：明朝" in routed_message
+    assert "基本概括：老徐是锦衣卫百户" in routed_message
 
 
 def test_command_and_any_message_share_same_event_route_claim():

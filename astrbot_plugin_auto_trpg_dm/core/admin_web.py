@@ -11,6 +11,8 @@ from .timeline import timeline_status_text, timeline_view
 
 
 DEFAULT_ROUTE_PREFIXES = ("/auto_trpg_dm", "/astrbot_plugin_auto_trpg_dm")
+STATIC_DASHBOARD_PAGE_NAME = "auto-trpg-dm-dashboard"
+STATIC_DASHBOARD_FILES = ("index.html", "app.js", "style.css")
 
 
 class AutoTrpgAdminWeb:
@@ -51,6 +53,47 @@ class AutoTrpgAdminWeb:
                 context.register_web_api(f"{normalized_prefix}/{suffix}", handler, methods, description)
                 registered += 1
         return registered
+
+    def install_static_dashboard(
+        self,
+        data_root: Any = None,
+        page_name: str = STATIC_DASHBOARD_PAGE_NAME,
+    ) -> dict[str, Any]:
+        """Install a same-origin fallback page under AstrBot's WebUI dist directory."""
+        safe_page_name = str(page_name or STATIC_DASHBOARD_PAGE_NAME).strip("/\\")
+        if not safe_page_name or "/" in safe_page_name or "\\" in safe_page_name:
+            raise ValueError("invalid static dashboard page name")
+        if data_root is None:
+            from astrbot.core.utils.astrbot_path import get_astrbot_data_path
+
+            data_root = get_astrbot_data_path()
+
+        source_dir = Path(__file__).resolve().parents[1] / "pages" / "admin"
+        target_dir = Path(data_root) / "dist" / safe_page_name
+        if not source_dir.is_dir():
+            return {
+                "installed": False,
+                "reason": "source_missing",
+                "url": f"/{safe_page_name}/index.html",
+                "path": str(target_dir),
+                "files": [],
+            }
+
+        target_dir.mkdir(parents=True, exist_ok=True)
+        files: list[str] = []
+        for filename in STATIC_DASHBOARD_FILES:
+            source_path = source_dir / filename
+            target_path = target_dir / filename
+            target_path.write_bytes(source_path.read_bytes())
+            files.append(str(target_path))
+
+        return {
+            "installed": True,
+            "reason": "",
+            "url": f"/{safe_page_name}/index.html",
+            "path": str(target_dir),
+            "files": files,
+        }
 
     async def get_status(self, **_kwargs: Any) -> dict[str, Any]:
         sessions = self._list_session_records()

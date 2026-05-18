@@ -92,7 +92,7 @@ def test_tool_registry_prunes_estimate_token_usage_for_ordinary_requests():
     _toolset, names, _executor, _specs = registry.for_mode(
         GameMode.TACTICAL,
         "group",
-        message="????????",
+        message="我攻击最近的敌人",
     )
 
     assert "estimate_token_usage" not in names
@@ -106,13 +106,13 @@ def test_tool_registry_always_exposes_final_response_tool():
     _toolset, names, executor, specs = registry.for_mode(
         GameMode.NARRATIVE,
         "group",
-        message="???????",
+        message="先聊聊当前状态",
     )
 
     assert "final_response" in names
     assert any(spec["name"] == "final_response" for spec in specs)
-    result = asyncio.run(executor.execute("final_response", {"reply": "???"}))
-    assert result == {"ok": True, "reply": "???"}
+    result = asyncio.run(executor.execute("final_response", {"reply": "可以。"}))
+    assert result == {"ok": True, "reply": "可以。"}
 
 
 def test_tool_registry_exposes_character_tools_for_late_join_text_in_tactical_mode():
@@ -120,7 +120,7 @@ def test_tool_registry_exposes_character_tools_for_late_join_text_in_tactical_mo
     _toolset, names, _executor, _specs = registry.for_mode(
         GameMode.TACTICAL,
         "group",
-        message="????????????????????????",
+        message="我加入游戏，角色名字叫风，弓箭手，擅长精准射击。",
     )
 
     assert "create_character" in names
@@ -133,7 +133,7 @@ def test_tool_registry_exposes_character_tools_for_role_name_late_join_text_in_t
     _toolset, names, _executor, _specs = registry.for_mode(
         GameMode.TACTICAL,
         "group",
-        message="??????????????????????",
+        message="我要加入，角色名老铂，是一名西方的炼金术士。",
     )
 
     assert "create_character" in names
@@ -146,8 +146,8 @@ def test_tool_registry_unbound_post_start_actor_cannot_write_scene_before_bindin
     _toolset, names, _executor, _specs = registry.for_mode(
         GameMode.CHARACTER_CREATION,
         "group",
-        actor={"player_id": "late-player", "display_name": "???"},
-        message="??????????????????????",
+        actor={"player_id": "late-player", "display_name": "牛大蛋"},
+        message="我作为牛大蛋加入游戏，身高八尺腰围八尺的厨子",
     )
 
     assert "create_character" in names
@@ -161,7 +161,7 @@ def test_tool_registry_exposes_timeline_fact_tools_for_narrative():
     _toolset, names, _executor, specs = registry.for_mode(
         GameMode.NARRATIVE,
         "group",
-        message="?????????????",
+        message="复盘一下史东到底是什么情况",
     )
 
     assert "record_timeline_event" in names
@@ -175,7 +175,7 @@ def test_tool_registry_prefers_resolve_check_for_ordinary_d20_checks():
     _toolset, names, _executor, specs = registry.for_mode(
         GameMode.NARRATIVE,
         "group",
-        message="?????????????????",
+        message="我搜索桌面上的暗格并说服守卫帮忙。",
     )
 
     assert names.index("resolve_check") < names.index("execute_rule")
@@ -183,7 +183,7 @@ def test_tool_registry_prefers_resolve_check_for_ordinary_d20_checks():
     execute_spec = next(spec for spec in specs if spec["name"] == "execute_rule")
     assert "Preferred tool for ordinary d20 checks" in resolve_spec["description"]
     assert "do not call list_rules first for ordinary checks" in resolve_spec["description"]
-    assert "??????????????????? d20 ?????? resolve_check" in execute_spec["description"]
+    assert "普通搜索、说服、潜行、破解、操作设备等 d20 检定优先使用 resolve_check" in execute_spec["description"]
     resolve_properties = resolve_spec["parameters"]["properties"]
     assert "modifier_note" in resolve_properties
     assert "target_dc" in resolve_properties
@@ -197,7 +197,7 @@ def test_tool_registry_keeps_estimate_token_usage_for_diagnostic_requests():
     _toolset, names, _executor, _specs = registry.for_mode(
         GameMode.TACTICAL,
         "group",
-        message="???? token ??",
+        message="分析当前 token 消耗",
     )
 
     assert "estimate_token_usage" in names
@@ -210,7 +210,7 @@ def test_tool_registry_exposes_strict_lifecycle_tools_for_map_setup():
     _toolset, names, _executor, specs = registry.for_mode(
         GameMode.TACTICAL,
         "group",
-        message="???????????",
+        message="布置地图，但先不要开战",
     )
 
     assert "create_strict_map" in names
@@ -228,7 +228,7 @@ def test_tool_registry_exposes_overview_topology_renderer_for_overview_map_reque
     _toolset, names, _executor, specs = registry.for_mode(
         GameMode.NARRATIVE,
         "group",
-        message="?????????????",
+        message="画一张当前区域路线概览地图",
     )
 
     assert "render_overview_topology_svg" in names
@@ -242,7 +242,7 @@ def test_tool_registry_routes_strict_map_requests_to_strict_renderer():
     _toolset, names, _executor, specs = registry.for_mode(
         GameMode.NARRATIVE,
         "group",
-        message="??????????",
+        message="画一张当前战场站位图",
     )
 
     assert "render_strict_grid_svg" in names
@@ -256,7 +256,7 @@ def test_tool_registry_routes_layout_request_to_strict_renderer_with_svg_fallbac
     _toolset, names, _executor, specs = registry.for_mode(
         GameMode.NARRATIVE,
         "group",
-        message="??????",
+        message="画一下布局吧",
     )
 
     assert "render_strict_grid_svg" in names
@@ -270,7 +270,7 @@ def test_tool_registry_hides_map_renderers_for_explicit_text_only_map_request():
     _toolset, names, _executor, specs = registry.for_mode(
         GameMode.NARRATIVE,
         "group",
-        message="?? ASCII ??????????????????",
+        message="先用 ASCII 文字地图画一下战场格子，不要生成图片",
     )
 
     assert "render_strict_grid_svg" not in names
@@ -284,7 +284,7 @@ def test_tool_registry_keeps_visual_map_fallback_without_background():
     _toolset, names, _executor, specs = registry.for_mode(
         GameMode.NARRATIVE,
         "group",
-        message="??????????",
+        message="画一张当前战场站位图",
     )
 
     assert "render_strict_grid_svg" in names
@@ -298,7 +298,7 @@ def test_tool_registry_keeps_legacy_svg_hidden_until_explicit_fallback_request()
     _toolset, names, _executor, specs = registry.for_mode(
         GameMode.NARRATIVE,
         "group",
-        message="?? legacy generate_map_svg ??? fallback ????",
+        message="请用 legacy generate_map_svg 做一张 fallback 地图草图",
     )
 
     assert "generate_map_svg" in names
@@ -310,9 +310,10 @@ def test_tool_registry_exposes_end_combat_for_battle_resolution():
     _toolset, names, _executor, specs = registry.for_mode(
         GameMode.TACTICAL,
         "group",
-        message="??????????",
+        message="结束战斗，但保留地图",
     )
 
     assert "end_combat" in names
     assert "turn_control" in names
     assert any(spec["name"] == "end_combat" for spec in specs)
+

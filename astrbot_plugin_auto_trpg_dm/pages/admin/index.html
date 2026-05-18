@@ -118,6 +118,7 @@
 
   <script>
   (function(){
+    if (!window.parent || !window.parent.postMessage) return;
     var original = window.parent.postMessage.bind(window.parent);
     window.parent.postMessage = function(message, targetOrigin, transfer) {
       if (targetOrigin === "null" || targetOrigin === null || targetOrigin === undefined) {

@@ -45,6 +45,19 @@ def test_admin_web_registers_read_only_routes(tmp_path):
     assert all(item["methods"] == ["GET"] for item in context.routes)
 
 
+def test_admin_web_installs_static_dashboard_fallback(tmp_path):
+    web = AutoTrpgAdminWeb(JsonGameRepository(tmp_path / "plugin-data"))
+
+    result = web.install_static_dashboard(data_root=tmp_path)
+
+    assert result["installed"] is True
+    assert result["url"] == "/auto-trpg-dm-dashboard/index.html"
+    dashboard_dir = tmp_path / "dist" / "auto-trpg-dm-dashboard"
+    assert sorted(item.name for item in dashboard_dir.iterdir()) == ["app.js", "index.html", "style.css"]
+    assert "fetchPluginApi" in (dashboard_dir / "app.js").read_text(encoding="utf-8")
+    assert "/api/plug/auto_trpg_dm/" in (dashboard_dir / "app.js").read_text(encoding="utf-8")
+
+
 def test_admin_web_projects_session_snapshot_without_hidden_scene_or_paths(tmp_path):
     repo = JsonGameRepository(tmp_path)
     session = GameSession.new("group:one")
