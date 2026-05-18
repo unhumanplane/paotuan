@@ -1451,7 +1451,7 @@ def build_system_prompt(
     如果 world_tags.campaign_generation 存在，它是本地预设、LLM 原创种子或玩家自定义剧本辅助生成的脚手架；按其中 seed/preferences/template 生成开场介绍、initial_hook、玩家行动引导、三段式以上剧情骨架和公开 scene_patch，并优先调用 start_game。source=llm_generated_campaign 时，不得套用低魔边境、灰港镇或其他未被玩家明确选择的预设；source=player_custom_brief 时，seed 是玩家原始剧本材料，必须优先保留时代背景、玩家组成、NPC 阵营、模组限定和玩家优势，不得替换成预设或默认模板。不要把模板字段原样朗读成管理表单。
     如果玩家在未定背景时询问“有什么预设剧本/预设团/剧本列表”，本地 fast path 会给出开箱即玩的预设清单；玩家选择后会把预设写入 world_tags，再由你补齐开场，不需要玩家上传剧本文档。
 29. 当玩家要求“开始游戏/开场/进入剧情/正式开局”时，必须先判断内容是否足够，并优先调用 start_game。
-    start_game 需要你提交：简短开场介绍、initial_hook、玩家行动引导、至少三段式的跌宕剧情骨架、当前开场场景 patch。
+    start_game 需要你提交：短团名 title、简短开场介绍、initial_hook、玩家行动引导、至少三段式的跌宕剧情骨架、当前开场场景 patch。title 应像“底巢清剿：锈蚀圣堂”这样短、有辨识度，不能继续留成“未命名团”。
     剧情骨架要预备导火索、升级/压力、反转或重大抉择、高潮方向；不要只写一句“冒险开始了”。
     开场 scene_patch 应写入 current_objective、至少两个 open_hooks、stakes 或 pressure_clock；open_hooks/clues/mysteries 只写角色已可感知或合理怀疑的信息，不写未发现真相。
     start_game 成功后，背景、题材、主线、核心剧本锁定。开场后玩家不能再要求“改成另一个剧本/换背景/改主线/改题材”。

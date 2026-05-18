@@ -84,7 +84,6 @@ def test_non_owner_cannot_skip_current_player_turn():
     assert session.battle["turn"]["actions_this_round"] == {}
 
 
-
 def test_non_owner_advance_turn_error_includes_auto_act_hint():
     repo = _repo_with_player_turn()
     tools = TurnTools(repo, "group", actor={"player_id": "intruder"})
@@ -96,6 +95,7 @@ def test_non_owner_advance_turn_error_includes_auto_act_hint():
     assert "next_tool_hint" in result
     assert "auto_act_current" in result["message"]
     assert "不要重复调用" in result["message"]
+
 
 def test_non_owner_push_after_timeout_auto_acts_conservatively():
     repo = _repo_with_player_turn()

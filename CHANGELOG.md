@@ -2,6 +2,19 @@
 
 所有已经合入 `main` 的用户可见变更都记录在这里。日期使用香港时区对应的开发日期。
 
+## [0.1.127] - 2026-05-18
+
+### Fixed
+
+- Dashboard 会话详情改用固定插件 API 端点加 `session_key` 查询参数，避开 AstrBot 插件 API 对动态路径占位符的兼容问题，点击任意会话不再落到“未找到该路由”。
+- 开场 `start_game` 支持并优先保存短团名；未显式提供时，会从开场、当前目标或剧本脚手架自动推导，Dashboard 也会为旧的“未命名团”存档生成可读展示名。
+
+### Verified
+
+- `python -m pytest tests/test_admin_web.py tests/test_memory_tools.py tests/test_router_usage.py::test_start_game_arg_repair_coerces_json_string_outline tests/test_prompts.py tests/test_tool_registry.py -q`
+- `python -m py_compile astrbot_plugin_auto_trpg_dm\core\admin_web.py astrbot_plugin_auto_trpg_dm\core\session_titles.py astrbot_plugin_auto_trpg_dm\tools\memory_tools.py astrbot_plugin_auto_trpg_dm\core\router.py astrbot_plugin_auto_trpg_dm\core\prompts.py astrbot_plugin_auto_trpg_dm\tools\registry.py tests\test_admin_web.py tests\test_memory_tools.py tests\test_router_usage.py`
+- `node --check astrbot_plugin_auto_trpg_dm/pages/admin/app.js`
+
 ## [0.1.126] - 2026-05-18
 
 ### Added

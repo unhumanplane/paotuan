@@ -208,6 +208,7 @@ def test_start_game_arg_repair_coerces_json_string_outline():
     repaired = IntentRouter._repair_tool_args(
         "start_game",
         {
+            "title": "底巢清剿：锈蚀圣堂",
             "opening_intro": "开场文字",
             "campaign_outline": '{"act_1":"导火索","act_2":"升级","act_3":"高潮"}',
             "scene_patch": "废弃枢纽站里传来爪刃声。",
@@ -215,6 +216,7 @@ def test_start_game_arg_repair_coerces_json_string_outline():
         "开始游戏",
     )
 
+    assert repaired["title"] == "底巢清剿：锈蚀圣堂"
     assert repaired["campaign_outline"]["act_1"] == "导火索"
     assert repaired["scene_patch"]["summary"] == "废弃枢纽站里传来爪刃声。"
 

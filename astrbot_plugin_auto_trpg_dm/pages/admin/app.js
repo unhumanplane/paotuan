@@ -109,7 +109,7 @@
     els.sessionList.querySelectorAll(".session-item").forEach(function (item) {
       item.classList.toggle("active", item.dataset.key === sessionKey);
     });
-    var snapshot = await apiGet("dm/web/sessions/" + encodeURIComponent(sessionKey) + "/snapshot");
+    var snapshot = await apiGet(sessionEndpoint("snapshot", sessionKey));
     if (!snapshot) return;
     renderSnapshot(snapshot);
     await loadAudit(sessionKey);
@@ -144,7 +144,7 @@
 
   async function loadAudit(sessionKey) {
     els.auditList.innerHTML = skeleton(4);
-    var records = await apiGet("dm/web/sessions/" + encodeURIComponent(sessionKey) + "/audit");
+    var records = await apiGet(sessionEndpoint("audit", sessionKey));
     if (!records) {
       els.auditList.innerHTML = emptyHtml("审计记录加载失败。");
       return;
@@ -168,7 +168,7 @@
 
   async function loadBackups(sessionKey) {
     els.backupList.innerHTML = skeleton(4);
-    var backups = await apiGet("dm/web/sessions/" + encodeURIComponent(sessionKey) + "/backups");
+    var backups = await apiGet(sessionEndpoint("backups", sessionKey));
     if (!backups) {
       els.backupList.innerHTML = emptyHtml("备份列表加载失败。");
       return;
@@ -196,6 +196,10 @@
       toast(error.message || "请求失败");
       return null;
     }
+  }
+
+  function sessionEndpoint(kind, sessionKey) {
+    return "dm/web/session/" + kind + "?session_key=" + encodeURIComponent(sessionKey || "");
   }
 
   async function fetchPluginApi(endpoint) {

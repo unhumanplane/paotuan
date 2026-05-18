@@ -7,6 +7,7 @@ from typing import Any
 from .models import GameSession
 from .prompt_projection import project_dm_prompt_value
 from .scene_hooks import format_scene_tracking_status, project_visible_scene_value
+from .session_titles import session_display_title
 from .timeline import timeline_status_text, timeline_view
 
 
@@ -27,24 +28,9 @@ class AutoTrpgAdminWeb:
         routes = [
             ("dm/web/status", self.get_status, ["GET"], "Auto TRPG DM status"),
             ("dm/web/sessions", self.get_sessions, ["GET"], "Auto TRPG DM sessions"),
-            (
-                "dm/web/sessions/<session_key>/snapshot",
-                self.get_session_snapshot,
-                ["GET"],
-                "Auto TRPG DM session snapshot",
-            ),
-            (
-                "dm/web/sessions/<session_key>/audit",
-                self.get_session_audit,
-                ["GET"],
-                "Auto TRPG DM session audit",
-            ),
-            (
-                "dm/web/sessions/<session_key>/backups",
-                self.get_session_backups,
-                ["GET"],
-                "Auto TRPG DM session backups",
-            ),
+            ("dm/web/session/snapshot", self.get_session_snapshot, ["GET"], "Auto TRPG DM session snapshot"),
+            ("dm/web/session/audit", self.get_session_audit, ["GET"], "Auto TRPG DM session audit"),
+            ("dm/web/session/backups", self.get_session_backups, ["GET"], "Auto TRPG DM session backups"),
         ]
         registered = 0
         for prefix in route_prefixes:
@@ -111,7 +97,8 @@ class AutoTrpgAdminWeb:
     async def get_sessions(self, **_kwargs: Any) -> dict[str, Any]:
         return _json_ok([item["summary"] for item in self._list_session_records()])
 
-    async def get_session_snapshot(self, session_key: str = "", **_kwargs: Any) -> dict[str, Any]:
+    async def get_session_snapshot(self, session_key: str = "", **kwargs: Any) -> dict[str, Any]:
+        session_key = _session_key_from_request(session_key, kwargs)
         record = self._session_record(session_key)
         if not record:
             return _json_error("session_not_found", 404)
@@ -120,7 +107,8 @@ class AutoTrpgAdminWeb:
         snapshot["session_key"] = record["key"]
         return _json_ok(snapshot)
 
-    async def get_session_audit(self, session_key: str = "", **_kwargs: Any) -> dict[str, Any]:
+    async def get_session_audit(self, session_key: str = "", **kwargs: Any) -> dict[str, Any]:
+        session_key = _session_key_from_request(session_key, kwargs)
         record = self._session_record(session_key)
         if not record:
             return _json_error("session_not_found", 404)
@@ -128,7 +116,8 @@ class AutoTrpgAdminWeb:
         records = self.repository.last_audit_records(session.session_id, limit=40)
         return _json_ok([_project_audit_record(item) for item in records[-40:]])
 
-    async def get_session_backups(self, session_key: str = "", **_kwargs: Any) -> dict[str, Any]:
+    async def get_session_backups(self, session_key: str = "", **kwargs: Any) -> dict[str, Any]:
+        session_key = _session_key_from_request(session_key, kwargs)
         record = self._session_record(session_key)
         if not record:
             return _json_error("session_not_found", 404)
@@ -182,13 +171,28 @@ def _json_response(payload: dict[str, Any], code: int = 200) -> Any:
         return payload
 
 
+def _session_key_from_request(session_key: str = "", kwargs: dict[str, Any] | None = None) -> str:
+    if session_key:
+        return str(session_key)
+    if kwargs and kwargs.get("session_key"):
+        return str(kwargs.get("session_key") or "")
+    try:
+        from quart import request
+
+        return str(request.args.get("session_key", "") or "")
+    except Exception:
+        return ""
+
+
 def _project_session_summary(session: GameSession, path: Path) -> dict[str, Any]:
     scene = session.scene or {}
     battle = session.compact_snapshot().get("battle", {})
+    display_title = session_display_title(session)
     return {
         "session_key": path.stem,
         "session_id": session.session_id,
-        "title": session.title,
+        "title": display_title,
+        "stored_title": session.title,
         "mode": session.mode.value,
         "cycle_state": session.cycle_state.value,
         "timeline": timeline_view(session.timeline),
@@ -210,9 +214,11 @@ def _project_session_snapshot(session: GameSession) -> dict[str, Any]:
     world_tags = snapshot.get("world_tags") if isinstance(snapshot.get("world_tags"), dict) else {}
     visible_scene = project_visible_scene_value(scene, depth=4, text_limit=360, item_limit=20) or {}
     visible_world = project_dm_prompt_value(world_tags, depth=4, text_limit=360)
+    display_title = session_display_title(session)
     return {
         "session_id": session.session_id,
-        "title": session.title,
+        "title": display_title,
+        "stored_title": session.title,
         "mode": session.mode.value,
         "cycle_state": session.cycle_state.value,
         "timeline": timeline_view(session.timeline),

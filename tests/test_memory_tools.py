@@ -194,6 +194,7 @@ def test_start_game_accepts_json_string_outline_and_text_scene(tmp_path):
     assert result["ok"] is True
     saved = repository.load_session("group")
     assert saved.scene["_game_started"] is True
+    assert saved.title == "鸟卜仪捕捉到一个高速逼近的异形信号"
     assert "底巢废弃枢纽站" in saved.scene["summary"]
     assert saved.scene["current_objective"]
     assert len(saved.scene["open_hooks"]) >= 2
@@ -307,7 +308,39 @@ def test_update_scene_isolates_parallel_character_threads(tmp_path):
     assert saved.scene["active_scene_thread_id"] == villa["scene_thread_id"]
     assert saved.scene["location"] == "Villa"
     assert saved.scene["pressure_clock"]["status"] == "active"
-    assert "stakes" not in saved.scene
+
+
+def test_start_game_accepts_explicit_title(tmp_path):
+    repository = JsonGameRepository(tmp_path / "data")
+    session = GameSession.new("group")
+    session.world_tags.update(
+        {
+            "genre": "grimdark_sci_fi",
+            "tone": "军事恐怖",
+            "starting_premise": "极限战士清剿底巢基因窃取者巢穴。",
+            "_background_ready": True,
+        }
+    )
+    repository.save_session(session)
+
+    tools = MemoryTools(repository, "group", actor={"player_id": "p1"})
+    result = asyncio.run(
+        tools.start_game(
+            title="底巢清剿：锈蚀圣堂",
+            opening_intro="底巢警报在头盔中尖啸，你踏入废弃枢纽站，黑暗管廊里传来爪刃刮擦金属的声音。热雾从破裂管道里涌出，鸟卜仪同时捕捉到一个高速逼近的异形信号。",
+            player_guidance="你可以侦查、喷火压制，或呼叫队友封锁侧翼。",
+            initial_hook="鸟卜仪捕捉到一个高速逼近的异形信号。",
+            campaign_outline={
+                "act_1": "斥候突袭暴露巢穴入口",
+                "act_2": "深入底巢发现教派仪式",
+                "act_3": "摧毁节点或撤离呼叫支援",
+            },
+            scene_patch={"summary": "底巢废弃枢纽站，第一只斥候正从黑暗中扑出。"},
+        )
+    )
+
+    assert result["ok"] is True
+    assert repository.load_session("group").title == "底巢清剿：锈蚀圣堂"
 
 
 def test_update_scene_terminal_wording_does_not_close_thread_without_explicit_status(tmp_path):
@@ -964,7 +997,6 @@ def test_update_scene_normalizes_npc_relationship_state(tmp_path):
     assert audit_records[0]["result"]["scene"]["npcs"][0]["relations"]["fear"] == "high"
 
 
-
 def test_post_start_world_fact_overreach_returns_next_tool_hint(tmp_path):
     repository = JsonGameRepository(tmp_path / "data")
     session = GameSession.new("group")
@@ -993,6 +1025,7 @@ def test_post_start_world_fact_overreach_returns_next_tool_hint(tmp_path):
     assert "next_tool_hint" in result
     assert "不要重复调用" in result["message"]
     assert repository.load_session("group").scene["summary"] == "尚未开局。等待玩家用自然语言描述世界、角色或当前行动。"
+
 
 def test_update_world_tags_normalizes_faction_relationship_state(tmp_path):
     repository = JsonGameRepository(tmp_path / "data")

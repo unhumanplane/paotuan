@@ -38,9 +38,9 @@ def test_admin_web_registers_read_only_routes(tmp_path):
     assert [item["route"] for item in context.routes] == [
         "/auto_trpg_dm/dm/web/status",
         "/auto_trpg_dm/dm/web/sessions",
-        "/auto_trpg_dm/dm/web/sessions/<session_key>/snapshot",
-        "/auto_trpg_dm/dm/web/sessions/<session_key>/audit",
-        "/auto_trpg_dm/dm/web/sessions/<session_key>/backups",
+        "/auto_trpg_dm/dm/web/session/snapshot",
+        "/auto_trpg_dm/dm/web/session/audit",
+        "/auto_trpg_dm/dm/web/session/backups",
     ]
     assert all(item["methods"] == ["GET"] for item in context.routes)
 
@@ -56,6 +56,7 @@ def test_admin_web_installs_static_dashboard_fallback(tmp_path):
     assert sorted(item.name for item in dashboard_dir.iterdir()) == ["app.js", "index.html", "style.css"]
     assert "fetchPluginApi" in (dashboard_dir / "app.js").read_text(encoding="utf-8")
     assert "/api/plug/auto_trpg_dm/" in (dashboard_dir / "app.js").read_text(encoding="utf-8")
+    assert 'sessionEndpoint("snapshot", sessionKey)' in (dashboard_dir / "app.js").read_text(encoding="utf-8")
 
 
 def test_admin_web_projects_session_snapshot_without_hidden_scene_or_paths(tmp_path):
@@ -132,3 +133,20 @@ def test_admin_web_lists_audit_and_backups_as_summaries(tmp_path):
     assert backup_response["status"] == "ok"
     assert backup_response["data"][0]["name"] == backup_path.name
     assert "path" not in backup_response["data"][0]
+
+
+def test_admin_web_derives_display_title_for_untitled_sessions(tmp_path):
+    repo = JsonGameRepository(tmp_path)
+    session = GameSession.new("group")
+    session.scene["current_objective"] = "找到失联侦察队的记录核心。"
+    repo.save_session(session)
+
+    web = AutoTrpgAdminWeb(repo)
+    sessions_response = _unwrap(asyncio.run(web.get_sessions()))
+    snapshot_response = _unwrap(asyncio.run(web.get_session_snapshot(session_key="group")))
+
+    assert sessions_response["status"] == "ok"
+    assert sessions_response["data"][0]["title"] == "失联侦察队的记录核心"
+    assert sessions_response["data"][0]["stored_title"] == "未命名团"
+    assert snapshot_response["data"]["title"] == "失联侦察队的记录核心"
+    assert snapshot_response["data"]["stored_title"] == "未命名团"

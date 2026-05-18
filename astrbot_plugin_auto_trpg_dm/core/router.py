@@ -2060,7 +2060,7 @@ class IntentRouter:
                         scene_value = repaired.pop(alias)
                         repaired["scene_patch"] = scene_value if isinstance(scene_value, dict) else {"summary": str(scene_value)}
                         break
-            allowed = {"opening_intro", "player_guidance", "initial_hook", "campaign_outline", "scene_patch"}
+            allowed = {"title", "opening_intro", "player_guidance", "initial_hook", "campaign_outline", "scene_patch"}
             return {key: value for key, value in repaired.items() if key in allowed}
         if tool_name == "session_control":
             if not str(repaired.get("action") or "").strip():

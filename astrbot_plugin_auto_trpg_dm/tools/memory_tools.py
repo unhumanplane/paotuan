@@ -37,6 +37,7 @@ from ..core.scene_hooks import (
     opening_has_initial_hook,
     project_visible_scene_value,
 )
+from ..core.session_titles import ensure_session_title
 from ..storage.json_repository import JsonGameRepository
 
 
@@ -141,6 +142,10 @@ class UpdateWorldTagsArgs(BaseModel):
 
 
 class StartGameArgs(BaseModel):
+    title: str = Field(
+        default="",
+        description="可选团名/剧本名；若为空，系统会根据开场、当前目标或剧本标题自动生成短团名。",
+    )
     opening_intro: str = Field(
         ...,
         description="给玩家看的简短开场介绍，必须有氛围、当前处境和第一个压力点，建议 120-400 中文字。",
@@ -900,6 +905,7 @@ class MemoryTools:
     async def start_game(
         self,
         opening_intro: str,
+        title: str = "",
         player_guidance: str = "",
         initial_hook: str = "",
         campaign_outline: Optional[Dict[str, Any]] = None,
@@ -968,8 +974,19 @@ class MemoryTools:
         session.world_tags["_plot_locked"] = True
         session.world_tags["_late_join_allowed"] = True
         session.world_tags["campaign_outline"] = compact_campaign_outline(campaign_outline)
-        if scene_patch.get("title"):
-            session.title = str(scene_patch["title"])
+        if title:
+            session.title = _short_title_value(title, 64)
+        elif scene_patch.get("title"):
+            session.title = _short_title_value(scene_patch["title"], 64)
+        ensure_session_title(
+            session,
+            scene_patch,
+            initial_hook,
+            opening_intro,
+            session.world_tags.get("campaign_generation"),
+            session.world_tags.get("campaign_contract"),
+            session.world_tags.get("starting_premise"),
+        )
         session.mode = GameMode.NARRATIVE
         self.repository.save_session(session)
         opening_message = opening_intro.strip()
@@ -4552,6 +4569,14 @@ def _merge_tag_value(collected: Dict[str, Any], key: str, value: Any) -> None:
 
 def _short_tag_value(value: str, limit: int) -> str:
     cleaned = _clean_tag_text(value)
+    if len(cleaned) <= limit:
+        return cleaned
+    return cleaned[: limit - 3] + "..."
+
+
+def _short_title_value(value: Any, limit: int) -> str:
+    cleaned = " ".join(str(value or "").strip().split())
+    cleaned = cleaned.replace("“", "").replace("”", "").replace("\"", "").replace("'", "")
     if len(cleaned) <= limit:
         return cleaned
     return cleaned[: limit - 3] + "..."

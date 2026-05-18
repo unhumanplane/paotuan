@@ -339,6 +339,7 @@ class ToolRegistry:
                 description=(
                     "当玩家要求开始游戏、开场或进入剧情时使用。先检查背景、角色、开场介绍、"
                     "initial_hook 和跌宕剧情骨架是否足够；足够才正式开场并锁定剧情主干。"
+                    "优先填写短团名 title；未填写时系统会从开场或当前目标自动生成。"
                     "开场 scene_patch 应落盘 current_objective、至少两个 open_hooks、stakes 或 pressure_clock。"
                     "开场后仍允许新玩家加入。"
                 ),
