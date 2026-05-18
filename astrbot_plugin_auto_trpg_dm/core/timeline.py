@@ -354,19 +354,35 @@ def player_ids_with_cycle_actions(session: Any) -> set[str]:
 
 def active_player_ids(session: Any) -> set[str]:
     ids: set[str] = set()
-    participants = getattr(session, "participants", {}) or {}
-    if isinstance(participants, Mapping):
-        ids.update(str(player_id) for player_id in participants.keys() if str(player_id))
     player_character_map = getattr(session, "player_character_map", {}) or {}
     if isinstance(player_character_map, Mapping):
-        ids.update(str(player_id) for player_id in player_character_map.keys() if str(player_id))
+        ids.update(
+            str(player_id)
+            for player_id, character_id in player_character_map.items()
+            if str(player_id) and str(character_id or "").strip()
+        )
     characters = getattr(session, "characters", {}) or {}
     if isinstance(characters, Mapping):
         for character in characters.values():
             player_id = str(getattr(character, "player_id", "") or "")
             if player_id:
                 ids.add(player_id)
-    return {player_id for player_id in ids if not _player_bound_character_is_terminal(session, player_id)}
+    return {
+        player_id
+        for player_id in ids
+        if _player_has_live_bound_character(session, player_id)
+    }
+
+
+def _player_has_live_bound_character(session: Any, player_id: str) -> bool:
+    character_id = str((getattr(session, "player_character_map", {}) or {}).get(player_id) or "")
+    if not character_id:
+        return False
+    characters = getattr(session, "characters", {}) or {}
+    character = characters.get(character_id) if isinstance(characters, Mapping) else None
+    if character and _player_bound_character_is_terminal(session, player_id):
+        return False
+    return True
 
 
 def _player_bound_character_is_terminal(session: Any, player_id: str) -> bool:

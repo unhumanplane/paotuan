@@ -60,7 +60,7 @@ from .tools.registry import ToolRegistry
 from .tools.turn_tools import TurnTools
 
 
-PLUGIN_VERSION = "0.1.122"
+PLUGIN_VERSION = "0.1.123"
 
 DEFAULT_REASSURANCE_PHRASES = (
     "正在翻找合适的骰子。",
@@ -1131,6 +1131,19 @@ class AutoTrpgDmPlugin(Star):
         if normalized in {"当前轮次", "当前回合", "轮次", "回合", "谁行动", "轮到谁", "行动顺序", "战斗顺序", "轮动顺序"} or _looks_like_turn_status_request(text):
             self.repository.append_audit(session_id, {"type": "local_fast_path", "action": "turn_status", "actor": actor})
             return self._format_turn_status(session, include_order=_looks_like_turn_order_request(text))
+
+        authoritative_state_reply = _authoritative_state_fast_reply(session, text)
+        if authoritative_state_reply:
+            self.repository.append_audit(
+                session_id,
+                {
+                    "type": "local_fast_path",
+                    "action": "authoritative_state_check",
+                    "actor": actor,
+                    "text": text[:240],
+                },
+            )
+            return authoritative_state_reply
 
         reasonableness_reply = _post_start_reasonableness_fast_reply(session, text)
         if reasonableness_reply:
@@ -3633,6 +3646,125 @@ def _looks_like_scene_tracking_status_request(text: str) -> bool:
     tracking_terms = ("目标", "任务", "线索", "钩子", "未解", "谜团", "objective", "clue", "hook", "mystery")
     query_terms = ("当前", "现在", "有什么", "哪些", "状态", "列", "总结", "summary", "current", "status", "what")
     return any(term in normalized for term in tracking_terms) and any(term in normalized for term in query_terms)
+
+
+def _authoritative_state_fast_reply(session, text: str) -> str:
+    if not _looks_like_authoritative_state_request(text):
+        return ""
+    scene = session.scene or {}
+    timeline = timeline_status_text(session.timeline)
+    location = _authoritative_state_location_text(scene)
+    summary = _compact_text(scene.get("summary") or "当前没有可读摘要。", 260)
+    objective = _compact_text(scene.get("current_objective") or "暂无明确目标。", 220)
+    conflict = _compact_text(scene.get("current_conflict") or "暂无直接冲突。", 220)
+    lines = [
+        f"权威状态：{timeline}。",
+    ]
+    if location:
+        lines.append(f"位置：{location}")
+    lines.extend([
+        f"场面：{summary}",
+        f"目标：{objective}",
+        f"冲突：{conflict}",
+    ])
+    hooks_text = _authoritative_state_visible_hooks_text(scene)
+    if hooks_text:
+        lines.append(f"线索：{hooks_text}")
+    if any(term in str(text or "") for term in ("第二天", "第2天", "第 2 天", "天亮", "入夜", "已经", "现在", "核实", "确认", "查证")):
+        lines.append("当前存档没有确认进入你说的下一时段；如果你是在核实剧情，我按存档读的是这里。")
+    battle = session.battle or {}
+    turn = dict(battle.get("turn") or {})
+    if bool(battle.get("active")) or bool(turn.get("active")):
+        phase = str(turn.get("phase") or "unknown")
+        round_no = int(turn.get("round") or 0)
+        current_id = str(turn.get("current_entity_id") or battle.get("turn_entity_id") or "")
+        lines.append(f"轮次：第 {round_no} 轮，阶段 {phase}，当前锚点 {current_id or '无'}。")
+    return "\n".join(lines)
+
+
+def _authoritative_state_location_text(scene: dict) -> str:
+    raw_location = scene.get("location")
+    if isinstance(raw_location, dict):
+        for key in ("name", "title", "text", "description", "summary"):
+            value = str(raw_location.get(key) or "").strip()
+            if value:
+                return _compact_text(value, 120)
+    elif raw_location not in (None, "", [], {}):
+        return _compact_text(raw_location, 120)
+    threads = scene.get("scene_threads")
+    active_thread_id = str(scene.get("active_scene_thread_id") or "").strip()
+    active_thread = threads.get(active_thread_id) if isinstance(threads, dict) and active_thread_id else None
+    if isinstance(active_thread, dict):
+        location = str(active_thread.get("location") or "").strip()
+        if location:
+            return _compact_text(location, 120)
+    return ""
+
+
+def _authoritative_state_visible_hooks_text(scene: dict) -> str:
+    parts: list[str] = []
+    for key in ("open_hooks", "clues", "mysteries"):
+        value = scene.get(key)
+        items = value if isinstance(value, list) else ([value] if isinstance(value, dict) else [])
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            visibility = str(item.get("visibility") or "player").strip().lower()
+            status = str(item.get("status") or "").strip().lower()
+            if visibility in {"hidden", "secret", "dm", "dm_only", "gm", "gm_only", "private"}:
+                continue
+            if status in {"hidden", "secret", "undiscovered"}:
+                continue
+            text = str(item.get("text") or item.get("summary") or item.get("description") or "").strip()
+            if text:
+                parts.append(_compact_text(text, 100))
+            if len(parts) >= 3:
+                return "；".join(parts)
+    return "；".join(parts)
+
+
+def _looks_like_authoritative_state_request(text: str) -> bool:
+    normalized = str(text or "").strip().lower()
+    if not normalized:
+        return False
+    if any(term in normalized for term in ("我要", "我想", "我进行", "攻击", "移动", "搜索", "调查", "检定", "判定", "开打", "继续攻打")):
+        return False
+    direct_terms = (
+        "我在哪",
+        "我现在在哪",
+        "我在哪儿",
+        "我的位置",
+        "当前位置",
+        "现在什么情况",
+    )
+    if any(term in normalized for term in direct_terms):
+        return True
+    state_terms = (
+        "第二天",
+        "第2天",
+        "第 2 天",
+        "天亮",
+        "入夜",
+        "现在不是",
+        "已经是",
+        "当前状态",
+        "当前局势",
+        "现在什么情况",
+        "剧情线索",
+        "核实剧情",
+        "核实线索",
+        "确认剧情",
+        "时间线",
+        "回营地没有",
+        "回营地了吗",
+        "我在哪",
+        "我现在在哪",
+        "我的位置",
+        "当前位置",
+        "在哪儿",
+    )
+    query_terms = ("吗", "？", "?", "核实", "确认", "查证", "复核", "是不是", "是否", "已经", "现在", "当前")
+    return any(term in normalized for term in state_terms) and any(term in normalized for term in query_terms)
 
 
 def _looks_like_turn_order_request(text: str) -> bool:

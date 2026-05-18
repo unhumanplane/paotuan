@@ -10,6 +10,25 @@ SCENE_TRACKING_KEYS = TRACKING_LIST_KEYS | {
     "stakes",
     "pressure_clock",
 }
+AUTHORITATIVE_SCENE_KEYS = (
+    "summary",
+    "location",
+    "current_objective",
+    "current_conflict",
+    "stakes",
+    "pressure_clock",
+    "open_hooks",
+    "clues",
+    "mysteries",
+    "event_timeline",
+    "entity_facts",
+    "last_resolution",
+    "_recent_narrative_events",
+    "_encounter_ended_reason",
+    "_manual_save_patch",
+    "_manual_save_patch_reason",
+    "_manual_save_patch_at",
+)
 SIMPLE_CLUE_STATUSES = {
     "open",
     "discovered",
@@ -256,10 +275,11 @@ def project_visible_scene_value(
                 if not _hidden_scene_key(str(item_key))
             ][:item_limit]
             return {"keys": keys} if keys else None
+        ordered_items = _authoritative_scene_items_first(value, key)
         projected: dict[str, Any] = {}
-        for index, (item_key, item_value) in enumerate(value.items()):
+        for index, (item_key, item_value) in enumerate(ordered_items):
             if index >= item_limit:
-                projected["_truncated_items"] = max(0, len(value) - item_limit)
+                projected["_truncated_items"] = max(0, len(ordered_items) - item_limit)
                 break
             key_text = str(item_key)
             if _hidden_scene_key(key_text) or _hidden_record(item_value, key=key_text):
@@ -297,6 +317,20 @@ def project_visible_scene_value(
     if isinstance(value, (int, float, bool)) or value is None:
         return value
     return _short_text(value, min(text_limit, 200))
+
+
+def _authoritative_scene_items_first(value: dict[str, Any], key: str = "") -> list[tuple[Any, Any]]:
+    items = list(value.items())
+    if key or not any(item_key in value for item_key in AUTHORITATIVE_SCENE_KEYS):
+        return items
+    priority = {item_key: index for index, item_key in enumerate(AUTHORITATIVE_SCENE_KEYS)}
+    return sorted(
+        items,
+        key=lambda item: (
+            priority.get(str(item[0]), len(priority)),
+            items.index(item),
+        ),
+    )
 
 
 def format_scene_tracking_status(scene: dict[str, Any]) -> str:

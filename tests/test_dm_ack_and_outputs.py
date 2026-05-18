@@ -403,6 +403,96 @@ def test_scene_tracking_status_fast_path_returns_visible_hooks_without_advancing
     assert repo.audits[-1]["action"] == "scene_tracking_status"
 
 
+def test_timeline_fact_claim_fast_path_returns_authoritative_state():
+    session = GameSession.new("group")
+    session.world_tags["_background_ready"] = True
+    session.scene.update(
+        {
+            "_game_started": True,
+            "summary": "伏击者溃退后，老徐下令不追击，全队撤回营地。",
+            "current_objective": "整理撤回营地后的态势，辨识缴获靴筒内的波斯字母。",
+            "current_conflict": "无直接威胁（伏击已结束，当前没有正在攻打据点）。",
+            "open_hooks": [
+                {
+                    "id": "boot-inscription",
+                    "text": "靴筒内的波斯字母仍待通译辨识。",
+                    "status": "open",
+                    "visibility": "player",
+                }
+            ],
+        }
+    )
+    session.timeline = {
+        "day": 1,
+        "time_of_day": "morning",
+        "label": "第 1 天清晨",
+        "status": "global",
+    }
+    repo = FakeRepository(session)
+    plugin = AutoTrpgDmPlugin.__new__(AutoTrpgDmPlugin)
+    plugin.repository = repo
+    plugin.ambient_image_config = AmbientImageConfig(enabled=False)
+    plugin.plugin_logger = FakeLogger()
+
+    reply = asyncio.run(
+        plugin._local_fast_path(
+            FakeEvent(),
+            "group",
+            {"player_id": "player-a"},
+            "已经是第二天攻打据点了",
+        )
+    )
+
+    assert "权威状态" in reply
+    assert "第 1 天清晨" in reply
+    assert "伏击已结束" in reply
+    assert "当前没有正在攻打据点" in reply
+    assert "仍待通译辨识" in reply
+    assert repo.audits[-1]["action"] == "authoritative_state_check"
+
+
+def test_location_fact_query_fast_path_returns_authoritative_state():
+    session = GameSession.new("group")
+    session.world_tags["_background_ready"] = True
+    session.scene.update(
+        {
+            "_game_started": True,
+            "location": "山腰兽道灌木观察位，距断崖前哨约两百步。",
+            "summary": "伏击已结束，队伍正在回营整补。",
+            "current_objective": "等待通译辨认缴获靴筒里的波斯字母。",
+            "current_conflict": "暂无直接威胁。",
+            "open_hooks": [
+                {
+                    "id": "boot-inscription",
+                    "text": "缴获的靴筒字母仍待辨认。",
+                    "status": "open",
+                    "visibility": "player",
+                }
+            ],
+        }
+    )
+    repo = FakeRepository(session)
+    plugin = AutoTrpgDmPlugin.__new__(AutoTrpgDmPlugin)
+    plugin.repository = repo
+    plugin.ambient_image_config = AmbientImageConfig(enabled=False)
+    plugin.plugin_logger = FakeLogger()
+
+    reply = asyncio.run(
+        plugin._local_fast_path(
+            FakeEvent(),
+            "group",
+            {"player_id": "player-a"},
+            "我在哪",
+        )
+    )
+
+    assert "权威状态" in reply
+    assert "山腰兽道灌木观察位" in reply
+    assert "伏击已结束" in reply
+    assert "缴获的靴筒字母仍待辨认" in reply
+    assert repo.audits[-1]["action"] == "authoritative_state_check"
+
+
 def test_unbound_post_start_action_is_blocked_before_llm_tools():
     session = GameSession.new("group")
     session.world_tags["_background_ready"] = True

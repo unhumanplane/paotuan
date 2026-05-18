@@ -686,7 +686,7 @@ def _project_recent_events(value: Any, limit: int) -> list[dict[str, Any]]:
         if not isinstance(item, dict):
             continue
         player_id = str(item.get("player_id") or "")
-        if player_id.startswith("__"):
+        if player_id.startswith("__") and not _is_authoritative_projection_event(item):
             continue
         if _is_fact_check_resolution(item):
             continue
@@ -702,6 +702,20 @@ def _project_recent_events(value: Any, limit: int) -> list[dict[str, Any]]:
         if len(events) >= max(0, limit):
             break
     return list(reversed(events))
+
+
+def _is_authoritative_projection_event(value: Any) -> bool:
+    if not isinstance(value, dict):
+        return False
+    player_id = str(value.get("player_id") or "")
+    if player_id in {"__controlled_patch__", "__manual_save_patch__"}:
+        return True
+    text = " ".join(
+        str(value.get(key) or "")
+        for key in ("message", "outcome", "summary")
+        if value.get(key)
+    )
+    return "受控 save patch" in text or "manual_save_patch" in text
 
 
 def _is_fact_check_resolution(value: Any) -> bool:

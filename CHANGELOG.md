@@ -2,6 +2,20 @@
 
 所有已经合入 `main` 的用户可见变更都记录在这里。日期使用香港时区对应的开发日期。
 
+## [0.1.123] - 2026-05-18
+
+### Fixed
+
+- 修复剧情核实/时间断言类输入（例如“已经是第二天攻打据点了”“现在是不是第 2 天”）再次被模型自由续写成新事实的问题；这类消息现在会直接读权威存档状态，并返回当前时间线、场面摘要、目标、冲突和可见线索。
+- 修复 prompt 投影在 scene 字段过多时把 `summary/current_objective/current_conflict` 以及受控 save patch 纠偏事件挤出快照的问题；这些权威字段现在会被优先保留，避免旧剧情噪声压过当前存档事实。
+- 收紧时间线全团同步判定，只把已绑定且仍有效的角色算进周期推进，避免旁观者/未落卡玩家污染同步边界。
+
+### Verified
+
+- `python -m pytest tests/test_prompts.py tests/test_dm_ack_and_outputs.py tests/test_cycle_tools.py tests/test_cycle_buffer.py tests/test_router_usage.py -q`
+- `python -m py_compile astrbot_plugin_auto_trpg_dm\main.py astrbot_plugin_auto_trpg_dm\core\prompts.py astrbot_plugin_auto_trpg_dm\core\scene_hooks.py astrbot_plugin_auto_trpg_dm\core\timeline.py`
+- `git diff --check`
+
 ## [0.1.122] - 2026-05-18
 
 ### Fixed

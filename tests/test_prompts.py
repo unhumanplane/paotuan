@@ -1059,6 +1059,38 @@ def test_prompt_snapshot_projection_keeps_recent_tool_backed_ritual_completion_a
     assert "小地主被诅咒标记" in rendered
 
 
+def test_prompt_snapshot_projection_keeps_authoritative_scene_fields_past_mapping_limit():
+    session = GameSession.new("group")
+    session.scene.clear()
+    for index in range(30):
+        session.scene[f"old_noise_{index:02d}"] = f"stale detail {index}"
+    session.scene["summary"] = "第1天清晨，伏击已结束，队伍撤回营地。"
+    session.scene["current_objective"] = "整理撤回营地后的态势，辨识缴获靴筒内的波斯字母。"
+    session.scene["current_conflict"] = "无直接威胁（伏击已结束，当前没有攻打哨所场景）。"
+    session.scene["_recent_narrative_events"] = [
+        {
+            "at": "2026-05-18T10:44:28+00:00",
+            "player_id": "__controlled_patch__",
+            "character_id": "",
+            "message": "受控 save patch",
+            "outcome": "旧的攻打哨所、老铂对峙、毒药检定等未落库叙事不得作为当前事实继续推进。",
+        }
+    ]
+
+    projected_snapshot, _stats = prompt_snapshot_data(
+        session,
+        GameMode.NARRATIVE,
+        "继续",
+        snapshot_projection_enabled=True,
+    )
+    rendered = json.dumps(projected_snapshot["scene"], ensure_ascii=False)
+
+    assert "伏击已结束" in rendered
+    assert "当前没有攻打哨所场景" in rendered
+    assert "旧的攻打哨所" in rendered
+    assert list(projected_snapshot["scene"]).index("summary") < list(projected_snapshot["scene"]).index("old_noise_00")
+
+
 def test_prompt_snapshot_projection_skips_stale_thread_even_when_other_thread_active():
     session = GameSession.new("group")
     session.scene["active_scene_thread_id"] = "pc_laofei:alley"

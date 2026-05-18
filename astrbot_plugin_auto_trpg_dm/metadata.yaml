@@ -1,7 +1,7 @@
 name: auto_trpg_dm
 desc: 全自然语言 TRPG DM 插件：动态规则、战棋物理验证、Tag 角色卡与自动剧本状态。
 short_desc: 在 AstrBot 里用自然语言跑 TRPG，支持角色、战棋、规则检索、存档和可选氛围图。
-version: v0.1.122
+version: v0.1.123
 author: codex
 repo: https://github.com/unhumanplane/astrbot_plugin_auto_trpg_dm
 display_name: Auto TRPG DM
