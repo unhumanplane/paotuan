@@ -258,16 +258,19 @@ class HermesCoderPlugin(Star):
             text = "Hermes 没有返回文本结果。"
         if len(text) > self.max_reply_chars:
             text = text[: self.max_reply_chars].rstrip() + "\n\n[已截断]"
-        file_components = self._response_file_components(response)
+        file_specs = self._response_file_specs(response)
+        uploaded_files = await self._upload_response_files_direct(event, file_specs, payload)
+        file_components = [] if uploaded_files else self._file_components_from_specs(file_specs)
         self.coder_logger.info(
-            "request_completed group=%s sender=%s message=%s status_code=%s ok=%s reply_chars=%s files=%s elapsed_ms=%s",
+            "request_completed group=%s sender=%s message=%s status_code=%s ok=%s reply_chars=%s files=%s direct_uploads=%s elapsed_ms=%s",
             group_id or "(private)",
             payload.get("sender_id") or "",
             payload.get("message_id") or "",
             response.get("status_code") or "",
             response.get("ok") if "ok" in response else "",
             len(text),
-            len(file_components),
+            len(file_specs),
+            uploaded_files,
             int((time.monotonic() - started_at) * 1000),
         )
         if file_components and callable(getattr(event, "chain_result", None)):
@@ -286,14 +289,14 @@ class HermesCoderPlugin(Star):
             yield event.plain_result(text)
         event.stop_event()
 
-    def _response_file_components(self, response: dict[str, Any]) -> list[Any]:
+    def _response_file_specs(self, response: dict[str, Any]) -> list[dict[str, str]]:
         if not self.file_send_enabled:
             return []
         raw_files = response.get("files")
         if not isinstance(raw_files, list):
             return []
 
-        components: list[Any] = []
+        specs: list[dict[str, str]] = []
         for raw_file in raw_files[:3]:
             if not isinstance(raw_file, dict):
                 continue
@@ -302,11 +305,57 @@ class HermesCoderPlugin(Star):
                 continue
             file_name = str(raw_file.get("name") or Path(file_path).name or "hermes-coder-export.txt").strip()
             file_name = Path(file_name).name or "hermes-coder-export.txt"
+            specs.append({"path": file_path, "name": file_name})
+        return specs
+
+    def _response_file_components(self, response: dict[str, Any]) -> list[Any]:
+        return self._file_components_from_specs(self._response_file_specs(response))
+
+    def _file_components_from_specs(self, file_specs: list[dict[str, str]]) -> list[Any]:
+        components: list[Any] = []
+        for spec in file_specs:
             try:
-                components.append(File(name=file_name, file=file_path))
+                components.append(File(name=spec["name"], file=spec["path"]))
             except Exception as exc:
-                self.coder_logger.warning("response_file_component_failed path=%s error=%s", file_path, self._safe_error(exc))
+                self.coder_logger.warning("response_file_component_failed path=%s error=%s", spec.get("path") or "", self._safe_error(exc))
         return components
+
+    async def _upload_response_files_direct(self, event: AstrMessageEvent, file_specs: list[dict[str, str]], payload: dict[str, Any]) -> int:
+        if not file_specs:
+            return 0
+        group_id = self._event_group_id(event)
+        bot = getattr(event, "bot", None)
+        call_action = getattr(bot, "call_action", None)
+        if not group_id or not str(group_id).isdigit() or not callable(call_action):
+            return 0
+
+        uploaded = 0
+        for spec in file_specs:
+            try:
+                await call_action(
+                    "upload_group_file",
+                    group_id=int(group_id),
+                    file=spec["path"],
+                    name=spec["name"],
+                )
+                uploaded += 1
+                self.coder_logger.info(
+                    "response_file_uploaded group=%s sender=%s message=%s name=%s",
+                    group_id,
+                    payload.get("sender_id") or "",
+                    payload.get("message_id") or "",
+                    spec["name"],
+                )
+            except Exception as exc:
+                self.coder_logger.warning(
+                    "response_file_upload_failed group=%s sender=%s message=%s name=%s error=%s",
+                    group_id,
+                    payload.get("sender_id") or "",
+                    payload.get("message_id") or "",
+                    spec.get("name") or "",
+                    self._safe_error(exc),
+                )
+        return uploaded
 
     def _is_allowed_file_path(self, file_path: str) -> bool:
         normalized = file_path.replace("\\", "/")

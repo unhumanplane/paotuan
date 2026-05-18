@@ -108,12 +108,21 @@ class FakeContext:
         self.sent.append((session_id, chain))
         return True
 
+class FakeBot:
+    def __init__(self):
+        self.actions = []
+
+    async def call_action(self, action, **kwargs):
+        self.actions.append((action, kwargs))
+        return {"status": "ok"}
+
 class FakeEvent:
     unified_msg_origin = "aiocqhttp:GroupMessage:676453921"
 
-    def __init__(self, group_id="676453921", sender_id="1903948152"):
+    def __init__(self, group_id="676453921", sender_id="1903948152", bot=None):
         self._group_id = group_id
         self._sender_id = sender_id
+        self.bot = bot
         self.message_obj = type("MessageObj", (), {"message_id": "msg1", "group_id": group_id})()
 
     def get_group_id(self):
@@ -261,7 +270,7 @@ def test_response_file_components_only_allow_configured_export_prefixes():
     assert getattr(components[0], "file") == "/AstrBot/data/plugin_data/astrbot_plugin_hermes_coder/exports/game_logs/latest.txt"
 
 
-def test_handle_coder_returns_chain_result_with_export_file(monkeypatch):
+def test_handle_coder_uploads_export_file_directly_for_aiocqhttp(monkeypatch):
     async def run_case():
         plugin = HermesCoderPlugin.__new__(HermesCoderPlugin)
         plugin.enabled = True
@@ -291,13 +300,22 @@ def test_handle_coder_returns_chain_result_with_export_file(monkeypatch):
 
         monkeypatch.setattr(plugin, "_post_bridge", fake_post_bridge)
 
+        bot = FakeBot()
         results = []
-        async for result in plugin._handle_coder(FakeEvent(), "获取最新游戏日志"):
+        async for result in plugin._handle_coder(FakeEvent(bot=bot), "获取最新游戏日志"):
             results.append(result)
 
         assert len(results) == 1
-        assert results[0]["kind"] == "chain"
-        assert any(getattr(item, "text", "") == "日志导出好了" for item in results[0]["components"])
-        assert any(getattr(item, "file", "").endswith("/latest.txt") for item in results[0]["components"])
+        assert results[0] == {"kind": "plain", "text": "日志导出好了"}
+        assert bot.actions == [
+            (
+                "upload_group_file",
+                {
+                    "group_id": 676453921,
+                    "file": "/AstrBot/data/plugin_data/astrbot_plugin_hermes_coder/exports/game_logs/latest.txt",
+                    "name": "latest.txt",
+                },
+            )
+        ]
 
     asyncio.run(run_case())
