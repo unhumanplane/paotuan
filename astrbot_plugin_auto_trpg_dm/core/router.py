@@ -692,6 +692,7 @@ class IntentRouter:
             audit_lock=lock,
             raw_player_message=message,
             available_tool_names=tool_names,
+            actor=actor,
         )
         completion = self._sanitize_completion_text(loop_result.completion_text)
         tool_trace = loop_result.tool_results
@@ -1549,6 +1550,7 @@ class IntentRouter:
         audit_lock: asyncio.Lock | None = None,
         raw_player_message: str = "",
         available_tool_names: list[str] | tuple[str, ...] | None = None,
+        actor: dict[str, str] | None = None,
     ) -> ToolLoopResult:
         contexts: list[dict[str, str]] = []
         prompt = initial_prompt
@@ -1611,11 +1613,40 @@ class IntentRouter:
                 ",".join(str(item) for item in guard_result.get("errors", [])),
             )
 
+        async def append_actor_equipment_guard_audit(guard_result: dict[str, Any]) -> None:
+            audit_record = {
+                "type": "actor_equipment_final_reply_guard",
+                "reason": guard_result.get("reason", ""),
+                "actor_character_id": guard_result.get("actor_character_id", ""),
+                "equipment_terms": guard_result.get("equipment_terms", []),
+            }
+            if audit_lock is None:
+                self.repository.append_audit(session_id, audit_record)
+            else:
+                async with audit_lock:
+                    self.repository.append_audit(session_id, audit_record)
+            get_plugin_logger().info(
+                "actor_equipment_final_reply_guard session=%s actor_character=%s terms=%s",
+                session_id,
+                guard_result.get("actor_character_id", ""),
+                ",".join(str(item) for item in guard_result.get("equipment_terms", [])),
+            )
+
         async def guarded_completion(completion_text: str) -> str:
             try:
                 guard_session = self.repository.load_session(session_id)
             except Exception:
                 guard_session = None
+            actor_equipment_guard = _actor_equipment_final_reply_guard(
+                raw_player_message,
+                completion_text,
+                all_tool_results,
+                session=guard_session,
+                actor=actor or {},
+            )
+            if actor_equipment_guard:
+                await append_actor_equipment_guard_audit(actor_equipment_guard)
+                completion_text = str(actor_equipment_guard.get("reply") or "").strip() or completion_text
             character_card_guard = _character_card_final_reply_guard(
                 raw_player_message,
                 completion_text,
@@ -4180,6 +4211,452 @@ def _modifier_review_guard_blocked(tool_results: list[dict[str, Any]]) -> bool:
         and item["result"].get("error") == "modifier_review_required"
         for item in tool_results
     )
+
+
+EQUIPMENT_POSSESSION_CLAIM_GROUPS: tuple[tuple[str, tuple[str, ...], tuple[str, ...]], ...] = (
+    ("备用弩", ("备用军弩", "备用弩"), ("备用军弩", "备用弩")),
+    ("军用弩", ("军用弩", "军弩"), ("军用弩", "军弩")),
+    ("神臂弩", ("神臂弩",), ("神臂弩",)),
+    ("弩", ("弩机", "弩"), ("弩", "神臂弩", "军用弩", "军弩", "备用弩", "备用军弩")),
+    ("缴获弓", ("缴获弓", "破弓", "硬木弓"), ("缴获弓", "破弓", "硬木弓")),
+    ("弓", ("弓",), ("弓", "长弓", "短弓", "硬木弓", "缴获弓")),
+    ("千里眼", ("千里眼",), ("千里眼",)),
+)
+
+EQUIPMENT_POSSESSION_ACTION_TERMS = (
+    "手里",
+    "手上",
+    "身上",
+    "托在",
+    "托着",
+    "握着",
+    "握住",
+    "拿着",
+    "拿起",
+    "拿到",
+    "拿了",
+    "捡起",
+    "领到",
+    "领了",
+    "取得",
+    "递给",
+    "递到",
+    "交给",
+    "交到",
+    "借给",
+    "借到",
+    "背着",
+    "背上",
+    "挂在",
+    "挂着",
+    "端起",
+    "端平",
+    "装上",
+    "装填",
+    "上弩",
+    "上弦",
+    "扣下扳机",
+    "扣扳机",
+    "瞄准",
+    "试射",
+    "射出",
+    "射击",
+    "开弓",
+    "拉弓",
+    "架起",
+    "抽出",
+    "箭羽擦过",
+)
+
+EQUIPMENT_HYPOTHETICAL_TERMS = (
+    "如果",
+    "要是",
+    "想",
+    "可以",
+    "能不能",
+    "可否",
+    "需要",
+    "得",
+    "申请",
+    "请示",
+    "问问",
+    "有没有",
+    "来领",
+    "再来领",
+    "留着应急",
+    "谁坏了",
+    "不能",
+    "没有",
+    "没",
+    "尚未",
+    "未取得",
+    "无法成立",
+)
+
+EQUIPMENT_ACTUAL_POSSESSION_TERMS = (
+    "手里",
+    "手上",
+    "托在",
+    "托着",
+    "握着",
+    "握住",
+    "拿着",
+    "背着",
+    "挂在",
+    "挂着",
+    "端起",
+    "端平",
+    "装上",
+    "装填",
+    "上弩",
+    "上弦",
+    "扣下扳机",
+    "扣扳机",
+    "瞄准",
+    "射出",
+    "射击",
+    "开弓",
+    "拉弓",
+    "架起",
+    "递给",
+    "递到",
+    "交给",
+    "交到",
+    "借给",
+    "借到",
+    "领到",
+    "取得",
+)
+
+EQUIPMENT_STATE_CONFIRMATION_KEY_TERMS = (
+    "临时装备",
+    "当前装备",
+    "当前武器",
+    "手持",
+    "持有",
+    "携带",
+    "领用",
+    "领取",
+    "借用",
+    "借得",
+    "弹药",
+    "补给",
+)
+
+EQUIPMENT_STATE_CONFIRMATION_VALUE_TERMS = (
+    "临时装备",
+    "手持",
+    "手里",
+    "手上",
+    "领到",
+    "领用",
+    "领取",
+    "借到",
+    "借用",
+    "借得",
+    "拿到",
+    "取得",
+    "发给",
+    "递给",
+    "交给",
+    "发放",
+)
+
+EQUIPMENT_STATE_DENIAL_TERMS = (
+    "尚未",
+    "未确认",
+    "未取得",
+    "未领",
+    "未借",
+    "没有",
+    "没能",
+    "不能",
+    "无法",
+    "只是想",
+    "想借",
+    "申请中",
+)
+
+
+def _actor_equipment_final_reply_guard(
+    player_message: str,
+    completion: str,
+    tool_results: list[dict[str, Any]],
+    *,
+    session: Any | None,
+    actor: dict[str, str],
+) -> dict[str, Any]:
+    if session is None or not _campaign_started_for_guard(session):
+        return {}
+    completion_text = " ".join(str(completion or "").strip().split())
+    if not completion_text:
+        return {}
+    character_id = _actor_character_id_for_guard(session, actor)
+    if not character_id:
+        return {}
+    character = (getattr(session, "characters", {}) or {}).get(character_id)
+    if character is None:
+        return {}
+
+    entitlement_text = _character_equipment_entitlement_text(character)
+    unsupported: list[str] = []
+    for label, claim_terms, entitlement_terms in EQUIPMENT_POSSESSION_CLAIM_GROUPS:
+        if not any(term in completion_text for term in claim_terms):
+            continue
+        if any(term in entitlement_text for term in entitlement_terms):
+            continue
+        if _tool_results_confirm_actor_equipment(tool_results, character_id, entitlement_terms):
+            continue
+        if _completion_claims_actor_equipment_possession(
+            completion_text,
+            claim_terms,
+            actor_name=str(getattr(character, "name", "") or ""),
+        ):
+            unsupported.append(label)
+
+    unsupported = _dedupe_unsupported_equipment_terms(unsupported)
+    if not unsupported:
+        return {}
+    return {
+        "reason": "actor_equipment_final_reply_unverified",
+        "actor_character_id": character_id,
+        "equipment_terms": unsupported,
+        "reply": _actor_equipment_guard_reply(character, unsupported),
+    }
+
+
+def _actor_character_id_for_guard(session: Any, actor: dict[str, str]) -> str:
+    player_id = str((actor or {}).get("player_id") or "").strip()
+    if player_id:
+        mapped = str((getattr(session, "player_character_map", {}) or {}).get(player_id, "") or "")
+        if mapped:
+            return mapped
+    active = str(getattr(session, "active_character_id", "") or "")
+    if active:
+        return active
+    characters = getattr(session, "characters", {}) or {}
+    if len(characters) == 1:
+        return next(iter(characters.keys()))
+    return ""
+
+
+def _character_equipment_entitlement_text(character: Any) -> str:
+    parts = [str(getattr(character, "summary", "") or "")]
+    for tag in getattr(character, "tags", []) or []:
+        key = str(getattr(tag, "key", "") or "")
+        layer = str(getattr(tag, "layer", "") or "").lower()
+        value = str(getattr(tag, "value", "") or "")
+        if layer == "equipment" or any(term in key for term in ("装备", "武器", "防具", "工具", "物品", "弹药", "补给")):
+            parts.extend([key, value])
+    return " ".join(parts)
+
+
+def _tool_results_confirm_actor_equipment(
+    tool_results: list[dict[str, Any]],
+    character_id: str,
+    entitlement_terms: tuple[str, ...],
+) -> bool:
+    for item in tool_results or []:
+        if not isinstance(item, dict) or item.get("tool") != "update_character_tags":
+            continue
+        result = item.get("result")
+        if not _tool_result_ok(result):
+            continue
+        if not _tool_result_targets_character(item.get("args"), result, character_id):
+            continue
+        if _tool_result_has_equipment_confirmation(item.get("args"), result, entitlement_terms):
+            return True
+    return False
+
+
+def _tool_result_targets_character(args: Any, result: Any, character_id: str) -> bool:
+    candidate_ids: list[str] = []
+    if isinstance(args, dict):
+        candidate_ids.extend(
+            str(args.get(key) or "")
+            for key in ("character_id", "resolved_character_id", "target_character_id")
+        )
+    if isinstance(result, dict):
+        candidate_ids.extend(
+            str(result.get(key) or "")
+            for key in ("character_id", "resolved_character_id", "target_character_id")
+        )
+        character = result.get("character")
+        if isinstance(character, dict):
+            candidate_ids.append(str(character.get("id") or ""))
+    return any(item == character_id for item in candidate_ids)
+
+
+def _tool_result_has_equipment_confirmation(
+    args: Any,
+    result: Any,
+    entitlement_terms: tuple[str, ...],
+) -> bool:
+    tags: list[Any] = []
+    if isinstance(result, dict):
+        tags.extend(_coerce_guard_tag_list(result.get("updated_tags")))
+        character = result.get("character")
+        if isinstance(character, dict):
+            tags.extend(_coerce_guard_tag_list(character.get("tags")))
+    if isinstance(args, dict):
+        tags.extend(_coerce_guard_tag_list(args.get("tags")))
+    return any(_tag_confirms_actor_equipment(tag, entitlement_terms) for tag in tags)
+
+
+def _coerce_guard_tag_list(value: Any) -> list[Any]:
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return value
+    if isinstance(value, dict):
+        if "key" in value and "value" in value:
+            return [value]
+        return [{"key": key, "value": item} for key, item in value.items()]
+    return []
+
+
+def _tag_confirms_actor_equipment(tag: Any, entitlement_terms: tuple[str, ...]) -> bool:
+    if not isinstance(tag, dict):
+        return False
+    key = str(tag.get("key") or "")
+    layer = str(tag.get("layer") or "").lower()
+    value = str(tag.get("value") or "")
+    combined = f"{key} {value}"
+    if not any(term in combined for term in entitlement_terms):
+        return False
+    if any(term in combined for term in EQUIPMENT_STATE_DENIAL_TERMS):
+        return False
+    if layer == "equipment":
+        return True
+    if any(term in key for term in EQUIPMENT_STATE_CONFIRMATION_KEY_TERMS):
+        return True
+    return layer == "status" and any(term in combined for term in EQUIPMENT_STATE_CONFIRMATION_VALUE_TERMS)
+
+
+def _completion_claims_actor_equipment_possession(
+    completion: str,
+    claim_terms: tuple[str, ...],
+    *,
+    actor_name: str = "",
+) -> bool:
+    actor_markers = tuple(item for item in ("你", actor_name) if item)
+    for term in claim_terms:
+        for match in re.finditer(re.escape(term), completion):
+            start = max(0, match.start() - 80)
+            end = min(len(completion), match.end() + 100)
+            window = completion[start:end]
+            context = _equipment_claim_context(window, term)
+            if actor_markers and not any(marker in window for marker in actor_markers):
+                continue
+            if _equipment_window_is_non_possession_context(context, claim_terms):
+                continue
+            if any(marker in context for marker in EQUIPMENT_POSSESSION_ACTION_TERMS):
+                return True
+    return False
+
+
+def _equipment_claim_context(window: str, term: str) -> str:
+    if not term or term not in window:
+        return window
+    punctuation = "。！？；，,.!?;、"
+    match = re.search(re.escape(term), window)
+    if not match:
+        return window
+    before = window[: match.start()]
+    after = window[match.end() :]
+    left_stops = [before.rfind(mark) for mark in punctuation]
+    left_start = max(left_stops) + 1 if left_stops else 0
+    right_stops = [after.find(mark) for mark in punctuation if after.find(mark) >= 0]
+    right_end = match.end() + (min(right_stops) if right_stops else len(after))
+    clause_start = max(0, left_start)
+    context_start = clause_start
+    previous = window[:clause_start]
+    previous_stops = [previous.rfind(mark) for mark in punctuation]
+    if previous and any(marker in previous[max(previous_stops) + 1 :] for marker in ("你", "我")):
+        context_start = max(previous_stops) + 1 if previous_stops else 0
+    return window[context_start:right_end]
+
+
+def _equipment_window_is_non_possession_context(window: str, claim_terms: tuple[str, ...]) -> bool:
+    if _equipment_window_denies_possession(window, claim_terms):
+        return True
+    if any(marker in window for marker in EQUIPMENT_ACTUAL_POSSESSION_TERMS):
+        return False
+    if any(marker in window for marker in EQUIPMENT_HYPOTHETICAL_TERMS) and not _equipment_window_has_actuality_marker(window):
+        return True
+    return False
+
+
+def _equipment_window_has_actuality_marker(window: str) -> bool:
+    return any(
+        marker in window
+        for marker in (
+            "已经",
+            "已",
+            "现在",
+            "正",
+            "刚",
+            "这把",
+            "那把",
+            "沉甸甸",
+            "站定",
+            "箭羽",
+            "弩弦",
+            "扳机",
+        )
+    )
+
+
+def _equipment_window_denies_possession(window: str, claim_terms: tuple[str, ...]) -> bool:
+    punctuation = "。！？；，,.!?;、"
+    for term in claim_terms:
+        if not term or term not in window:
+            continue
+        for match in re.finditer(re.escape(term), window):
+            start = match.start()
+            left = window[:start]
+            right = window[match.end():]
+            left_clause = left[max(left.rfind(mark) for mark in punctuation) + 1 :]
+            next_marks = [right.find(mark) for mark in punctuation if right.find(mark) >= 0]
+            right_clause = right[: min(next_marks)] if next_marks else right
+            clause = left_clause + term + right_clause
+            if any(marker in clause for marker in ("没有", "没", "未取得", "尚未", "不能", "无法")):
+                return True
+    return False
+
+
+def _dedupe_unsupported_equipment_terms(unsupported: list[str]) -> list[str]:
+    ordered = list(dict.fromkeys(unsupported))
+    if any(term in ordered for term in ("备用弩", "军用弩", "神臂弩")) and "弩" in ordered:
+        ordered.remove("弩")
+    if "缴获弓" in ordered and "弓" in ordered:
+        ordered.remove("弓")
+    return ordered
+
+
+def _actor_equipment_guard_reply(character: Any, unsupported: list[str]) -> str:
+    name = str(getattr(character, "name", "") or "当前角色")
+    equipment = _known_equipment_summary(character)
+    missing = "、".join(dict.fromkeys(unsupported))
+    return (
+        f"裁定修正：不能把 {missing} 写成{name}手里已经有的装备。"
+        f"{name}当前记录装备是：{equipment or '未登记装备'}。"
+        "如果要领用、借用或试射这些装备，需要先在场内向持有人或老徐申请，并由检定或状态写入确认；"
+        "本轮先不把未记录装备当作已持有。"
+    )
+
+
+def _known_equipment_summary(character: Any) -> str:
+    values: list[str] = []
+    for tag in getattr(character, "tags", []) or []:
+        key = str(getattr(tag, "key", "") or "")
+        layer = str(getattr(tag, "layer", "") or "").lower()
+        value = str(getattr(tag, "value", "") or "").strip()
+        if not value:
+            continue
+        if layer == "equipment" or any(term in key for term in ("装备", "武器", "防具", "工具", "物品", "弹药", "补给")):
+            values.append(value)
+    return "；".join(values)
 
 
 CHARACTER_CARD_REQUEST_TERMS = (

@@ -55,6 +55,7 @@ from astrbot_plugin_auto_trpg_dm.core.models import Character, GameMode, GameSes
 from astrbot_plugin_auto_trpg_dm.core.router import (
     IntentRouter,
     _adjudication_completeness_guard,
+    _actor_equipment_final_reply_guard,
     _character_card_final_reply_guard,
     _extract_llm_usage_summary,
     _is_diagnostic_request,
@@ -506,6 +507,215 @@ def test_character_card_final_reply_guard_blocks_unverified_elite_join():
     assert "character_card_power_mismatch" in guard["errors"]
     assert "不能直接通过" in guard["reply"]
     assert "潜入结果" in guard["reply"]
+
+
+def _role_mix_equipment_guard_session():
+    session = GameSession.new("group-1")
+    session.world_tags["_plot_locked"] = True
+    session.scene["_game_started"] = True
+    session.characters["pc_chen_dahu"] = Character(
+        id="pc_chen_dahu",
+        name="陈大虎",
+        player_id="512469473",
+        summary="福建镇海卫军户，长枪手。",
+        tags=[
+            TagValue(key="装备", value="精良级长枪一杆、腰刀一口、皮甲一副", layer="equipment"),
+            TagValue(key="状态", value="随老徐队伍进山讨伐桃源公，已休整完毕。", layer="status"),
+        ],
+    )
+    session.characters["pc_kade"] = Character(
+        id="pc_kade",
+        name="凯德",
+        player_id="158988882",
+        summary="锦衣卫弓弩手，携带神臂弩和千里眼。",
+        tags=[
+            TagValue(key="装备", value="神臂弩、普通箭、穿甲箭、麻药箭、毒箭、腰刀", layer="equipment"),
+            TagValue(key="辅助工具", value="千里眼、测距工具", layer="equipment"),
+        ],
+    )
+    session.player_character_map = {
+        "512469473": "pc_chen_dahu",
+        "158988882": "pc_kade",
+    }
+    return session
+
+
+def test_actor_equipment_final_reply_guard_blocks_teammate_crossbow_on_current_actor():
+    session = _role_mix_equipment_guard_session()
+
+    guard = _actor_equipment_final_reply_guard(
+        "在营地里试一下，反正能把箭捡回来，不会损耗",
+        "你在营地靶场上站定，那把林鸢检定过的备用弩沉甸甸地托在手里，扣下扳机后箭羽擦过草靶。",
+        [],
+        session=session,
+        actor={"player_id": "512469473", "display_name": "gali"},
+    )
+
+    assert guard["reason"] == "actor_equipment_final_reply_unverified"
+    assert guard["actor_character_id"] == "pc_chen_dahu"
+    assert guard["equipment_terms"] == ["备用弩"]
+    assert "陈大虎" in guard["reply"]
+    assert "精良级长枪" in guard["reply"]
+
+
+def test_actor_equipment_final_reply_guard_allows_recorded_actor_crossbow():
+    session = _role_mix_equipment_guard_session()
+
+    guard = _actor_equipment_final_reply_guard(
+        "我架起神臂弩瞄准",
+        "凯德把神臂弩架在岩石边，瞄准断墙后的哨兵。",
+        [],
+        session=session,
+        actor={"player_id": "158988882", "display_name": "Kongdy"},
+    )
+
+    assert guard == {}
+
+
+def test_actor_equipment_final_reply_guard_allows_non_possession_request():
+    session = _role_mix_equipment_guard_session()
+
+    guard = _actor_equipment_final_reply_guard(
+        "问问营地里有没有多的弩",
+        "营地里确实有备用弩，但陈大虎手里没有；如果要试射，需要先向老徐申请。",
+        [],
+        session=session,
+        actor={"player_id": "512469473", "display_name": "gali"},
+    )
+
+    assert guard == {}
+
+
+def test_actor_equipment_final_reply_guard_allows_tool_confirmed_temporary_loan():
+    session = _role_mix_equipment_guard_session()
+
+    guard = _actor_equipment_final_reply_guard(
+        "我向老徐申请借一把备用弩试射",
+        "老徐点头后把备用弩递给你，你把备用弩托在手里站到靶场前。",
+        [
+            {
+                "tool": "update_character_tags",
+                "args": {
+                    "character_id": "pc_chen_dahu",
+                    "tags": [
+                        {
+                            "key": "临时装备",
+                            "value": "老徐同意临时借给陈大虎一把备用弩用于营地试射",
+                            "layer": "status",
+                        }
+                    ],
+                },
+                "result": {
+                    "ok": True,
+                    "character_id": "pc_chen_dahu",
+                    "updated_tags": [
+                        {
+                            "key": "临时装备",
+                            "value": "老徐同意临时借给陈大虎一把备用弩用于营地试射",
+                            "layer": "status",
+                        }
+                    ],
+                },
+            }
+        ],
+        session=session,
+        actor={"player_id": "512469473", "display_name": "gali"},
+    )
+
+    assert guard == {}
+
+
+def test_actor_equipment_final_reply_guard_ignores_raw_text_only_update():
+    session = _role_mix_equipment_guard_session()
+
+    guard = _actor_equipment_final_reply_guard(
+        "我想借一把备用弩试射",
+        "你把备用弩托在手里，朝靶子扣下扳机。",
+        [
+            {
+                "tool": "update_character_tags",
+                "args": {
+                    "character_id": "pc_chen_dahu",
+                    "raw_text": "玩家想借一把备用弩试射",
+                },
+                "result": {
+                    "ok": True,
+                    "character_id": "pc_chen_dahu",
+                    "updated_tags": [
+                        {
+                            "key": "最近行动",
+                            "value": "玩家想借一把备用弩试射，但尚未确认领用。",
+                            "layer": "status",
+                        }
+                    ],
+                },
+            }
+        ],
+        session=session,
+        actor={"player_id": "512469473", "display_name": "gali"},
+    )
+
+    assert guard["equipment_terms"] == ["备用弩"]
+
+
+def test_router_replaces_unverified_actor_equipment_final_response_tool():
+    class FinalToolCallResponse:
+        completion_text = ""
+        tools_call_name = ["final_response"]
+        tools_call_args = [
+            {
+                "reply": "你在营地靶场上站定，那把林鸢检定过的备用弩沉甸甸地托在手里。"
+            }
+        ]
+        tool_calls = []
+
+    class FakeLoopLlm:
+        async def __call__(self, **kwargs):
+            return FinalToolCallResponse()
+
+    class RecordingExecutor:
+        def __init__(self):
+            self.calls = []
+
+        async def execute(self, tool_name, args):
+            self.calls.append((tool_name, args))
+            if tool_name == "final_response":
+                return {"ok": True, "reply": args["reply"]}
+            raise AssertionError(f"unexpected tool: {tool_name}")
+
+    async def run_case():
+        repository = InMemoryRepository()
+        session = _role_mix_equipment_guard_session()
+        repository.save_session(session)
+        router = IntentRouter.__new__(IntentRouter)
+        executor = RecordingExecutor()
+        router.max_steps = 2
+        router._llm_generate = FakeLoopLlm()
+        router.repository = repository
+
+        result = await router._run_llm_tool_loop(
+            chat_provider_id="fake-provider",
+            system_prompt="system",
+            initial_prompt="玩家行动",
+            toolset=object(),
+            tool_executor=executor,
+            session_id="group-1",
+            raw_player_message="在营地里试一下，反正能把箭捡回来，不会损耗",
+            available_tool_names=["update_character_tags", "final_response"],
+            actor={"player_id": "512469473", "display_name": "gali"},
+        )
+        return result, executor, repository.last_audit_records("group-1", limit=20)
+
+    result, executor, records = asyncio.run(run_case())
+    guard_records = [item for item in records if item.get("type") == "actor_equipment_final_reply_guard"]
+
+    assert [name for name, _args in executor.calls] == ["final_response"]
+    assert "裁定修正" in result.completion_text
+    assert "备用弩" in result.completion_text
+    assert "沉甸甸地托在手里" not in result.completion_text
+    assert guard_records[-1]["reason"] == "actor_equipment_final_reply_unverified"
+    assert guard_records[-1]["actor_character_id"] == "pc_chen_dahu"
+    assert guard_records[-1]["equipment_terms"] == ["备用弩"]
 
 
 def test_router_replaces_unverified_character_final_response_tool():

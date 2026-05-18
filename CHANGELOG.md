@@ -2,6 +2,19 @@
 
 所有已经合入 `main` 的用户可见变更都记录在这里。日期使用香港时区对应的开发日期。
 
+## [0.1.120] - 2026-05-18
+
+### Fixed
+
+- 增加最终回复阶段的当前角色装备归属守卫：当 DM 回复把备用弩、军弩、神臂弩、弓或千里眼等写成当前发言人“你”已经持有/使用，但当前角色卡和本轮工具写入都没有确认时，自动替换为裁定修正，避免队友或营地装备被错落到当前角色身上。
+- 守卫会区分“询问/申请/尚未确认领用”和“已经拿在手里/试射/扣扳机”等实际持有叙述；允许本轮 `update_character_tags` 明确写入临时领用或借用后再叙述使用。
+
+### Verified
+
+- `python -m pytest tests/test_prompts.py tests/test_router_usage.py -q`
+- `python -m py_compile astrbot_plugin_auto_trpg_dm\core\router.py tests\test_router_usage.py`
+- `git diff --check`
+
 ## [0.1.119] - 2026-05-18
 
 ### Fixed
