@@ -130,7 +130,7 @@ def _install_fake_astrbot_modules():
 _install_fake_astrbot_modules()
 
 from astrbot_plugin_auto_trpg_dm.core.ambient_image import AmbientImageConfig
-from astrbot_plugin_auto_trpg_dm.core.models import CycleState, GameSession
+from astrbot_plugin_auto_trpg_dm.core.models import Character, CycleState, GameSession
 from astrbot_plugin_auto_trpg_dm.main import (
     AutoTrpgDmPlugin,
     _guided_background_patch_from_text,
@@ -401,6 +401,85 @@ def test_scene_tracking_status_fast_path_returns_visible_hooks_without_advancing
     assert "幕后黑手就是馆长" not in reply
     assert repo.session.cycle_state == CycleState.CYCLE_ACTIVE
     assert repo.audits[-1]["action"] == "scene_tracking_status"
+
+
+def test_unbound_post_start_action_is_blocked_before_llm_tools():
+    session = GameSession.new("group")
+    session.world_tags["_background_ready"] = True
+    session.world_tags["_plot_locked"] = True
+    session.scene["_game_started"] = True
+    session.characters["pc_chen_dahu"] = Character(id="pc_chen_dahu", name="陈大虎", player_id="bound-player")
+    session.player_character_map["bound-player"] = "pc_chen_dahu"
+    repo = FakeRepository(session)
+    plugin = AutoTrpgDmPlugin.__new__(AutoTrpgDmPlugin)
+    plugin.repository = repo
+    plugin.ambient_image_config = AmbientImageConfig(enabled=False)
+    plugin.plugin_logger = FakeLogger()
+
+    reply = asyncio.run(
+        plugin._local_fast_path(
+            FakeEvent(),
+            "group",
+            {"player_id": "late-player", "display_name": "老铂"},
+            "检定",
+        )
+    )
+
+    assert "还没有绑定有效角色" in reply
+    assert "建卡" in reply
+    assert repo.audits[-1]["action"] == "unbound_actor_action"
+
+
+def test_unbound_post_start_social_action_is_blocked_before_llm_tools():
+    session = GameSession.new("group")
+    session.world_tags["_background_ready"] = True
+    session.world_tags["_plot_locked"] = True
+    session.scene["_game_started"] = True
+    session.characters["pc_chen_dahu"] = Character(id="pc_chen_dahu", name="陈大虎", player_id="bound-player")
+    session.player_character_map["bound-player"] = "pc_chen_dahu"
+    repo = FakeRepository(session)
+    plugin = AutoTrpgDmPlugin.__new__(AutoTrpgDmPlugin)
+    plugin.repository = repo
+    plugin.ambient_image_config = AmbientImageConfig(enabled=False)
+    plugin.plugin_logger = FakeLogger()
+
+    reply = asyncio.run(
+        plugin._local_fast_path(
+            FakeEvent(),
+            "group",
+            {"player_id": "late-player", "display_name": "老铂"},
+            "主动去搭话",
+        )
+    )
+
+    assert "还没有绑定有效角色" in reply
+    assert repo.audits[-1]["action"] == "unbound_actor_action"
+
+
+def test_unbound_post_start_join_request_still_reaches_character_creation():
+    session = GameSession.new("group")
+    session.world_tags["_background_ready"] = True
+    session.world_tags["_plot_locked"] = True
+    session.scene["_game_started"] = True
+    session.characters["pc_chen_dahu"] = Character(id="pc_chen_dahu", name="陈大虎", player_id="bound-player")
+    session.player_character_map["bound-player"] = "pc_chen_dahu"
+    repo = FakeRepository(session)
+    plugin = AutoTrpgDmPlugin.__new__(AutoTrpgDmPlugin)
+    plugin.repository = repo
+    plugin.ambient_image_config = AmbientImageConfig(enabled=False)
+    plugin.plugin_logger = FakeLogger()
+
+    reply = asyncio.run(
+        plugin._local_fast_path(
+            FakeEvent(),
+            "group",
+            {"player_id": "late-player", "display_name": "风"},
+            "我要加入，角色名风，是后续赶来的弓箭手",
+        )
+    )
+
+    assert reply == ""
+    assert not any(record.get("action") == "unbound_actor_action" for record in repo.audits)
 
 
 def test_resume_fast_path_accepts_merged_resume_dm_resume_text():

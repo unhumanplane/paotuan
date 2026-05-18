@@ -60,7 +60,7 @@ from .tools.registry import ToolRegistry
 from .tools.turn_tools import TurnTools
 
 
-PLUGIN_VERSION = "0.1.121"
+PLUGIN_VERSION = "0.1.122"
 
 DEFAULT_REASSURANCE_PHRASES = (
     "正在翻找合适的骰子。",
@@ -1153,13 +1153,13 @@ class AutoTrpgDmPlugin(Star):
             self.repository.append_audit(session_id, {"type": "local_fast_path", "action": "player_roster", "actor": actor})
             return self._format_player_roster(session)
 
-        unbound_reply = _unbound_tactical_actor_reply(session, actor, text)
+        unbound_reply = _unbound_tactical_actor_reply(session, actor, text) or _unbound_live_action_reply(session, actor, text)
         if unbound_reply:
             self.repository.append_audit(
                 session_id,
                 {
                     "type": "local_fast_path",
-                    "action": "unbound_tactical_actor",
+                    "action": "unbound_actor_action",
                     "actor": actor,
                     "text": text[:240],
                 },
@@ -3910,6 +3910,28 @@ def _unbound_tactical_actor_reply(session, actor: dict[str, str], text: str) -> 
     )
 
 
+def _unbound_live_action_reply(session, actor: dict[str, str], text: str) -> str:
+    if not _campaign_game_started(session):
+        return ""
+    player_id = str(actor.get("player_id") or "").strip()
+    if not player_id:
+        return ""
+    bound_id = str((session.player_character_map or {}).get(player_id, "") or "").strip()
+    if bound_id and bound_id in (session.characters or {}):
+        return ""
+    normalized = str(text or "").strip().lower()
+    if not normalized or _looks_like_non_action_request(normalized):
+        return ""
+    if not _looks_like_unbound_scene_action(normalized):
+        return ""
+    return (
+        "你还没有绑定有效角色，这句我不会当作场内行动或检定结算。"
+        "请先发 `/dm 建卡：角色名、身份、擅长什么、怎么加入队伍`，"
+        "或 `/dm 我加入，角色名……` 让我先把角色卡和玩家绑定写进存档；"
+        "绑定完成后再行动。"
+    )
+
+
 def _looks_like_unbound_scene_action(text: str) -> bool:
     action_terms = (
         "上交",
@@ -3933,6 +3955,20 @@ def _looks_like_unbound_scene_action(text: str) -> bool:
         "侦查",
         "防御",
         "躲避",
+        "搭话",
+        "交谈",
+        "对话",
+        "喊",
+        "大喊",
+        "喊话",
+        "说",
+        "观察",
+        "等待",
+        "放松警惕",
+        "退进",
+        "退到",
+        "藏",
+        "躲",
     )
     return _looks_like_paced_player_action(text) or any(term in text for term in action_terms)
 
@@ -4366,6 +4402,12 @@ def _looks_like_non_action_request(text: str) -> bool:
         "加入游戏",
         "加入",
         "建卡",
+        "给我创建",
+        "帮我创建",
+        "给我建",
+        "帮我建",
+        "创建角色",
+        "创建人物",
         "角色卡",
         "我的名字",
         "我是一个",

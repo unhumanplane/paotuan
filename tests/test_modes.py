@@ -122,6 +122,20 @@ def test_late_join_role_name_after_campaign_start_enters_character_creation():
     assert mode == GameMode.CHARACTER_CREATION
 
 
+def test_late_join_create_request_after_campaign_start_enters_character_creation():
+    session = GameSession.new("s")
+    session.scene["_game_started"] = True
+    session.characters["pc_chen_dahu"] = object()
+    session.player_character_map = {"512469473": "pc_chen_dahu"}
+
+    mode = GameModeStateMachine().detect(
+        session,
+        "你倒是给我创建啊。我随身带了一些炼金药剂，是个西方炼金术士。",
+    )
+
+    assert mode == GameMode.CHARACTER_CREATION
+
+
 def test_retirement_backstory_stays_resolution_in_live_campaign():
     session = GameSession.new("s")
     session.scene["_game_started"] = True
