@@ -38,6 +38,7 @@ from .map_core import load_active_strict_grid_entities
 from .memory import MemoryCompressor
 from .modes import GameModeStateMachine
 from .models import GameMode, utc_now_iso
+from .turn_labels import public_turn_entity_label, turn_entity_owner_id
 from .outbound_cleanup import (
     SemanticReviewCandidate,
     apply_semantic_menu_judgment,
@@ -4472,28 +4473,11 @@ def _is_diagnostic_request(message: str) -> bool:
 
 
 def _turn_entity_label(session: Any, entity_id: str) -> str:
-    entity = dict(_active_strict_grid_entities(session).get(entity_id, {}))
-    if entity.get("name"):
-        return str(entity["name"])
-    character = session.characters.get(entity_id)
-    if character:
-        return character.name or character.id
-    return entity_id
+    return public_turn_entity_label(session, entity_id, _active_strict_grid_entities(session))
 
 
 def _turn_owner_player_id(session: Any, entity_id: str) -> str:
-    entity = dict(_active_strict_grid_entities(session).get(entity_id, {}))
-    tags = dict(entity.get("tags", {}))
-    if tags.get("player_id"):
-        return str(tags["player_id"])
-    character_id = str(tags.get("character_id", "") or entity_id)
-    character = session.characters.get(character_id)
-    if character and character.player_id:
-        return str(character.player_id)
-    for player_id, bound_id in (session.player_character_map or {}).items():
-        if bound_id == character_id or bound_id == entity_id:
-            return str(player_id)
-    return ""
+    return turn_entity_owner_id(session, entity_id, _active_strict_grid_entities(session))
 
 
 def _active_strict_grid_entities(session: Any) -> dict[str, Any]:

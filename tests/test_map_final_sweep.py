@@ -137,7 +137,7 @@ from astrbot_plugin_auto_trpg_dm.core.map_core import (
     save_active_strict_grid,
 )
 from astrbot_plugin_auto_trpg_dm.core.models import Character, GameMode, GameSession
-from astrbot_plugin_auto_trpg_dm.main import AutoTrpgDmPlugin
+from astrbot_plugin_auto_trpg_dm.main import AutoTrpgDmPlugin, _heartbeat_turn_suspend_reason
 from astrbot_plugin_auto_trpg_dm.storage.json_repository import JsonGameRepository
 from astrbot_plugin_auto_trpg_dm.tools.map_tools import MapTools
 from astrbot_plugin_auto_trpg_dm.tools.memory_tools import MemoryTools, _battle_entity_is_terminal_for_rejoin
@@ -265,6 +265,95 @@ def test_turn_status_and_destination_ignore_stale_battle_grid_labels_and_owners(
     assert "Stale Mirror Owner" not in status
     assert "旧镜像幽灵" not in status
     assert destination == "建议行动：MapStore Owner；本轮未行动者也可直接行动。"
+
+
+def test_heartbeat_timeout_notice_hides_unmapped_enemy_internal_slug():
+    plugin = object.__new__(AutoTrpgDmPlugin)
+    session = GameSession.new("group")
+    session.mode = GameMode.TACTICAL
+    session.battle = {
+        "active": True,
+        "turn_entity_id": "ambusher_3",
+        "turn": {
+            "active": True,
+            "round": 1,
+            "phase": "character_turn",
+            "turn_order": ["ambusher_2", "ambusher_3"],
+            "current_index": 1,
+            "current_entity_id": "ambusher_3",
+            "actions_this_round": {"ambusher_2": {"source": "auto", "summary": "done"}},
+        },
+    }
+
+    notice = plugin._format_heartbeat_timeout_notice(
+        "伏击者 2",
+        133,
+        session,
+        {"auto_paused": False},
+        actor_kind="enemy",
+    )
+
+    assert "ambusher" not in notice
+    assert "轮次推进：伏击者 2的敌方回合等待 133 秒后，已按保守策略推进。" in notice
+    assert "建议行动：伏击者 3；本轮未行动者也可直接行动。" in notice
+    assert "未响应" not in notice
+
+
+def test_turn_destination_hides_unknown_internal_slug():
+    plugin = object.__new__(AutoTrpgDmPlugin)
+    session = GameSession.new("group")
+    session.mode = GameMode.TACTICAL
+    session.battle = {
+        "active": True,
+        "turn_entity_id": "shadow_assassin_alpha",
+        "turn": {
+            "active": True,
+            "round": 1,
+            "phase": "character_turn",
+            "turn_order": ["shadow_assassin_alpha"],
+            "current_index": 0,
+            "current_entity_id": "shadow_assassin_alpha",
+            "actions_this_round": {},
+        },
+    }
+
+    destination = plugin._format_turn_destination(session)
+
+    assert destination == "建议行动：行动者；本轮未行动者也可直接行动。"
+    assert "shadow_assassin_alpha" not in destination
+
+
+def test_heartbeat_suspends_turn_after_enemy_rout_log():
+    session = GameSession.new("group")
+    session.mode = GameMode.TACTICAL
+    session.battle = {
+        "active": False,
+        "turn_entity_id": "pc_yaka",
+        "turn": {
+            "active": True,
+            "round": 3,
+            "phase": "character_turn",
+            "turn_order": ["ambusher_1", "pc_yaka"],
+            "current_index": 1,
+            "current_entity_id": "pc_yaka",
+            "actions_this_round": {"ambusher_1": {"source": "auto"}},
+            "turn_log": [
+                {
+                    "type": "scene_resolution_start",
+                    "summary": "伏击者士气检定溃散，所有残敌朝东北山沟逃窜，战斗结束。",
+                    "reason": "enemy_morale_check returned routed",
+                }
+            ],
+        },
+    }
+
+    reason = _heartbeat_turn_suspend_reason(
+        session,
+        session.battle["turn"],
+        "character_turn",
+    )
+
+    assert reason == "terminal_turn_log"
 
 
 def test_memory_battle_character_helpers_read_map_store_before_stale_battle_grid():

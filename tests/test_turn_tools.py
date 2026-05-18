@@ -209,6 +209,137 @@ def test_start_scene_resolution_accepts_explicit_turn_order_without_map():
     assert result["turn"]["active"] is True
     assert result["turn"]["phase"] == "scene_resolution"
     assert result["turn"]["turn_order"] == ["pc_scene"]
+    assert repo.load_session("group").battle["active"] is True
+
+
+def test_start_round_marks_battle_active_when_only_turn_order_exists():
+    repo = _runtime_repo("turn_order_activates_battle")
+    session = GameSession.new("group")
+    session.world_tags["_background_ready"] = True
+    repo.save_session(session)
+
+    result = asyncio.run(
+        TurnTools(repo, "group").turn_control(
+            action="start_round",
+            turn_order=["ambusher_1", "pc_kade"],
+        )
+    )
+
+    assert result["ok"] is True
+    saved = repo.load_session("group")
+    assert saved.battle["active"] is True
+    assert saved.battle["turn"]["active"] is True
+
+
+def test_end_encounter_accepts_routed_enemy_terminal_evidence():
+    repo = _runtime_repo("routed_enemy_end_encounter")
+    session = GameSession.new("group")
+    session.mode = GameMode.TACTICAL
+    session.battle = {
+        "active": True,
+        "turn_entity_id": "ambusher_3",
+        "turn": {
+            "active": True,
+            "round": 2,
+            "phase": "character_turn",
+            "turn_order": ["ambusher_1", "ambusher_2", "ambusher_3", "pc_kade"],
+            "current_index": 2,
+            "current_entity_id": "ambusher_3",
+            "output_limit_chars": 1440,
+            "actions_this_round": {},
+            "turn_log": [
+                {
+                    "type": "scene_resolution_start",
+                    "summary": "伏击者士气检定溃散，所有残余敌方单位开始朝东北山沟方向溃退。",
+                    "reason": "enemy_morale_check returned routed",
+                }
+            ],
+        },
+    }
+    repo.save_session(session)
+
+    result = asyncio.run(
+        TurnTools(repo, "group").turn_control(
+            action="end_encounter",
+            summary="伏击者全线溃散，残敌向东北山沟逃窜，战斗结束。",
+            reason="士气检定溃散，所有残敌已溃退。",
+        )
+    )
+
+    assert result["ok"] is True
+    saved = repo.load_session("group")
+    assert saved.battle["active"] is False
+    assert saved.battle["turn"]["active"] is False
+    assert saved.battle["turn"]["phase"] == "ended"
+    assert saved.mode == GameMode.NARRATIVE
+
+
+def test_turn_status_uses_public_label_for_unmapped_numbered_enemy_slug():
+    repo = _runtime_repo("turn_public_enemy_label")
+    session = GameSession.new("group")
+    session.mode = GameMode.TACTICAL
+    session.battle = {
+        "active": True,
+        "turn_entity_id": "ambusher_2",
+        "turn": {
+            "active": True,
+            "round": 1,
+            "phase": "character_turn",
+            "turn_order": ["ambusher_1", "ambusher_2"],
+            "current_index": 1,
+            "current_entity_id": "ambusher_2",
+            "output_limit_chars": 1440,
+            "actions_this_round": {},
+        },
+    }
+    repo.save_session(session)
+
+    result = asyncio.run(TurnTools(repo, "group").turn_control(action="status"))
+
+    assert result["turn"]["current_label"] == "伏击者 2"
+    assert result["turn"]["current_entity_id"] == "ambusher_2"
+
+
+def test_unmapped_enemy_auto_action_does_not_store_raw_slug_or_player_timeout_wording():
+    repo = _runtime_repo("turn_enemy_auto_public_label")
+    session = GameSession.new("group")
+    session.mode = GameMode.TACTICAL
+    session.battle = {
+        "active": True,
+        "turn_entity_id": "ambusher_2",
+        "turn": {
+            "active": True,
+            "round": 1,
+            "phase": "character_turn",
+            "turn_order": ["ambusher_2", "ambusher_3"],
+            "current_index": 0,
+            "current_entity_id": "ambusher_2",
+            "output_limit_chars": 1440,
+            "actions_this_round": {},
+            "turn_log": [],
+        },
+    }
+    repo.save_session(session)
+
+    result = asyncio.run(
+        TurnTools(repo, "group", actor={"player_id": "__heartbeat__"}).turn_control(
+            action="auto_act_current",
+            current_entity_id="ambusher_2",
+            summary="ambusher_2超过 120 秒未响应，本地心跳采取保守行动。",
+            reason="heartbeat",
+            advance_after=True,
+        )
+    )
+
+    saved = repo.load_session("group")
+    summary = saved.battle["turn"]["actions_this_round"]["ambusher_2"]["summary"]
+    log_summary = saved.battle["turn"]["turn_log"][-1]["summary"]
+    assert result["turn"]["current_label"] == "伏击者 3"
+    assert "ambusher_2" not in summary
+    assert "ambusher_2" not in log_summary
+    assert "未响应" not in summary
+    assert "伏击者 2" in summary
+    assert "保守推进" in summary
 
 
 def test_turn_owner_guard_reads_map_store_before_stale_battle_grid():

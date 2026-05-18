@@ -2,6 +2,19 @@
 
 所有已经合入 `main` 的用户可见变更都记录在这里。日期使用香港时区对应的开发日期。
 
+## [0.1.117] - 2026-05-18
+
+### Fixed
+
+- 修复无地图实体时 `ambusher_2` 等内部轮次 ID 泄漏到玩家可见提示的问题；回合状态、心跳超时提示和行动日志现在使用公开标签。
+- 修复已被士气溃散、全线溃退等证据结束的战斗无法 `end_encounter` 的问题，并让轮次开启时同步标记外层战斗 active，避免 `battle.active=false` 但 `battle.turn.active=true` 的半战斗状态继续心跳推进。
+- 加强时间线推进保护，拦截“明早、明日、亥时、子时”等绕过式隐式推进写入。
+
+### Verified
+
+- `python -m pytest tests/test_turn_tools.py tests/test_memory_tools.py tests/test_map_final_sweep.py tests/test_strict_lifecycle_tools.py tests/test_prompts.py tests/test_router_usage.py -q`
+- `python -m py_compile astrbot_plugin_auto_trpg_dm\core\timeline.py astrbot_plugin_auto_trpg_dm\tools\turn_tools.py astrbot_plugin_auto_trpg_dm\main.py tests\test_map_final_sweep.py tests\test_memory_tools.py tests\test_turn_tools.py`
+
 ## [0.1.116] - 2026-05-17
 
 ### Fixed

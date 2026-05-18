@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field
 
 from ..core.map_core import load_active_strict_grid_entities
 from ..core.models import GameMode, GameSession, utc_now_iso
+from ..core.turn_labels import public_turn_entity_label, turn_actor_kind, turn_entity_owner_id
 from ..storage.json_repository import JsonGameRepository
 
 
@@ -77,6 +78,7 @@ class TurnTools:
                     "requires_explicit_turn_order": True,
                 }
             else:
+                session.battle["active"] = True
                 turn.update(
                     {
                         "active": True,
@@ -102,6 +104,7 @@ class TurnTools:
             else:
                 turn["turn_order"] = order
                 turn["active"] = True
+                session.battle["active"] = True
                 turn["output_limit_chars"] = output_limit_chars
                 if turn.get("current_entity_id") not in order:
                     turn["current_index"] = -1
@@ -126,6 +129,7 @@ class TurnTools:
             else:
                 turn["turn_order"] = order
                 turn["active"] = True
+                session.battle["active"] = True
                 turn["phase"] = "scene_resolution"
                 turn["current_entity_id"] = ""
                 turn["current_index"] = -1
@@ -344,7 +348,7 @@ class TurnTools:
         waiting_since = _parse_datetime(turn.get("waiting_since_at"))
         elapsed = int((now - waiting_since).total_seconds()) if waiting_since else TURN_TIMEOUT_SECONDS
         label = self._entity_label(session, current_id)
-        summary = f"{label} 超过 120 秒未响应，采取保守行动：防御、保持掩体、跟随队伍，不消耗稀缺资源。"
+        summary = self._timeout_auto_action_summary(session, current_id, max(TURN_TIMEOUT_SECONDS, elapsed))
         self._record_action(
             session,
             turn,
@@ -461,6 +465,7 @@ class TurnTools:
         turn["current_index"] = index
         turn["current_entity_id"] = entity_id
         self._reset_turn_timer(turn, "turn_started")
+        session.battle["active"] = True
         session.battle["turn_entity_id"] = entity_id
         session.mode = GameMode.TACTICAL
         self.repository.save_session(session)
@@ -491,6 +496,7 @@ class TurnTools:
             turn["scene_resolution_done"] = False
             turn["output_limit_chars"] = output_limit_chars
             self._reset_turn_timer(turn, "scene_resolution_started")
+            session.battle["active"] = True
             session.battle["turn_entity_id"] = ""
             session.mode = GameMode.TACTICAL
             self.repository.save_session(session)
@@ -558,6 +564,12 @@ class TurnTools:
         if auto_guard:
             return auto_guard
         auto_summary = summary.strip() or self._default_auto_action(session, entity_id, auto_policy)
+        if summary.strip() and turn_actor_kind(
+            session,
+            entity_id,
+            load_active_strict_grid_entities(session.maps, session.battle),
+        ) != "player":
+            auto_summary = self._default_auto_action(session, entity_id, auto_policy)
         self._record_action(session, turn, entity_id, auto_summary, "auto", reason or "玩家未响应，按保守策略自动行动")
         result = self._advance_turn(session, turn, output_limit_chars)
         result["auto_action"] = {"entity_id": entity_id, "summary": auto_summary, "policy": auto_policy}
@@ -722,7 +734,7 @@ class TurnTools:
             "reason": reason,
         }
         turn["actions_this_round"] = actions
-        self._append_turn_log(session, source, f"{entity_id}: {summary}", reason)
+        self._append_turn_log(session, source, f"{self._entity_label(session, entity_id)}: {summary}", reason)
 
     def _reset_turn_timer(self, turn: Dict[str, Any], reason: str) -> None:
         now = utc_now_iso()
@@ -761,11 +773,25 @@ class TurnTools:
         tags = dict((grid_entity or {}).get("tags", {}))
         if _has_any_status(tags, {"stunned", "down", "incapacitated", "眩晕", "倒地", "无法行动"}):
             return f"{label} 状态受限，本回合无法有效行动，只能防御并稳住呼吸。"
-        if faction in {"enemy", "hostile", "monster"}:
+        if faction in {"enemy", "hostile", "monster"} or turn_actor_kind(
+            session,
+            entity_id,
+            load_active_strict_grid_entities(session.maps, session.battle),
+        ) == "enemy":
             return f"{label} 按当前威胁保守推进，优先压制最近目标，但不触发新的复杂机制。"
         if auto_policy == "hold_position":
             return f"{label} 暂无响应，保持当前位置警戒并采取防御姿态。"
         return f"{label} 暂无响应，采取保守行动：跟随队伍、保持掩护，不消耗稀缺资源。"
+
+    def _timeout_auto_action_summary(self, session: GameSession, entity_id: str, elapsed: int) -> str:
+        label = self._entity_label(session, entity_id)
+        entities = load_active_strict_grid_entities(session.maps, session.battle)
+        actor_kind = turn_actor_kind(session, entity_id, entities)
+        if actor_kind == "player":
+            return f"{label} 超过 120 秒未响应，采取保守行动：防御、保持掩体、跟随队伍，不消耗稀缺资源。"
+        if actor_kind == "enemy":
+            return f"{label}的敌方回合已等待约 {max(TURN_TIMEOUT_SECONDS, elapsed)} 秒，本地心跳按保守策略推进：保持掩体、压制最近威胁，不触发新的复杂机制。"
+        return f"{label}的回合已等待约 {max(TURN_TIMEOUT_SECONDS, elapsed)} 秒，本地心跳按保守策略推进：保持当前位置、跟随局势，不消耗稀缺资源。"
 
     def _status(self, session: GameSession) -> Dict[str, Any]:
         turn = self._ensure_turn_state(session)
@@ -817,30 +843,18 @@ class TurnTools:
         return dict(load_active_strict_grid_entities(session.maps, session.battle).get(entity_id, {}))
 
     def _entity_label(self, session: GameSession, entity_id: str) -> str:
-        grid_entity = self._grid_entity(session, entity_id)
-        if grid_entity:
-            return str(grid_entity.get("name") or entity_id)
-        character = session.characters.get(entity_id)
-        if character:
-            return character.name or character.id
-        for character in session.characters.values():
-            if character.id == entity_id:
-                return character.name or character.id
-        return entity_id
+        return public_turn_entity_label(
+            session,
+            entity_id,
+            load_active_strict_grid_entities(session.maps, session.battle),
+        )
 
     def _owner_player_id(self, session: GameSession, entity_id: str) -> str:
-        grid_entity = self._grid_entity(session, entity_id)
-        tags = dict(grid_entity.get("tags", {}))
-        if tags.get("player_id"):
-            return str(tags["player_id"])
-        character_id = str(tags.get("character_id", "") or entity_id)
-        character = session.characters.get(character_id)
-        if character and character.player_id:
-            return character.player_id
-        for player_id, bound_id in session.player_character_map.items():
-            if bound_id == character_id or bound_id == entity_id:
-                return player_id
-        return ""
+        return turn_entity_owner_id(
+            session,
+            entity_id,
+            load_active_strict_grid_entities(session.maps, session.battle),
+        )
 
     def _audit(self, tool: str, input_payload: Dict[str, Any], result: Dict[str, Any]) -> None:
         self.repository.append_audit(
@@ -1077,6 +1091,38 @@ def _looks_like_terminal_encounter_end(summary: str, reason: str, session: GameS
         "休整",
         "重建",
         "暂无冲突",
+        "战斗结束",
+        "战斗遭遇结束",
+        "正式结束",
+        "解除战斗状态",
+        "队伍解除包围",
+        "危机解除",
+        "士气崩溃",
+        "士气检定溃散",
+        "士气溃散",
+        "判定为溃散",
+        "全线溃散",
+        "全线溃退",
+        "全线败退",
+        "敌方溃散",
+        "敌人溃散",
+        "敌方溃退",
+        "敌人溃退",
+        "残敌溃退",
+        "残敌撤退",
+        "残敌逃窜",
+        "残敌逃离",
+        "所有残敌",
+        "所有敌人撤退",
+        "所有敌方单位",
+        "逃入山沟",
+        "逃入深沟",
+        "routed",
+        "route",
+        "fled",
+        "retreated",
+        "all hostiles fled",
+        "no hostile actors remain",
     )
     return any(term in lowered for term in terminal_terms)
 

@@ -8,6 +8,7 @@ from typing import Any
 
 from .map_core import default_map_store, load_active_strict_grid, normalize_map_store
 from .timeline import default_timeline, normalize_timeline, timeline_view
+from .turn_labels import public_turn_entity_label, turn_entity_owner_id
 
 
 def utc_now_iso() -> str:
@@ -335,27 +336,10 @@ class GameSession:
         }
 
     def _battle_entity_label(self, entity_id: str, entities: dict[str, Any]) -> str:
-        entity = dict(entities.get(entity_id, {}))
-        if entity.get("name"):
-            return str(entity["name"])
-        character = self.characters.get(entity_id)
-        if character:
-            return character.name or character.id
-        return entity_id
+        return public_turn_entity_label(self, entity_id, entities)
 
     def _battle_entity_owner(self, entity_id: str, entities: dict[str, Any]) -> str:
-        entity = dict(entities.get(entity_id, {}))
-        tags = dict(entity.get("tags", {}))
-        if tags.get("player_id"):
-            return str(tags["player_id"])
-        character_id = str(tags.get("character_id", "") or entity_id)
-        character = self.characters.get(character_id)
-        if character and character.player_id:
-            return character.player_id
-        for player_id, bound_id in self.player_character_map.items():
-            if bound_id == character_id or bound_id == entity_id:
-                return player_id
-        return ""
+        return turn_entity_owner_id(self, entity_id, entities)
 
 
 def _safe_int(value: Any, default: int = 0) -> int:

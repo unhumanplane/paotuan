@@ -599,6 +599,32 @@ def test_update_scene_rejects_implicit_thread_timeline_advance(tmp_path):
     assert saved.scene.get("scene_threads") in (None, {})
 
 
+def test_update_scene_rejects_mingzao_thread_timeline_advance(tmp_path):
+    repository = JsonGameRepository(tmp_path / "data")
+    session = GameSession.new("group")
+    session.world_tags["_background_ready"] = True
+    session.world_tags["_plot_locked"] = True
+    session.scene["_game_started"] = True
+    repository.save_session(session)
+
+    tools = MemoryTools(repository, "group", actor={"player_id": "p1"}, message="只等明早出发")
+    result = asyncio.run(
+        tools.update_scene(
+            {
+                "scene_thread_id": "character:pc_kade",
+                "summary": "波斯海岸营地，亥时。队伍已经集结，只等明早晓雾散尽后随向导进山。",
+                "current_objective": "待明早进山讨伐桃源公。",
+            }
+        )
+    )
+
+    saved = repository.load_session("group")
+    assert result["ok"] is False
+    assert result["error"] == "timeline_patch_required"
+    assert saved.timeline["day"] == 1
+    assert saved.scene.get("scene_threads") in (None, {})
+
+
 def test_scene_tracking_status_projection_hides_dm_only_records():
     scene = {
         "current_objective": "确认旧剧院里失踪者的去向。",

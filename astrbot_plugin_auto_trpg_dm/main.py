@@ -45,6 +45,7 @@ from .core.scenario_templates import (
 from .core.security import security_precheck
 from .core.models import CycleState, GameMode
 from .core.timeline import timeline_status_text
+from .core.turn_labels import fallback_turn_entity_label, public_turn_entity_label, turn_actor_kind, turn_entity_owner_id
 from .rules.python_runtime import PythonRuleRuntime
 from .storage.json_repository import JsonGameRepository
 from .tools.ambient_image_tools import (
@@ -59,7 +60,7 @@ from .tools.registry import ToolRegistry
 from .tools.turn_tools import TurnTools
 
 
-PLUGIN_VERSION = "0.1.116"
+PLUGIN_VERSION = "0.1.117"
 
 DEFAULT_REASSURANCE_PHRASES = (
     "正在翻找合适的骰子。",
@@ -1604,7 +1605,11 @@ class AutoTrpgDmPlugin(Star):
         phase = str(turn.get("phase") or "")
         if phase == "scene_resolution":
             return f"{prefix}\n进入第 {turn.get('round', '?')} 轮场面结算。"
-        current_label = str(turn.get("current_label") or turn.get("current_entity_id") or "未指定")
+        current_id = str(turn.get("current_entity_id") or "")
+        if turn.get("current_label"):
+            current_label = str(turn["current_label"])
+        else:
+            current_label = fallback_turn_entity_label(current_id)
         return f"{prefix}\n建议行动：{current_label}；本轮未行动者也可直接行动。"
 
     def _format_local_status(self, session) -> str:
@@ -2092,7 +2097,13 @@ class AutoTrpgDmPlugin(Star):
         current_label = _entity_label(session, current_id, entities)
         waiting_since = _parse_datetime(turn.get("waiting_since_at")) or deadline
         elapsed = max(120, int((now - waiting_since).total_seconds()))
-        summary = f"{current_label}超过 120 秒未响应，本地心跳采取保守行动：防御、保持掩体或跟随队伍，不消耗稀缺资源。"
+        actor_kind = turn_actor_kind(session, current_id, entities)
+        if actor_kind == "player":
+            summary = f"{current_label}超过 120 秒未响应，本地心跳采取保守行动：防御、保持掩体或跟随队伍，不消耗稀缺资源。"
+        elif actor_kind == "enemy":
+            summary = f"{current_label}的敌方回合已等待约 {elapsed} 秒，本地心跳按保守策略推进：保持掩体、压制最近威胁，不触发新的复杂机制。"
+        else:
+            summary = f"{current_label}的回合已等待约 {elapsed} 秒，本地心跳按保守策略推进：保持当前位置、跟随局势，不消耗稀缺资源。"
         result = await TurnTools(
             self.repository,
             session_id,
@@ -2139,7 +2150,13 @@ class AutoTrpgDmPlugin(Star):
         notice = ""
         if result.get("ok"):
             updated_session = self.repository.load_session(session_id)
-            notice = self._format_heartbeat_timeout_notice(current_label, elapsed, updated_session, timeout_pause)
+            notice = self._format_heartbeat_timeout_notice(
+                current_label,
+                elapsed,
+                updated_session,
+                timeout_pause,
+                actor_kind=actor_kind,
+            )
         return {
             "active": True,
             "advanced": bool(result.get("ok")),
@@ -2360,10 +2377,16 @@ class AutoTrpgDmPlugin(Star):
         elapsed: int,
         updated_session,
         timeout_pause: dict[str, object],
+        *,
+        actor_kind: str = "player",
     ) -> str:
-        lines = [
-            f"轮次超时：{current_label}超过 {max(120, elapsed)} 秒未响应，已采取保守行动。",
-        ]
+        if actor_kind == "player":
+            first_line = f"轮次超时：{current_label}超过 {max(120, elapsed)} 秒未响应，已采取保守行动。"
+        elif actor_kind == "enemy":
+            first_line = f"轮次推进：{current_label}的敌方回合等待 {max(120, elapsed)} 秒后，已按保守策略推进。"
+        else:
+            first_line = f"轮次推进：{current_label}的回合等待 {max(120, elapsed)} 秒后，已按保守策略推进。"
+        lines = [first_line]
         if timeout_pause.get("auto_paused"):
             lines.append(self._format_timeout_pause_line(timeout_pause))
             lines.append(self._format_turn_destination(updated_session, paused=True))
@@ -3706,28 +3729,11 @@ def _int_or_default(value: object, default: int) -> int:
 
 
 def _entity_label(session, entity_id: str, entities: dict) -> str:
-    entity = dict(entities.get(entity_id, {}))
-    if entity.get("name"):
-        return str(entity["name"])
-    character = session.characters.get(entity_id)
-    if character:
-        return character.name or character.id
-    return entity_id
+    return public_turn_entity_label(session, entity_id, entities)
 
 
 def _entity_owner(session, entity_id: str, entities: dict) -> str:
-    entity = dict(entities.get(entity_id, {}))
-    tags = dict(entity.get("tags", {}))
-    if tags.get("player_id"):
-        return str(tags["player_id"])
-    character_id = str(tags.get("character_id", "") or entity_id)
-    character = session.characters.get(character_id)
-    if character and character.player_id:
-        return str(character.player_id)
-    for player_id, bound_id in session.player_character_map.items():
-        if bound_id == character_id or bound_id == entity_id:
-            return str(player_id)
-    return ""
+    return turn_entity_owner_id(session, entity_id, entities)
 
 
 def _pending_entity_for_actor(session, turn: dict, actor_id: str, entities: dict) -> str:
@@ -3953,6 +3959,26 @@ def _looks_like_terminal_or_interlude_for_pacing(text: str) -> bool:
         "下回冒险",
         "下次开团",
         "下回开团",
+        "战斗结束",
+        "战斗遭遇结束",
+        "危机解除",
+        "解除战斗状态",
+        "士气崩溃",
+        "士气溃散",
+        "士气检定溃散",
+        "判定为溃散",
+        "全线溃散",
+        "全线溃退",
+        "敌方溃散",
+        "敌方溃退",
+        "残敌溃退",
+        "残敌撤退",
+        "残敌逃窜",
+        "残敌逃离",
+        "所有残敌",
+        "routed",
+        "retreated",
+        "fled",
     )
     interlude_terms = (
         "休息一会",
@@ -4001,6 +4027,26 @@ def _scene_looks_concluded_for_pacing(session) -> bool:
             "正式落幕",
             "全局结算",
             "最终结局",
+            "战斗结束",
+            "战斗遭遇结束",
+            "危机解除",
+            "解除战斗状态",
+            "士气崩溃",
+            "士气溃散",
+            "士气检定溃散",
+            "判定为溃散",
+            "全线溃散",
+            "全线溃退",
+            "敌方溃散",
+            "敌方溃退",
+            "残敌溃退",
+            "残敌撤退",
+            "残敌逃窜",
+            "残敌逃离",
+            "所有残敌",
+            "routed",
+            "retreated",
+            "fled",
             "暂无。世界正处于",
             "暂无冲突",
             "当前冲突：暂无",
