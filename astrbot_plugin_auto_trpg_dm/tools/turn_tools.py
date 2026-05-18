@@ -203,6 +203,7 @@ class TurnTools:
                 session.battle["turn_entity_id"] = ""
                 session.battle["active"] = False
                 session.mode = GameMode.NARRATIVE
+                _clear_stale_turn_timeout_pause(session.scene)
                 if summary:
                     self._append_turn_log(session, "encounter_end", summary, reason)
                 self.repository.save_session(session)
@@ -1125,6 +1126,28 @@ def _looks_like_terminal_encounter_end(summary: str, reason: str, session: GameS
         "no hostile actors remain",
     )
     return any(term in lowered for term in terminal_terms)
+
+
+def _clear_stale_turn_timeout_pause(scene: dict[str, Any]) -> bool:
+    if not isinstance(scene, dict) or not scene.get("_dm_paused"):
+        return False
+    reason = str(scene.get("_dm_pause_reason") or "")
+    paused_by = scene.get("_dm_paused_by") if isinstance(scene.get("_dm_paused_by"), dict) else {}
+    source = str(scene.get("_dm_pause_source") or "")
+    is_timeout_pause = (
+        source == "turn_timeout"
+        or str(paused_by.get("player_id") or "") in {"__heartbeat__", "__system__"}
+        or any(term in reason for term in ("超时", "自动暂停", "半数"))
+    )
+    if not is_timeout_pause:
+        return False
+    scene["_dm_paused"] = False
+    scene["_dm_pause_cleared_at"] = utc_now_iso()
+    scene["_dm_pause_cleared_reason"] = reason
+    scene["_dm_pause_cleared_by"] = "encounter_end"
+    for key in ("_dm_pause_reason", "_dm_paused_by", "_dm_paused_at", "_dm_pause_source"):
+        scene.pop(key, None)
+    return True
 
 
 def _parse_datetime(value: Any) -> datetime | None:

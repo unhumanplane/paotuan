@@ -274,6 +274,53 @@ def test_end_encounter_accepts_routed_enemy_terminal_evidence():
     assert saved.mode == GameMode.NARRATIVE
 
 
+def test_end_encounter_clears_stale_timeout_pause():
+    repo = _runtime_repo("end_encounter_clears_timeout_pause")
+    session = GameSession.new("group")
+    session.mode = GameMode.TACTICAL
+    session.scene["_dm_paused"] = True
+    session.scene["_dm_pause_reason"] = "本轮已有 2/4名玩家超时，达到半数，流程已自动暂停。恢复时发 `/dm resume`。"
+    session.scene["_dm_paused_by"] = {"player_id": "__heartbeat__", "display_name": "本地心跳"}
+    session.scene["_dm_paused_at"] = "2026-05-18T02:45:03+00:00"
+    session.scene["_dm_pause_source"] = "turn_timeout"
+    session.battle = {
+        "active": True,
+        "turn_entity_id": "pc_yaka",
+        "turn": {
+            "active": True,
+            "round": 3,
+            "phase": "character_turn",
+            "turn_order": ["ambusher_1", "pc_yaka"],
+            "current_index": 1,
+            "current_entity_id": "pc_yaka",
+            "actions_this_round": {},
+            "turn_log": [
+                {
+                    "type": "scene_resolution_start",
+                    "summary": "伏击者士气溃散，所有残敌逃窜，战斗结束。",
+                    "reason": "routed",
+                }
+            ],
+        },
+    }
+    repo.save_session(session)
+
+    result = asyncio.run(
+        TurnTools(repo, "group").turn_control(
+            action="end_encounter",
+            summary="敌方全线溃退，战斗结束。",
+            reason="所有残敌逃离。",
+        )
+    )
+
+    saved = repo.load_session("group")
+    assert result["ok"] is True
+    assert saved.scene["_dm_paused"] is False
+    assert "_dm_pause_reason" not in saved.scene
+    assert saved.scene["_dm_pause_cleared_by"] == "encounter_end"
+    assert saved.battle["turn"]["active"] is False
+
+
 def test_turn_status_uses_public_label_for_unmapped_numbered_enemy_slug():
     repo = _runtime_repo("turn_public_enemy_label")
     session = GameSession.new("group")

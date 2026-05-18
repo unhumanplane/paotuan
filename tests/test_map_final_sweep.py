@@ -356,6 +356,55 @@ def test_heartbeat_suspends_turn_after_enemy_rout_log():
     assert reason == "terminal_turn_log"
 
 
+def test_heartbeat_terminal_suspend_clears_stale_timeout_pause(tmp_path):
+    repo = JsonGameRepository(tmp_path / "data")
+    session = GameSession.new("group")
+    session.mode = GameMode.TACTICAL
+    session.scene["_dm_paused"] = True
+    session.scene["_dm_pause_reason"] = "本轮已有 2/4名玩家超时，达到半数，流程已自动暂停。恢复时发 `/dm resume`。"
+    session.scene["_dm_paused_by"] = {"player_id": "__heartbeat__", "display_name": "本地心跳"}
+    session.scene["_dm_paused_at"] = "2026-05-18T02:45:03+00:00"
+    session.battle = {
+        "active": False,
+        "turn_entity_id": "pc_yaka",
+        "turn": {
+            "active": True,
+            "round": 3,
+            "phase": "character_turn",
+            "turn_order": ["ambusher_1", "pc_yaka"],
+            "current_index": 1,
+            "current_entity_id": "pc_yaka",
+            "actions_this_round": {},
+            "turn_log": [
+                {
+                    "type": "scene_resolution_start",
+                    "summary": "伏击者士气检定溃散，所有残敌朝东北山沟逃窜，战斗结束。",
+                    "reason": "enemy_morale_check returned routed",
+                }
+            ],
+        },
+    }
+    repo.save_session(session)
+    plugin = object.__new__(AutoTrpgDmPlugin)
+    plugin.repository = repo
+    plugin.plugin_logger = type("Logger", (), {"info": lambda *args, **kwargs: None})()
+
+    result = plugin._suspend_heartbeat_turn_if_needed(
+        "group",
+        session,
+        session.battle,
+        session.battle["turn"],
+        "character_turn",
+    )
+
+    saved = repo.load_session("group")
+    assert result["suspended"] is True
+    assert saved.scene["_dm_paused"] is False
+    assert "_dm_pause_reason" not in saved.scene
+    assert saved.scene["_dm_pause_cleared_by"] == "encounter_end"
+    assert saved.battle["turn"]["active"] is False
+
+
 def test_memory_battle_character_helpers_read_map_store_before_stale_battle_grid():
     session = _session_with_stale_battle_grid()
 

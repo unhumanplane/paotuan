@@ -60,7 +60,7 @@ from .tools.registry import ToolRegistry
 from .tools.turn_tools import TurnTools
 
 
-PLUGIN_VERSION = "0.1.117"
+PLUGIN_VERSION = "0.1.118"
 
 DEFAULT_REASSURANCE_PHRASES = (
     "正在翻找合适的骰子。",
@@ -908,11 +908,13 @@ class AutoTrpgDmPlugin(Star):
             )
             return "流程已暂停。我不会推进轮次、替人行动或调用模型；需要继续时发 `/dm resume` 或 `/dm 恢复`。"
 
-        if normalized in {"resume", "unpause", "恢复", "继续流程", "解除暂停"} or (paused and normalized == "继续"):
+        if _looks_like_resume_flow_command(normalized, paused=paused):
             if paused:
-                session.scene["_dm_paused"] = False
+                if not _clear_stale_turn_timeout_pause(session.scene, resumed=True):
+                    session.scene["_dm_paused"] = False
                 session.scene["_dm_resumed_by"] = actor
                 session.scene["_dm_resumed_at"] = _utc_now_iso()
+                session.scene["_dm_resume_command"] = text[:120]
                 self.repository.save_session(session)
             self.repository.append_audit(session_id, {"type": "local_fast_path", "action": "resume", "actor": actor})
             self._schedule_pause_resume_ambient_image(
@@ -2211,6 +2213,7 @@ class AutoTrpgDmPlugin(Star):
         if post_game:
             scene["_post_game"] = True
             scene["_encounter_ended_at"] = now
+            _clear_stale_turn_timeout_pause(scene)
         session.scene = scene
         self.repository.save_session(session)
 
@@ -2280,6 +2283,7 @@ class AutoTrpgDmPlugin(Star):
             scene["_dm_pause_reason"] = self._format_timeout_pause_line(info)
             scene["_dm_paused_by"] = actor or {"player_id": "__system__", "display_name": "本地轮次系统"}
             scene["_dm_paused_at"] = _utc_now_iso()
+            scene["_dm_pause_source"] = "turn_timeout"
             updated_session.scene = scene
             info["auto_paused"] = True
             changed = True
@@ -4139,6 +4143,44 @@ def _repeated_timeout_after_auto_pause(session, turn: dict) -> bool:
     if total <= 0:
         return False
     return count >= 2 and count * 3 >= total
+
+
+def _looks_like_resume_flow_command(normalized: str, *, paused: bool = False) -> bool:
+    text = str(normalized or "").strip().lower()
+    if text in {"resume", "unpause", "恢复", "继续流程", "解除暂停"}:
+        return True
+    if paused and text == "继续":
+        return True
+    tokens = [token.strip() for token in re.split(r"[\s/|,，;；]+", text) if token.strip()]
+    if not tokens:
+        return False
+    resume_tokens = {"resume", "unpause", "恢复", "继续流程", "解除暂停"}
+    if any(token in resume_tokens for token in tokens):
+        return True
+    return "dm" in tokens and any(token in {"resume", "unpause"} for token in tokens)
+
+
+def _clear_stale_turn_timeout_pause(scene: dict[str, Any], *, resumed: bool = False) -> bool:
+    if not isinstance(scene, dict) or not scene.get("_dm_paused"):
+        return False
+    reason = str(scene.get("_dm_pause_reason") or "")
+    paused_by = scene.get("_dm_paused_by") if isinstance(scene.get("_dm_paused_by"), dict) else {}
+    source = str(scene.get("_dm_pause_source") or "")
+    is_timeout_pause = (
+        source == "turn_timeout"
+        or str(paused_by.get("player_id") or "") in {"__heartbeat__", "__system__"}
+        or any(term in reason for term in ("超时", "自动暂停", "半数"))
+    )
+    if not is_timeout_pause:
+        return False
+    now = _utc_now_iso()
+    scene["_dm_paused"] = False
+    scene["_dm_pause_cleared_at"] = now
+    scene["_dm_pause_cleared_reason"] = reason
+    scene["_dm_pause_cleared_by"] = "resume" if resumed else "encounter_end"
+    for key in ("_dm_pause_reason", "_dm_paused_by", "_dm_paused_at", "_dm_pause_source"):
+        scene.pop(key, None)
+    return True
 
 
 def _campaign_plot_locked(session) -> bool:

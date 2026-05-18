@@ -403,6 +403,37 @@ def test_scene_tracking_status_fast_path_returns_visible_hooks_without_advancing
     assert repo.audits[-1]["action"] == "scene_tracking_status"
 
 
+def test_resume_fast_path_accepts_merged_resume_dm_resume_text():
+    session = GameSession.new("group")
+    session.world_tags["_background_ready"] = True
+    session.scene["_game_started"] = True
+    session.scene["_dm_paused"] = True
+    session.scene["_dm_pause_reason"] = "本轮已有 2/4名玩家超时，达到半数，流程已自动暂停。恢复时发 `/dm resume`。"
+    session.scene["_dm_paused_by"] = {"player_id": "__heartbeat__", "display_name": "本地心跳"}
+    session.scene["_dm_paused_at"] = "2026-05-18T02:45:03+00:00"
+    repo = FakeRepository(session)
+    plugin = AutoTrpgDmPlugin.__new__(AutoTrpgDmPlugin)
+    plugin.repository = repo
+    plugin.ambient_image_config = AmbientImageConfig(enabled=False)
+    plugin.plugin_logger = FakeLogger()
+    plugin._schedule_pause_resume_ambient_image = lambda *args, **kwargs: None
+
+    reply = asyncio.run(
+        plugin._local_fast_path(
+            FakeEvent(),
+            "group",
+            {"player_id": "player-a"},
+            "resume/dm resume",
+        )
+    )
+
+    assert reply == "流程已恢复。下一句 `/dm` 会按当前存档继续裁定。"
+    assert repo.session.scene["_dm_paused"] is False
+    assert "_dm_pause_reason" not in repo.session.scene
+    assert repo.session.scene["_dm_resume_command"] == "resume/dm resume"
+    assert repo.audits[-1]["action"] == "resume"
+
+
 def test_backup_story_commands_are_classified_before_background_fallback():
     assert _looks_like_restart_latest_backup_story_request("重新开上一个存档的故事") is True
     assert _looks_like_restore_latest_backup_request("重新开上一个存档的故事") is False

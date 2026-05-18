@@ -2,6 +2,18 @@
 
 所有已经合入 `main` 的用户可见变更都记录在这里。日期使用香港时区对应的开发日期。
 
+## [0.1.118] - 2026-05-18
+
+### Fixed
+
+- 修复战斗已结束后仍遗留心跳超时暂停锁，导致玩家输入被 `paused_block` 持续拦截的问题；战斗终止/心跳判定终局时会清除旧的自动暂停状态。
+- 放宽恢复命令识别，兼容平台把 `resume` 与 `/dm resume` 合并成 `resume/dm resume` 的文本形态。
+
+### Verified
+
+- `python -m pytest tests/test_dm_ack_and_outputs.py tests/test_turn_tools.py tests/test_map_final_sweep.py tests/test_memory_tools.py -q`
+- `python -m py_compile astrbot_plugin_auto_trpg_dm\main.py astrbot_plugin_auto_trpg_dm\tools\turn_tools.py tests\test_dm_ack_and_outputs.py tests\test_turn_tools.py tests\test_map_final_sweep.py`
+
 ## [0.1.117] - 2026-05-18
 
 ### Fixed
