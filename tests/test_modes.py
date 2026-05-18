@@ -94,6 +94,34 @@ def test_retired_character_message_does_not_switch_live_campaign_to_character_cr
     assert mode == GameMode.NARRATIVE
 
 
+def test_late_join_after_campaign_start_enters_character_creation():
+    session = GameSession.new("s")
+    session.scene["_game_started"] = True
+    session.characters["pc_chen_dahu"] = object()
+    session.player_character_map = {"512469473": "pc_chen_dahu"}
+
+    mode = GameModeStateMachine().detect(
+        session,
+        "我加入游戏，角色名字叫风，弓箭手，擅长精准射击，是后续赶来加入老徐他们这一队的援兵。",
+    )
+
+    assert mode == GameMode.CHARACTER_CREATION
+
+
+def test_late_join_role_name_after_campaign_start_enters_character_creation():
+    session = GameSession.new("s")
+    session.scene["_game_started"] = True
+    session.characters["pc_chen_dahu"] = object()
+    session.player_character_map = {"512469473": "pc_chen_dahu"}
+
+    mode = GameModeStateMachine().detect(
+        session,
+        "我要加入，角色名老铂，是一名西方的炼金术士，来这附近寻找合适的炼金材料。",
+    )
+
+    assert mode == GameMode.CHARACTER_CREATION
+
+
 def test_retirement_backstory_stays_resolution_in_live_campaign():
     session = GameSession.new("s")
     session.scene["_game_started"] = True

@@ -99,7 +99,34 @@ class GameModeStateMachine:
     def _looks_like_post_start_character_request(text: str) -> bool:
         if not text:
             return False
-        return any(token in text for token in ("人物卡", "角色卡", "车卡", "建卡", "创建人物", "创建角色", "绑定角色", "换新角色"))
+        return any(
+            token in text
+            for token in (
+                "人物卡",
+                "角色卡",
+                "车卡",
+                "建卡",
+                "创建人物",
+                "创建角色",
+                "绑定角色",
+                "换新角色",
+                "加入游戏",
+                "我要加入游戏",
+                "我加入",
+                "我要加入",
+                "角色名",
+                "角色名字",
+                "加入队伍",
+                "加入战场",
+                "新角色加入",
+                "补位",
+                "替补",
+                "后继角色",
+                "重新加入",
+                "重新进团",
+                "重新入团",
+            )
+        )
 
     @staticmethod
     def _looks_like_start_request(text: str) -> bool:

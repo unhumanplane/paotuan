@@ -1637,16 +1637,6 @@ class IntentRouter:
                 guard_session = self.repository.load_session(session_id)
             except Exception:
                 guard_session = None
-            actor_equipment_guard = _actor_equipment_final_reply_guard(
-                raw_player_message,
-                completion_text,
-                all_tool_results,
-                session=guard_session,
-                actor=actor or {},
-            )
-            if actor_equipment_guard:
-                await append_actor_equipment_guard_audit(actor_equipment_guard)
-                completion_text = str(actor_equipment_guard.get("reply") or "").strip() or completion_text
             character_card_guard = _character_card_final_reply_guard(
                 raw_player_message,
                 completion_text,
@@ -1656,6 +1646,17 @@ class IntentRouter:
             if character_card_guard:
                 await append_character_card_guard_audit(character_card_guard)
                 completion_text = str(character_card_guard.get("reply") or "").strip() or completion_text
+            else:
+                actor_equipment_guard = _actor_equipment_final_reply_guard(
+                    raw_player_message,
+                    completion_text,
+                    all_tool_results,
+                    session=guard_session,
+                    actor=actor or {},
+                )
+                if actor_equipment_guard:
+                    await append_actor_equipment_guard_audit(actor_equipment_guard)
+                    completion_text = str(actor_equipment_guard.get("reply") or "").strip() or completion_text
             if not map_guard.visual_map_request or map_guard.text_only_map_request:
                 return completion_text
             renderer_summary = classify_map_renderer_results(all_tool_results)
@@ -4268,6 +4269,12 @@ EQUIPMENT_POSSESSION_ACTION_TERMS = (
     "箭羽擦过",
 )
 
+EQUIPMENT_DIRECT_POSSESSION_ACTION_TERMS = tuple(
+    term
+    for term in EQUIPMENT_POSSESSION_ACTION_TERMS
+    if term not in ("瞄准", "射出", "射击")
+)
+
 EQUIPMENT_HYPOTHETICAL_TERMS = (
     "如果",
     "要是",
@@ -4388,6 +4395,12 @@ def _actor_equipment_final_reply_guard(
 ) -> dict[str, Any]:
     if session is None or not _campaign_started_for_guard(session):
         return {}
+    player_id = str((actor or {}).get("player_id") or "").strip()
+    if _looks_like_character_card_request(player_message) and not _player_id_maps_to_existing_character(
+        session,
+        player_id,
+    ):
+        return {}
     completion_text = " ".join(str(completion or "").strip().split())
     if not completion_text:
         return {}
@@ -4426,18 +4439,25 @@ def _actor_equipment_final_reply_guard(
 
 
 def _actor_character_id_for_guard(session: Any, actor: dict[str, str]) -> str:
+    characters = getattr(session, "characters", {}) or {}
     player_id = str((actor or {}).get("player_id") or "").strip()
     if player_id:
-        mapped = str((getattr(session, "player_character_map", {}) or {}).get(player_id, "") or "")
-        if mapped:
+        mapped = str((getattr(session, "player_character_map", {}) or {}).get(player_id, "") or "").strip()
+        if mapped and mapped in characters:
             return mapped
-    active = str(getattr(session, "active_character_id", "") or "")
-    if active:
-        return active
-    characters = getattr(session, "characters", {}) or {}
+        return ""
     if len(characters) == 1:
         return next(iter(characters.keys()))
     return ""
+
+
+def _player_id_maps_to_existing_character(session: Any, player_id: str) -> bool:
+    player_id = str(player_id or "").strip()
+    if not player_id:
+        return False
+    characters = getattr(session, "characters", {}) or {}
+    mapped = str((getattr(session, "player_character_map", {}) or {}).get(player_id, "") or "").strip()
+    return bool(mapped and mapped in characters)
 
 
 def _character_equipment_entitlement_text(character: Any) -> str:
@@ -4542,17 +4562,41 @@ def _completion_claims_actor_equipment_possession(
     actor_markers = tuple(item for item in ("你", actor_name) if item)
     for term in claim_terms:
         for match in re.finditer(re.escape(term), completion):
+            if _equipment_term_match_is_role_or_target_reference(completion, match, term):
+                continue
             start = max(0, match.start() - 80)
             end = min(len(completion), match.end() + 100)
             window = completion[start:end]
             context = _equipment_claim_context(window, term)
-            if actor_markers and not any(marker in window for marker in actor_markers):
+            if actor_markers and not any(marker in context for marker in actor_markers):
                 continue
             if _equipment_window_is_non_possession_context(context, claim_terms):
                 continue
-            if any(marker in context for marker in EQUIPMENT_POSSESSION_ACTION_TERMS):
+            if _equipment_context_has_direct_possession_action(context, term):
                 return True
     return False
+
+
+def _equipment_term_match_is_role_or_target_reference(text: str, match: re.Match[str], term: str) -> bool:
+    if term != "弓":
+        return False
+    suffix = text[match.end() : match.end() + 4]
+    return suffix.startswith(("箭手", "手", "兵", "弦", "矢"))
+
+
+def _equipment_context_has_direct_possession_action(context: str, term: str) -> bool:
+    if any(marker in context for marker in EQUIPMENT_DIRECT_POSSESSION_ACTION_TERMS):
+        return True
+    return any(
+        pattern in context
+        for pattern in (
+            f"用{term}",
+            f"持{term}",
+            f"持有{term}",
+            f"携带{term}",
+            f"带着{term}",
+        )
+    )
 
 
 def _equipment_claim_context(window: str, term: str) -> str:
@@ -4565,15 +4609,17 @@ def _equipment_claim_context(window: str, term: str) -> str:
     before = window[: match.start()]
     after = window[match.end() :]
     left_stops = [before.rfind(mark) for mark in punctuation]
-    left_start = max(left_stops) + 1 if left_stops else 0
+    left_stop = max(left_stops) if left_stops else -1
+    left_start = left_stop + 1
     right_stops = [after.find(mark) for mark in punctuation if after.find(mark) >= 0]
     right_end = match.end() + (min(right_stops) if right_stops else len(after))
-    clause_start = max(0, left_start)
-    context_start = clause_start
-    previous = window[:clause_start]
+    context_start = max(0, left_start)
+    previous = window[:left_stop] if left_stop >= 0 else ""
     previous_stops = [previous.rfind(mark) for mark in punctuation]
-    if previous and any(marker in previous[max(previous_stops) + 1 :] for marker in ("你", "我")):
-        context_start = max(previous_stops) + 1 if previous_stops else 0
+    previous_stop = max(previous_stops) if previous_stops else -1
+    previous_clause = previous[previous_stop + 1 :].strip()
+    if previous_clause and len(previous_clause) <= 40 and any(marker in previous_clause for marker in ("你", "我")):
+        context_start = max(0, previous_stop + 1)
     return window[context_start:right_end]
 
 

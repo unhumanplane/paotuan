@@ -9,6 +9,43 @@ import types
 
 def _install_fake_astrbot_modules():
     if "astrbot.api" in sys.modules:
+        components = sys.modules.setdefault(
+            "astrbot.core.message.components",
+            types.ModuleType("astrbot.core.message.components"),
+        )
+        message_event_result = sys.modules.setdefault(
+            "astrbot.core.message.message_event_result",
+            types.ModuleType("astrbot.core.message.message_event_result"),
+        )
+        command = sys.modules.setdefault(
+            "astrbot.core.star.filter.command",
+            types.ModuleType("astrbot.core.star.filter.command"),
+        )
+
+        class Plain:
+            def __init__(self, text=""):
+                self.text = text
+
+        class File:
+            def __init__(self, name="", file=""):
+                self.name = name
+                self.file = file
+
+        class MessageChain:
+            def __init__(self, chain=None):
+                self.chain = chain or []
+
+        class GreedyStr(str):
+            pass
+
+        if not hasattr(components, "Plain"):
+            components.Plain = Plain
+        if not hasattr(components, "File"):
+            components.File = File
+        if not hasattr(message_event_result, "MessageChain"):
+            message_event_result.MessageChain = MessageChain
+        if not hasattr(command, "GreedyStr"):
+            command.GreedyStr = GreedyStr
         return
     astrbot = types.ModuleType("astrbot")
     api = types.ModuleType("astrbot.api")

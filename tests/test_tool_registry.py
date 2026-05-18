@@ -101,6 +101,32 @@ def test_tool_registry_always_exposes_final_response_tool():
     assert result == {"ok": True, "reply": "可以。"}
 
 
+def test_tool_registry_exposes_character_tools_for_late_join_text_in_tactical_mode():
+    registry = _registry_with_ready_session()
+    _toolset, names, _executor, _specs = registry.for_mode(
+        GameMode.TACTICAL,
+        "group",
+        message="我加入游戏，角色名字叫风，弓箭手，擅长精准射击。",
+    )
+
+    assert "create_character" in names
+    assert "bind_player_character" in names
+    assert "session_control" in names
+
+
+def test_tool_registry_exposes_character_tools_for_role_name_late_join_text_in_tactical_mode():
+    registry = _registry_with_ready_session()
+    _toolset, names, _executor, _specs = registry.for_mode(
+        GameMode.TACTICAL,
+        "group",
+        message="我要加入，角色名老铂，是一名西方的炼金术士。",
+    )
+
+    assert "create_character" in names
+    assert "bind_player_character" in names
+    assert "session_control" in names
+
+
 def test_tool_registry_exposes_timeline_fact_tools_for_narrative():
     registry = _registry_with_ready_session()
     _toolset, names, _executor, specs = registry.for_mode(

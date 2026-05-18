@@ -2,6 +2,20 @@
 
 所有已经合入 `main` 的用户可见变更都记录在这里。日期使用香港时区对应的开发日期。
 
+## [0.1.121] - 2026-05-18
+
+### Fixed
+
+- 根治多人团里未绑定玩家继承 `active_character_id` 的角色错乱：最终回复装备守卫现在只使用当前发言人明确绑定的角色；有 `player_id` 但未绑定时直接跳过，不再把陈大虎、杨永信等当前活跃角色当成“你”。
+- 角色卡/晚加入请求会先走角色卡校验链路，避免“我加入游戏，角色名字叫风，弓箭手……”被装备守卫改写成陈大虎装备裁定。
+- 收紧“弓”等短词装备持有判定：`弓箭手`、敌方弓手、弓弦等职业/目标描述不再触发当前角色装备拦截，仍保留“你背着弓/端起备用弩/托在手里”等明确未登记持有的拦截。
+- 开团后的“加入游戏/角色名字/后继角色”文本会进入角色创建模式并暴露 `create_character` / `bind_player_character`，减少晚加入玩家在叙事路由里空转。
+
+### Verified
+
+- `python -m pytest tests/test_modes.py tests/test_tool_registry.py tests/test_router_usage.py -q`
+- `python -m py_compile astrbot_plugin_auto_trpg_dm\core\router.py tests\test_router_usage.py`
+
 ## [0.1.120] - 2026-05-18
 
 ### Fixed

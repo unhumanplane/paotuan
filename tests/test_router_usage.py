@@ -625,6 +625,106 @@ def test_actor_equipment_final_reply_guard_allows_tool_confirmed_temporary_loan(
     assert guard == {}
 
 
+def test_actor_equipment_final_reply_guard_allows_recorded_temporary_equipment_tag():
+    session = _role_mix_equipment_guard_session()
+    session.characters["pc_chen_dahu"].tags.append(
+        TagValue(
+            key="临时装备",
+            value="林鸢将一把备用弩和数支军用弩箭交给陈大虎，陈大虎当前可携带并使用该备用弩。",
+            layer="status",
+        )
+    )
+
+    guard = _actor_equipment_final_reply_guard(
+        "我端起备用弩试射",
+        "你把备用弩托在手里，朝靶子扣下扳机。",
+        [],
+        session=session,
+        actor={"player_id": "512469473", "display_name": "gali"},
+    )
+
+    assert guard == {}
+
+
+def test_actor_equipment_final_reply_guard_does_not_use_active_character_for_unbound_player():
+    session = _role_mix_equipment_guard_session()
+    session.active_character_id = "pc_chen_dahu"
+
+    guard = _actor_equipment_final_reply_guard(
+        "我从队伍侧翼移动，准备等机会入场",
+        "你背着弓赶到老徐队伍附近，等待合适的入场时机。",
+        [],
+        session=session,
+        actor={"player_id": "23833769", "display_name": "风"},
+    )
+
+    assert guard == {}
+
+
+def test_actor_equipment_final_reply_guard_ignores_enemy_archer_or_bow_target_narration():
+    session = _role_mix_equipment_guard_session()
+    session.characters["pc_yang_yongxin"] = Character(
+        id="pc_yang_yongxin",
+        name="杨永信",
+        player_id="1298514181",
+        summary="随船道士，擅长卜算和医术，略懂内炼功夫。",
+        tags=[
+            TagValue(key="主武器", value="伪装成拂尘的单手连枷", layer="equipment"),
+            TagValue(key="副武器", value="单手剑（当法剑用）", layer="equipment"),
+        ],
+    )
+    session.player_character_map["1298514181"] = "pc_yang_yongxin"
+
+    guard = _actor_equipment_final_reply_guard(
+        "老徐下命令开打了",
+        "老徐的哨音一响，前队立刻开打；你压住左翼，盯紧哨塔上的弓箭手，等凯德射击后再近身推进。",
+        [],
+        session=session,
+        actor={"player_id": "1298514181", "display_name": "阿卜杜拉阿合马"},
+    )
+
+    assert guard == {}
+
+
+def test_actor_equipment_final_reply_guard_blocks_direct_unrecorded_bow_possession():
+    session = _role_mix_equipment_guard_session()
+    session.characters["pc_yang_yongxin"] = Character(
+        id="pc_yang_yongxin",
+        name="杨永信",
+        player_id="1298514181",
+        summary="随船道士，擅长卜算和医术，略懂内炼功夫。",
+        tags=[TagValue(key="主武器", value="伪装成拂尘的单手连枷", layer="equipment")],
+    )
+    session.player_character_map["1298514181"] = "pc_yang_yongxin"
+
+    guard = _actor_equipment_final_reply_guard(
+        "老徐下命令开打了",
+        "你背着弓从乱石后探出半身，准备朝哨塔射击。",
+        [],
+        session=session,
+        actor={"player_id": "1298514181", "display_name": "阿卜杜拉阿合马"},
+    )
+
+    assert guard["reason"] == "actor_equipment_final_reply_unverified"
+    assert guard["actor_character_id"] == "pc_yang_yongxin"
+    assert guard["equipment_terms"] == ["弓"]
+
+
+def test_actor_equipment_final_reply_guard_skips_late_join_character_card_request():
+    session = _role_mix_equipment_guard_session()
+    session.active_character_id = "pc_chen_dahu"
+
+    guard = _actor_equipment_final_reply_guard(
+        "我加入游戏，角色名字叫风，弓箭手，擅长精准射击，是后续赶来加入老徐他们这一队的援兵。",
+        "你背着弓赶到老徐队伍附近，等待合适的入场时机。",
+        [],
+        session=session,
+        actor={"player_id": "23833769", "display_name": "风"},
+    )
+
+    assert guard == {}
+
+
 def test_actor_equipment_final_reply_guard_ignores_raw_text_only_update():
     session = _role_mix_equipment_guard_session()
 
@@ -716,6 +816,65 @@ def test_router_replaces_unverified_actor_equipment_final_response_tool():
     assert guard_records[-1]["reason"] == "actor_equipment_final_reply_unverified"
     assert guard_records[-1]["actor_character_id"] == "pc_chen_dahu"
     assert guard_records[-1]["equipment_terms"] == ["备用弩"]
+
+
+def test_router_does_not_rewrite_unbound_late_join_as_active_character_equipment():
+    class FinalToolCallResponse:
+        completion_text = ""
+        tools_call_name = ["final_response"]
+        tools_call_args = [
+            {
+                "reply": "你背着弓赶到老徐队伍附近，等待合适的入场时机。"
+            }
+        ]
+        tool_calls = []
+
+    class FakeLoopLlm:
+        async def __call__(self, **kwargs):
+            return FinalToolCallResponse()
+
+    class RecordingExecutor:
+        def __init__(self):
+            self.calls = []
+
+        async def execute(self, tool_name, args):
+            self.calls.append((tool_name, args))
+            if tool_name == "final_response":
+                return {"ok": True, "reply": args["reply"]}
+            raise AssertionError(f"unexpected tool: {tool_name}")
+
+    async def run_case():
+        repository = InMemoryRepository()
+        session = _role_mix_equipment_guard_session()
+        session.active_character_id = "pc_chen_dahu"
+        repository.save_session(session)
+        router = IntentRouter.__new__(IntentRouter)
+        executor = RecordingExecutor()
+        router.max_steps = 2
+        router._llm_generate = FakeLoopLlm()
+        router.repository = repository
+
+        result = await router._run_llm_tool_loop(
+            chat_provider_id="fake-provider",
+            system_prompt="system",
+            initial_prompt="玩家行动",
+            toolset=object(),
+            tool_executor=executor,
+            session_id="group-1",
+            raw_player_message="我加入游戏，角色名字叫风，弓箭手，擅长精准射击，是后续赶来加入老徐他们这一队的援兵。",
+            available_tool_names=["bind_player_character", "final_response"],
+            actor={"player_id": "23833769", "display_name": "风"},
+        )
+        return result, executor, repository.last_audit_records("group-1", limit=20)
+
+    result, executor, records = asyncio.run(run_case())
+    guard_records = [item for item in records if item.get("type") == "actor_equipment_final_reply_guard"]
+
+    assert [name for name, _args in executor.calls] == ["final_response"]
+    assert result.completion_text == "你背着弓赶到老徐队伍附近，等待合适的入场时机。"
+    assert "陈大虎" not in result.completion_text
+    assert "裁定修正" not in result.completion_text
+    assert guard_records == []
 
 
 def test_router_replaces_unverified_character_final_response_tool():
