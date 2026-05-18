@@ -312,7 +312,7 @@ def test_handle_coder_uploads_export_file_directly_for_aiocqhttp(monkeypatch):
                 "upload_group_file",
                 {
                     "group_id": 676453921,
-                    "file": "/AstrBot/data/plugin_data/astrbot_plugin_hermes_coder/exports/game_logs/latest.txt",
+                    "file": "file:///AstrBot/data/plugin_data/astrbot_plugin_hermes_coder/exports/game_logs/latest.txt",
                     "name": "latest.txt",
                 },
             )

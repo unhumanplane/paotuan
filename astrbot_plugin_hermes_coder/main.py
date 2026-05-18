@@ -335,7 +335,7 @@ class HermesCoderPlugin(Star):
                 await call_action(
                     "upload_group_file",
                     group_id=int(group_id),
-                    file=spec["path"],
+                    file=self._onebot_file_uri(spec["path"]),
                     name=spec["name"],
                 )
                 uploaded += 1
@@ -356,6 +356,14 @@ class HermesCoderPlugin(Star):
                     self._safe_error(exc),
                 )
         return uploaded
+
+    def _onebot_file_uri(self, file_path: str) -> str:
+        normalized = file_path.replace("\\", "/")
+        if "://" in normalized:
+            return normalized
+        if normalized.startswith("/"):
+            return "file://" + normalized
+        return normalized
 
     def _is_allowed_file_path(self, file_path: str) -> bool:
         normalized = file_path.replace("\\", "/")
