@@ -49,7 +49,7 @@ def _install_fake_astrbot_modules():
 
 _install_fake_astrbot_modules()
 
-from astrbot_plugin_auto_trpg_dm.core.models import GameMode, GameSession
+from astrbot_plugin_auto_trpg_dm.core.models import Character, GameMode, GameSession
 from astrbot_plugin_auto_trpg_dm.rules.python_runtime import PythonRuleRuntime
 from astrbot_plugin_auto_trpg_dm.storage.json_repository import JsonGameRepository
 from astrbot_plugin_auto_trpg_dm.tools.registry import ToolRegistry
@@ -60,6 +60,20 @@ def _registry_with_ready_session():
     repo = JsonGameRepository(root / "data")
     session = GameSession.new("group")
     session.world_tags["_background_ready"] = True
+    repo.save_session(session)
+    registry = ToolRegistry(repo, PythonRuleRuntime(root / "rules"))
+    return registry
+
+
+def _registry_with_started_session():
+    root = Path(".pytest-runtime") / f"tool-registry-started-{uuid4().hex}"
+    repo = JsonGameRepository(root / "data")
+    session = GameSession.new("group")
+    session.world_tags["_background_ready"] = True
+    session.world_tags["_plot_locked"] = True
+    session.scene["_game_started"] = True
+    session.characters["pc_bound"] = Character(id="pc_bound", name="Bound", player_id="bound-player")
+    session.player_character_map["bound-player"] = "pc_bound"
     repo.save_session(session)
     registry = ToolRegistry(repo, PythonRuleRuntime(root / "rules"))
     return registry
@@ -78,7 +92,7 @@ def test_tool_registry_prunes_estimate_token_usage_for_ordinary_requests():
     _toolset, names, _executor, _specs = registry.for_mode(
         GameMode.TACTICAL,
         "group",
-        message="我攻击最近的敌人",
+        message="????????",
     )
 
     assert "estimate_token_usage" not in names
@@ -92,13 +106,13 @@ def test_tool_registry_always_exposes_final_response_tool():
     _toolset, names, executor, specs = registry.for_mode(
         GameMode.NARRATIVE,
         "group",
-        message="先聊聊当前状态",
+        message="???????",
     )
 
     assert "final_response" in names
     assert any(spec["name"] == "final_response" for spec in specs)
-    result = asyncio.run(executor.execute("final_response", {"reply": "可以。"}))
-    assert result == {"ok": True, "reply": "可以。"}
+    result = asyncio.run(executor.execute("final_response", {"reply": "???"}))
+    assert result == {"ok": True, "reply": "???"}
 
 
 def test_tool_registry_exposes_character_tools_for_late_join_text_in_tactical_mode():
@@ -106,7 +120,7 @@ def test_tool_registry_exposes_character_tools_for_late_join_text_in_tactical_mo
     _toolset, names, _executor, _specs = registry.for_mode(
         GameMode.TACTICAL,
         "group",
-        message="我加入游戏，角色名字叫风，弓箭手，擅长精准射击。",
+        message="????????????????????????",
     )
 
     assert "create_character" in names
@@ -119,7 +133,7 @@ def test_tool_registry_exposes_character_tools_for_role_name_late_join_text_in_t
     _toolset, names, _executor, _specs = registry.for_mode(
         GameMode.TACTICAL,
         "group",
-        message="我要加入，角色名老铂，是一名西方的炼金术士。",
+        message="??????????????????????",
     )
 
     assert "create_character" in names
@@ -127,12 +141,27 @@ def test_tool_registry_exposes_character_tools_for_role_name_late_join_text_in_t
     assert "session_control" in names
 
 
+def test_tool_registry_unbound_post_start_actor_cannot_write_scene_before_binding():
+    registry = _registry_with_started_session()
+    _toolset, names, _executor, _specs = registry.for_mode(
+        GameMode.CHARACTER_CREATION,
+        "group",
+        actor={"player_id": "late-player", "display_name": "???"},
+        message="??????????????????????",
+    )
+
+    assert "create_character" in names
+    assert "bind_player_character" in names
+    assert "update_scene" not in names
+    assert "cycle_control" not in names
+
+
 def test_tool_registry_exposes_timeline_fact_tools_for_narrative():
     registry = _registry_with_ready_session()
     _toolset, names, _executor, specs = registry.for_mode(
         GameMode.NARRATIVE,
         "group",
-        message="复盘一下史东到底是什么情况",
+        message="?????????????",
     )
 
     assert "record_timeline_event" in names
@@ -146,7 +175,7 @@ def test_tool_registry_prefers_resolve_check_for_ordinary_d20_checks():
     _toolset, names, _executor, specs = registry.for_mode(
         GameMode.NARRATIVE,
         "group",
-        message="我搜索桌面上的暗格并说服守卫帮忙。",
+        message="?????????????????",
     )
 
     assert names.index("resolve_check") < names.index("execute_rule")
@@ -154,7 +183,7 @@ def test_tool_registry_prefers_resolve_check_for_ordinary_d20_checks():
     execute_spec = next(spec for spec in specs if spec["name"] == "execute_rule")
     assert "Preferred tool for ordinary d20 checks" in resolve_spec["description"]
     assert "do not call list_rules first for ordinary checks" in resolve_spec["description"]
-    assert "普通搜索、说服、潜行、破解、操作设备等 d20 检定优先使用 resolve_check" in execute_spec["description"]
+    assert "??????????????????? d20 ?????? resolve_check" in execute_spec["description"]
     resolve_properties = resolve_spec["parameters"]["properties"]
     assert "modifier_note" in resolve_properties
     assert "target_dc" in resolve_properties
@@ -168,7 +197,7 @@ def test_tool_registry_keeps_estimate_token_usage_for_diagnostic_requests():
     _toolset, names, _executor, _specs = registry.for_mode(
         GameMode.TACTICAL,
         "group",
-        message="分析当前 token 消耗",
+        message="???? token ??",
     )
 
     assert "estimate_token_usage" in names
@@ -181,7 +210,7 @@ def test_tool_registry_exposes_strict_lifecycle_tools_for_map_setup():
     _toolset, names, _executor, specs = registry.for_mode(
         GameMode.TACTICAL,
         "group",
-        message="布置地图，但先不要开战",
+        message="???????????",
     )
 
     assert "create_strict_map" in names
@@ -199,7 +228,7 @@ def test_tool_registry_exposes_overview_topology_renderer_for_overview_map_reque
     _toolset, names, _executor, specs = registry.for_mode(
         GameMode.NARRATIVE,
         "group",
-        message="画一张当前区域路线概览地图",
+        message="?????????????",
     )
 
     assert "render_overview_topology_svg" in names
@@ -213,7 +242,7 @@ def test_tool_registry_routes_strict_map_requests_to_strict_renderer():
     _toolset, names, _executor, specs = registry.for_mode(
         GameMode.NARRATIVE,
         "group",
-        message="画一张当前战场站位图",
+        message="??????????",
     )
 
     assert "render_strict_grid_svg" in names
@@ -227,7 +256,7 @@ def test_tool_registry_routes_layout_request_to_strict_renderer_with_svg_fallbac
     _toolset, names, _executor, specs = registry.for_mode(
         GameMode.NARRATIVE,
         "group",
-        message="画一下布局吧",
+        message="??????",
     )
 
     assert "render_strict_grid_svg" in names
@@ -241,7 +270,7 @@ def test_tool_registry_hides_map_renderers_for_explicit_text_only_map_request():
     _toolset, names, _executor, specs = registry.for_mode(
         GameMode.NARRATIVE,
         "group",
-        message="先用 ASCII 文字地图画一下战场格子，不要生成图片",
+        message="?? ASCII ??????????????????",
     )
 
     assert "render_strict_grid_svg" not in names
@@ -255,7 +284,7 @@ def test_tool_registry_keeps_visual_map_fallback_without_background():
     _toolset, names, _executor, specs = registry.for_mode(
         GameMode.NARRATIVE,
         "group",
-        message="画一张当前战场站位图",
+        message="??????????",
     )
 
     assert "render_strict_grid_svg" in names
@@ -269,7 +298,7 @@ def test_tool_registry_keeps_legacy_svg_hidden_until_explicit_fallback_request()
     _toolset, names, _executor, specs = registry.for_mode(
         GameMode.NARRATIVE,
         "group",
-        message="请用 legacy generate_map_svg 做一张 fallback 地图草图",
+        message="?? legacy generate_map_svg ??? fallback ????",
     )
 
     assert "generate_map_svg" in names
@@ -281,10 +310,9 @@ def test_tool_registry_exposes_end_combat_for_battle_resolution():
     _toolset, names, _executor, specs = registry.for_mode(
         GameMode.TACTICAL,
         "group",
-        message="结束战斗，但保留地图",
+        message="??????????",
     )
 
     assert "end_combat" in names
     assert "turn_control" in names
     assert any(spec["name"] == "end_combat" for spec in specs)
-
