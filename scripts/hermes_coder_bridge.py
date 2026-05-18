@@ -7,10 +7,12 @@ import hashlib
 import hmac
 import json
 import os
+import re
 import subprocess
 import time
 import urllib.error
 import urllib.request
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -37,6 +39,11 @@ DEFAULT_NOTIFY_SESSION_TEMPLATE = "default:GroupMessage:{group_id}"
 DEFAULT_ASTRBOT_API_TIMEOUT_SECONDS = 10
 DEFAULT_MAX_NOTIFY_CHARS = 3500
 DEFAULT_BACKGROUND_ACCEPTED_REPLY = "Hermes 已转入后台执行，完成后会把结果发回群里。"
+DEFAULT_GAME_DATA_DIR = Path("/volume1/docker/astrbot/data/plugin_data/astrbot_plugin_auto_trpg_dm")
+DEFAULT_GAME_EXPORT_DIR = OPS / "exports" / "game_logs"
+DEFAULT_GAME_LOG_TAIL_BYTES = 8_000
+DEFAULT_GAME_AUDIT_TAIL_BYTES = 8_000
+DEFAULT_GAME_REPLY_CHARS = 3_200
 
 
 def require_aiohttp_web():
@@ -131,6 +138,114 @@ def truncate_text(text: str, limit: int) -> str:
     return text[:limit].rstrip() + "\n\n[已截断]"
 
 
+def is_game_log_request(prompt: str) -> bool:
+    text = (prompt or "").strip().lower()
+    if not text:
+        return False
+    # A review/fix/deploy prompt should still go to Hermes instead of this local fast path.
+    model_task_markers = ("复盘", "审查", "修复", "优化", "部署", "review", "fix", "deploy")
+    if any(marker in text for marker in model_task_markers):
+        return False
+    log_markers = (
+        "最新日志",
+        "游戏日志",
+        "跑团日志",
+        "插件日志",
+        "独立日志",
+        "日志文件",
+        "日志记录",
+        "记录文件",
+        "审计记录",
+        "auto_trpg_dm.log",
+        "audit",
+        "log file",
+        "latest log",
+    )
+    request_markers = (
+        "获取",
+        "查看",
+        "看看",
+        "拿",
+        "取",
+        "发",
+        "发送",
+        "给我",
+        "导出",
+        "show",
+        "tail",
+        "get",
+        "latest",
+    )
+    return any(marker in text for marker in log_markers) and (
+        "最新" in text or any(marker in text for marker in request_markers)
+    )
+
+
+def _safe_session_name(session_id: str) -> str:
+    cleaned = re.sub(r"[^A-Za-z0-9_.-]+", "_", session_id.strip())
+    return cleaned.strip("_") or "unknown"
+
+
+def _format_bytes(size: int) -> str:
+    units = ("B", "KiB", "MiB", "GiB")
+    value = float(size)
+    for unit in units:
+        if value < 1024 or unit == units[-1]:
+            if unit == "B":
+                return f"{int(value)} {unit}"
+            return f"{value:.1f} {unit}"
+        value /= 1024
+    return f"{size} B"
+
+
+def _format_mtime(timestamp: float) -> str:
+    return datetime.fromtimestamp(timestamp).astimezone().strftime("%Y-%m-%d %H:%M:%S %z")
+
+
+def _file_summary(path: Path | None, label: str) -> str:
+    if path is None:
+        return f"- {label}: 未找到"
+    if not path.exists():
+        return f"- {label}: 未找到 ({path})"
+    stat = path.stat()
+    return f"- {label}: {path}\n  size={_format_bytes(stat.st_size)} mtime={_format_mtime(stat.st_mtime)}"
+
+
+def _read_tail_bytes(path: Path | None, limit: int) -> str:
+    if path is None or not path.exists() or not path.is_file():
+        return ""
+    size = path.stat().st_size
+    with path.open("rb") as handle:
+        if size > limit:
+            handle.seek(size - limit)
+        data = handle.read(limit)
+    text = data.decode("utf-8", errors="replace")
+    if size > limit and "\n" in text:
+        text = text.split("\n", 1)[1]
+    return text.strip()
+
+
+def _latest_file(directory: Path, patterns: tuple[str, ...]) -> Path | None:
+    candidates: list[Path] = []
+    if not directory.exists():
+        return None
+    for pattern in patterns:
+        candidates.extend(path for path in directory.glob(pattern) if path.is_file())
+    if not candidates:
+        return None
+    return max(candidates, key=lambda path: path.stat().st_mtime)
+
+
+def _extract_group_ids(text: str) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for match in re.findall(r"(?<!\d)(\d{6,12})(?!\d)", text or ""):
+        if match not in seen:
+            seen.add(match)
+            result.append(match)
+    return result
+
+
 def build_prompt(payload: dict[str, Any]) -> str:
     prompt = str(payload.get("prompt") or "").strip()
     group_id = str(payload.get("group_id") or "").strip()
@@ -183,6 +298,11 @@ class CoderBridge:
         self.notify_group_whitelist = parse_str_set(args.notify_group_whitelist)
         self.notify_session_template = str(args.notify_session_template).strip() or DEFAULT_NOTIFY_SESSION_TEMPLATE
         self.max_notify_chars = int(args.max_notify_chars)
+        self.game_data_dir = Path(args.game_data_dir)
+        self.game_export_dir = Path(args.game_export_dir)
+        self.game_log_tail_bytes = int(args.game_log_tail_bytes)
+        self.game_audit_tail_bytes = int(args.game_audit_tail_bytes)
+        self.game_reply_chars = int(args.game_reply_chars)
         self.started_at = time.time()
 
     async def health(self, request: web.Request) -> web.Response:
@@ -218,6 +338,21 @@ class CoderBridge:
             return json_response({"ok": False, "error": "empty prompt"}, status=400)
         if len(prompt) > self.max_prompt_chars:
             return json_response({"ok": False, "error": "prompt too long"}, status=400)
+        if is_game_log_request(prompt):
+            group_id = str(payload.get("group_id") or "").strip()
+            try:
+                self._session_for_group(group_id)
+                reply = self._build_game_log_reply(payload)
+            except ValueError as exc:
+                return json_response({"ok": False, "error": str(exc)}, status=400)
+            except Exception as exc:
+                return json_response({"ok": False, "error": f"game log export failed: {exc}"}, status=500)
+            print(
+                f"coder_game_log_served group={group_id} "
+                f"message={payload.get('message_id') or ''} reply_chars={len(reply)}",
+                flush=True,
+            )
+            return json_response({"ok": True, "accepted": False, "reply": reply})
         if not (self.workdir / ".git").exists():
             return json_response({"ok": False, "error": f"workdir is not a git repo: {self.workdir}"}, status=500)
         hermes_prompt = build_prompt(payload)
@@ -272,6 +407,119 @@ class CoderBridge:
         if returncode != 0:
             text = f"【Hermes /coder 异常退出：{returncode}】\n{text}"
         return truncate_text(text, self.max_notify_chars)
+
+    def _build_game_log_reply(self, payload: dict[str, Any]) -> str:
+        group_id = str(payload.get("group_id") or "").strip()
+        plugin_log = self.game_data_dir / "logs" / "auto_trpg_dm.log"
+        audit_file = self._select_game_audit_file(payload)
+        save_file = self._select_game_save_file(payload, audit_file)
+
+        generated_at = datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S %z")
+        summary_lines = [
+            "【Hermes 游戏日志】",
+            f"生成时间: {generated_at}",
+            "范围: 只读取 Auto TRPG DM 插件独立日志、audit、save 文件；没有读取 AstrBot 主日志。",
+            "",
+            "文件:",
+            _file_summary(plugin_log, "插件独立日志"),
+            _file_summary(audit_file, "最新/指定 audit"),
+            _file_summary(save_file, "最新/指定 save"),
+        ]
+
+        plugin_tail = _read_tail_bytes(plugin_log, self.game_log_tail_bytes)
+        audit_tail = _read_tail_bytes(audit_file, self.game_audit_tail_bytes)
+        export_body = "\n".join(
+            summary_lines
+            + [
+                "",
+                "插件日志尾部:",
+                plugin_tail or "(无可读内容)",
+                "",
+                "audit 尾部:",
+                audit_tail or "(无可读内容)",
+            ]
+        )
+        try:
+            export_path = self._write_game_log_export(export_body, group_id)
+            summary_lines.append(_file_summary(export_path, "导出文件"))
+        except Exception as exc:
+            summary_lines.append(f"- 导出文件: 写入失败 ({type(exc).__name__}: {str(exc)[:160]})")
+
+        reply = "\n".join(
+            summary_lines
+            + [
+                "",
+                "插件日志尾部:",
+                plugin_tail[-900:] if plugin_tail else "(无可读内容)",
+                "",
+                "audit 尾部:",
+                audit_tail[-1200:] if audit_tail else "(无可读内容)",
+            ]
+        )
+        return truncate_text(reply, self.game_reply_chars)
+
+    def _select_game_audit_file(self, payload: dict[str, Any]) -> Path | None:
+        audit_dir = self.game_data_dir / "audit"
+        prompt = str(payload.get("prompt") or "")
+        group_id = str(payload.get("group_id") or "").strip()
+        session_id = str(payload.get("session_id") or "").strip()
+        candidates: list[Path] = []
+        seen_sessions: set[str] = set()
+
+        for requested_group_id in _extract_group_ids(prompt) + ([group_id] if group_id else []):
+            session_name = _safe_session_name(f"default:GroupMessage:{requested_group_id}")
+            if session_name not in seen_sessions:
+                seen_sessions.add(session_name)
+                candidates.append(audit_dir / f"{session_name}.jsonl")
+
+        if session_id:
+            session_name = _safe_session_name(session_id)
+            if session_name not in seen_sessions:
+                candidates.append(audit_dir / f"{session_name}.jsonl")
+
+        for path in candidates:
+            if path.exists():
+                return path
+        return _latest_file(audit_dir, ("*.jsonl", "*.jsonl.*"))
+
+    def _select_game_save_file(self, payload: dict[str, Any], audit_file: Path | None) -> Path | None:
+        save_dir = self.game_data_dir / "saves"
+        prompt = str(payload.get("prompt") or "")
+        group_id = str(payload.get("group_id") or "").strip()
+        session_id = str(payload.get("session_id") or "").strip()
+        candidates: list[Path] = []
+        seen_sessions: set[str] = set()
+
+        if audit_file is not None:
+            name = audit_file.name
+            if ".jsonl" in name:
+                session_name = name.split(".jsonl", 1)[0]
+                seen_sessions.add(session_name)
+                candidates.append(save_dir / f"{session_name}.json")
+
+        for requested_group_id in _extract_group_ids(prompt) + ([group_id] if group_id else []):
+            session_name = _safe_session_name(f"default:GroupMessage:{requested_group_id}")
+            if session_name not in seen_sessions:
+                seen_sessions.add(session_name)
+                candidates.append(save_dir / f"{session_name}.json")
+
+        if session_id:
+            session_name = _safe_session_name(session_id)
+            if session_name not in seen_sessions:
+                candidates.append(save_dir / f"{session_name}.json")
+
+        for path in candidates:
+            if path.exists():
+                return path
+        return _latest_file(save_dir, ("*.json",))
+
+    def _write_game_log_export(self, body: str, group_id: str) -> Path:
+        self.game_export_dir.mkdir(parents=True, exist_ok=True)
+        timestamp = datetime.now().astimezone().strftime("%Y%m%d_%H%M%S")
+        suffix = _safe_session_name(group_id or "private")
+        path = self.game_export_dir / f"game_logs_{timestamp}_{suffix}.txt"
+        path.write_text(body, encoding="utf-8")
+        return path
 
     async def notify(self, request: web.Request) -> web.Response:
         payload, error_response = await self._read_signed_json(request)
@@ -368,6 +616,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--notify-group-whitelist", default=os.environ.get("HERMES_CODER_NOTIFY_GROUPS", ""))
     parser.add_argument("--notify-session-template", default=os.environ.get("HERMES_NOTIFY_SESSION_TEMPLATE", DEFAULT_NOTIFY_SESSION_TEMPLATE))
     parser.add_argument("--max-notify-chars", type=int, default=int(os.environ.get("HERMES_MAX_NOTIFY_CHARS", str(DEFAULT_MAX_NOTIFY_CHARS))))
+    parser.add_argument("--game-data-dir", default=os.environ.get("HERMES_GAME_DATA_DIR", str(DEFAULT_GAME_DATA_DIR)))
+    parser.add_argument("--game-export-dir", default=os.environ.get("HERMES_GAME_EXPORT_DIR", str(DEFAULT_GAME_EXPORT_DIR)))
+    parser.add_argument("--game-log-tail-bytes", type=int, default=int(os.environ.get("HERMES_GAME_LOG_TAIL_BYTES", str(DEFAULT_GAME_LOG_TAIL_BYTES))))
+    parser.add_argument("--game-audit-tail-bytes", type=int, default=int(os.environ.get("HERMES_GAME_AUDIT_TAIL_BYTES", str(DEFAULT_GAME_AUDIT_TAIL_BYTES))))
+    parser.add_argument("--game-reply-chars", type=int, default=int(os.environ.get("HERMES_GAME_REPLY_CHARS", str(DEFAULT_GAME_REPLY_CHARS))))
     return parser.parse_args()
 
 

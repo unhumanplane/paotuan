@@ -42,6 +42,11 @@ def _bridge(tmp_path, *, groups="", config_groups=None):
         notify_group_whitelist=groups,
         notify_session_template="default:GroupMessage:{group_id}",
         max_notify_chars=20,
+        game_data_dir=str(tmp_path / "game_data"),
+        game_export_dir=str(tmp_path / "exports"),
+        game_log_tail_bytes=400,
+        game_audit_tail_bytes=400,
+        game_reply_chars=3200,
     )
     return bridge_mod.CoderBridge(args)
 
@@ -139,6 +144,85 @@ def test_session_for_group_uses_notify_whitelist(tmp_path):
         assert "whitelist" in str(exc)
     else:
         raise AssertionError("expected ValueError")
+
+
+def test_game_log_request_detection_is_conservative():
+    assert bridge_mod.is_game_log_request("获取最新游戏日志")
+    assert bridge_mod.is_game_log_request("导出 auto_trpg_dm.log")
+    assert not bridge_mod.is_game_log_request("执行日志复盘并修复问题")
+    assert not bridge_mod.is_game_log_request("审查两个未合并 PR")
+
+
+def test_build_game_log_reply_uses_requested_group_audit_and_exports(tmp_path):
+    bridge = _bridge(tmp_path, groups="1101538762")
+    data_dir = bridge.game_data_dir
+    (data_dir / "logs").mkdir(parents=True)
+    (data_dir / "audit").mkdir(parents=True)
+    (data_dir / "saves").mkdir(parents=True)
+    (data_dir / "logs" / "auto_trpg_dm.log").write_text(
+        "2026-05-18 10:00:00 plugin-old\n2026-05-18 10:01:00 plugin-tail\n",
+        encoding="utf-8",
+    )
+    (data_dir / "audit" / "default_GroupMessage_676453921.jsonl").write_text(
+        '{"event":"audit-tail","session":"676453921"}\n',
+        encoding="utf-8",
+    )
+    (data_dir / "saves" / "default_GroupMessage_676453921.json").write_text(
+        '{"session":"676453921"}\n',
+        encoding="utf-8",
+    )
+
+    reply = bridge._build_game_log_reply(
+        {
+            "prompt": "获取 676453921 最新游戏日志",
+            "group_id": "1101538762",
+            "session_id": "default:GroupMessage:1101538762",
+        }
+    )
+
+    assert "auto_trpg_dm.log" in reply
+    assert "default_GroupMessage_676453921.jsonl" in reply
+    assert "default_GroupMessage_676453921.json" in reply
+    assert "plugin-tail" in reply
+    assert "audit-tail" in reply
+    exports = list(bridge.game_export_dir.glob("game_logs_*_1101538762.txt"))
+    assert len(exports) == 1
+    assert "audit-tail" in exports[0].read_text(encoding="utf-8")
+
+
+def test_coder_serves_game_log_request_without_starting_hermes(tmp_path, monkeypatch):
+    async def run_case():
+        bridge = _bridge(tmp_path, groups="1101538762")
+        (bridge.game_data_dir / "logs").mkdir(parents=True)
+        (bridge.game_data_dir / "logs" / "auto_trpg_dm.log").write_text("plugin-tail\n", encoding="utf-8")
+
+        async def fake_read_signed_json(_request):
+            return {
+                "prompt": "获取最新游戏日志",
+                "group_id": "1101538762",
+                "message_id": "msg-log",
+                "session_id": "default:GroupMessage:1101538762",
+            }, None
+
+        def fake_run_hermes(*_args):
+            raise AssertionError("run_hermes should not be called for game log requests")
+
+        def fake_json_response(data, *args, **kwargs):
+            del args
+            return {"data": data, "status": kwargs.get("status")}
+
+        monkeypatch.setattr(bridge, "_read_signed_json", fake_read_signed_json)
+        monkeypatch.setattr(bridge_mod, "run_hermes", fake_run_hermes)
+        monkeypatch.setattr(bridge_mod, "json_response", fake_json_response)
+
+        response = await bridge.coder(object())
+
+        assert response["status"] is None
+        assert response["data"]["ok"] is True
+        assert response["data"]["accepted"] is False
+        assert "plugin-tail" in response["data"]["reply"]
+
+    asyncio.run(run_case())
 
 
 def test_run_coder_job_posts_result_to_astrbot(tmp_path, monkeypatch):
