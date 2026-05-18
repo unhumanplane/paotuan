@@ -2,6 +2,18 @@
 
 所有已经合入 `main` 的用户可见变更都记录在这里。日期使用香港时区对应的开发日期。
 
+## [0.1.119] - 2026-05-18
+
+### Fixed
+
+- 修复多人叙事中当前发言人角色锚点不够强，导致队友装备/能力可能被误写成“你”持有的问题；DM 快照现在显式提供 `actor_character`，普通个人状态/装备查询只展开当前角色完整卡，队友仅作为精简 roster 参考。
+- 明确 prompt 规则：第二人称“你”和第一人称“我”只指当前发言人绑定角色；回答装备、能力、状态、位置或物品时必须优先以 `actor_character` 及其 tag 为准。
+
+### Verified
+
+- `python -m pytest tests/test_prompts.py tests/test_router_usage.py tests/test_continuity_auditor.py -q`
+- `python -m py_compile astrbot_plugin_auto_trpg_dm\core\prompts.py tests\test_prompts.py`
+
 ## [0.1.118] - 2026-05-18
 
 ### Fixed

@@ -92,6 +92,7 @@ def snapshot_projection_shadow_stats(
         session,
         projection_profile,
         actor or {},
+        message=message,
     )
     return _snapshot_projection_stats(
         full_snapshot,
@@ -119,6 +120,7 @@ def prompt_snapshot_data(
             session,
             projection_profile,
             actor or {},
+            message=message,
         )
         if snapshot_projection_enabled
         else full_snapshot
@@ -204,9 +206,9 @@ def _snapshot_projection_profile(session: GameSession, mode: GameMode, message: 
         return "state_query"
     if _contains_any(text, SNAPSHOT_DIAGNOSTIC_TERMS):
         return "diagnostic"
+    if _looks_like_snapshot_state_query(text):
+        return "state_query"
     if combat_lifecycle_active(session):
-        if _looks_like_snapshot_state_query(text):
-            return "state_query"
         if _contains_any(text, SNAPSHOT_CHARACTER_PROFILE_TERMS):
             return "character_profile"
         if _contains_any(text, SNAPSHOT_RULE_QUERY_TERMS):
@@ -215,6 +217,10 @@ def _snapshot_projection_profile(session: GameSession, mode: GameMode, message: 
     if mode == GameMode.CHARACTER_CREATION:
         return "character_profile"
     if mode == GameMode.RULE_AUTHORING:
+        return "rule_query"
+    if _contains_any(text, SNAPSHOT_CHARACTER_PROFILE_TERMS):
+        return "character_profile"
+    if _contains_any(text, SNAPSHOT_RULE_QUERY_TERMS):
         return "rule_query"
     return "narrative"
 
@@ -258,6 +264,7 @@ def _project_snapshot_for_profile(
     session: GameSession,
     profile: str,
     actor: dict[str, Any],
+    message: str = "",
 ) -> dict[str, Any]:
     if profile == "diagnostic":
         return _diagnostic_snapshot(session, session.mode)
@@ -266,6 +273,11 @@ def _project_snapshot_for_profile(
     actor_player_id = str((actor or {}).get("player_id") or "").strip()
     if actor_player_id:
         actor_character_id = str((session.player_character_map or {}).get(actor_player_id, "") or "")
+    if actor_character_id:
+        projected["actor_character_id"] = actor_character_id
+        actor_character = _find_character_projection(snapshot.get("characters", []), actor_character_id)
+        if actor_character:
+            projected["actor_character"] = actor_character
     projected["scene"] = _project_scene(snapshot.get("scene", {}), profile, actor_character_id=actor_character_id)
     projected["world_tags"] = _project_world_tags(snapshot.get("world_tags", {}), profile)
     projected["characters"] = _project_characters(
@@ -273,6 +285,7 @@ def _project_snapshot_for_profile(
         session,
         actor,
         profile,
+        message=message,
     )
     projected["battle"] = _project_battle(snapshot.get("battle", {}), profile)
     projected["rules"] = _project_rules(snapshot.get("rules", {}), profile)
@@ -723,14 +736,16 @@ def _project_characters(
     session: GameSession,
     actor: dict[str, Any],
     profile: str,
+    *,
+    message: str = "",
 ) -> Any:
     if not isinstance(characters, list):
         return characters
-    if profile in {"state_query", "rule_query"}:
+    if profile == "rule_query":
+        return characters
+    if profile == "state_query" and _looks_like_full_roster_character_query(message):
         return characters
     relevant_ids = _relevant_character_ids(session, actor)
-    if profile == "narrative" and not bool((session.battle or {}).get("active")):
-        relevant_ids.update(item.get("id", "") for item in characters if isinstance(item, dict))
     relevant: list[dict[str, Any]] = []
     roster: list[dict[str, Any]] = []
     for character in characters:
@@ -740,28 +755,80 @@ def _project_characters(
         if character_id in relevant_ids:
             relevant.append(character)
         else:
-            roster.append(_minimal_character(character))
+            roster.append(_minimal_character(character, include_summary=profile not in {"narrative", "state_query"}))
     if not relevant and characters:
         first = characters[0]
         if isinstance(first, dict):
             relevant.append(first)
             roster = [
-                _minimal_character(item)
+                _minimal_character(item, include_summary=profile not in {"narrative", "state_query"})
                 for item in characters[1:]
                 if isinstance(item, dict)
             ]
     return {"relevant": relevant, "roster": roster}
 
 
-def _minimal_character(character: dict[str, Any]) -> dict[str, Any]:
+def _find_character_projection(characters: Any, character_id: str) -> dict[str, Any]:
+    if not character_id or not isinstance(characters, list):
+        return {}
+    for character in characters:
+        if isinstance(character, dict) and str(character.get("id", "")) == character_id:
+            return character
+    return {}
+
+
+def _looks_like_full_roster_character_query(message: str) -> bool:
+    text = str(message or "").strip().lower()
+    if not text:
+        return False
+    full_terms = (
+        "全员",
+        "所有人",
+        "所有角色",
+        "全队",
+        "队伍",
+        "大家",
+        "每个人",
+        "列表",
+        "一览",
+        "全团",
+        "party",
+        "everyone",
+        "all characters",
+        "full roster",
+        "roster",
+    )
+    character_terms = (
+        "状态",
+        "装备",
+        "角色",
+        "人物",
+        "角色卡",
+        "物品",
+        "背包",
+        "能力",
+        "位置",
+        "status",
+        "equipment",
+        "inventory",
+        "character",
+    )
+    return any(term in text for term in full_terms) and any(term in text for term in character_terms)
+
+
+def _minimal_character(character: dict[str, Any], *, include_summary: bool = True) -> dict[str, Any]:
     tag_layers = dict(character.get("tag_layers") or {})
     minimal = {
         "id": character.get("id", ""),
         "name": character.get("name", ""),
         "player_id": character.get("player_id", ""),
-        "summary": _short_text(character.get("summary", ""), 120),
         "tag_count": character.get("tag_count", 0),
     }
+    if include_summary:
+        minimal["summary"] = _short_text(character.get("summary", ""), 120)
+    identity = tag_layers.get("identity")
+    if identity:
+        minimal["identity"] = identity
     status = tag_layers.get("status")
     if status:
         minimal["status"] = status
@@ -1172,6 +1239,7 @@ BASE_RULES = """共享基础规则：
 - 关键词不是状态写入授权：不要只因为玩家或叙事文本里出现“退场、退休、被驱逐、结局、终幕、天亮、第二天”等词，就改变角色状态、关闭 scene thread、结束战斗或推进时间线。状态变化必须来自显式工具参数、结构化补丁、规则/回合工具结果或独立审计证据。
 - `update_scene` 的 summary/current_objective/current_conflict/stakes 只是叙事记录；关闭线程必须显式写 `status="closed"/"resolved"/"retired"/"archived"`，跨时段必须显式写全局 `timeline_patch` 或调用 `cycle_control`。
 - 已声明的物理环境和设备能力是连续性事实：水下/干燥、封闭/开口、重力/浮力、压力密封、载具是否能飞行或悬停等不能在相邻回复里反复反转。玩家指出物理矛盾时，先核对当前 scene、scene_threads 和最近审计；若确实矛盾，明确承认并以最新权威状态修正，不能为了圆场临时新增未记录的设备能力。
+- 第二人称“你”和第一人称“我”只指当前发言人绑定的 `actor_character`；回答装备、能力、状态、位置或物品时，必须优先使用 `actor_character`/`actor_character_id` 对应角色卡和 tag。`characters.roster`、其他 scene thread、队友摘要只能当队友参考，不能把其他角色的装备、能力、持物或位置转移给当前发言人。
 - `event_timeline` 是权威剧情事实时间线，优先级高于旧 summary、旧 known_facts 和模型回忆。`record_timeline_event` 用于记录已由工具、审计或明确场内结果支持的事件；`clarify_entity_timeline` 用于把实体当前状态、历史事实、未知项和证据来源分开落盘。
 - 旧 `known_facts` 中的地点、持物、状态描述跨过爆炸、沉船、转场、检定或后续状态写入后，只能当历史事实，除非有较新的权威事件证明它仍是当前事实。不要把“曾在某地”误读成“当前仍在那里”。
 - 未知项不能反推成否定事实：例如“附近没看到某 NPC”只能说明当前附近不可见或所在未知，不能推翻已确认生还、已确认逃生、已确认持有/消耗等工具事实。需要澄清时调用 `clarify_entity_timeline`，不要在叙事里临时摇摆。
@@ -1291,6 +1359,7 @@ def build_system_prompt(
 13. 多人游戏时必须区分“当前发言人”。当玩家说“我加入”“我是某角色”“帮我建卡”时，
     用 bind_player_character 或 create_character 记录当前发言人与角色的绑定；之后“我”默认指当前发言人绑定的角色。
     创建角色 ID 时优先使用 pc_角色名 或 pc_当前发言人ID，不要把不同玩家都写入同一个 pc。
+13a. 当前快照若包含 `actor_character`，它就是本轮“你/我/我现在”的唯一角色锚点；`characters.roster` 是队友索引，不是当前角色事实来源。询问“我有什么装备/我有某物吗/我现在在哪/我能不能用某能力”时，只能从 `actor_character` 的 identity/abilities/equipment/status 和较新的工具结果回答；若队友持有相似装备，必须点名为队友持有，不能写成“你手里有”。
 14. 不要把一个玩家的角色状态写到另一个玩家身上；如果发言人未绑定角色且意图依赖角色身份，先调用工具绑定、建卡或向玩家澄清。
     角色 Tag 按 layer 分层：identity 身份、abilities 能力、equipment 装备、combat 战术、status 状态、relations 关系、notes 备注。
     新增或更新角色 Tag 时优先填写 layer，避免把装备、状态、能力混在同一层。

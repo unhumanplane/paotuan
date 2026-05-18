@@ -864,6 +864,163 @@ def test_prompt_snapshot_projection_keeps_actor_thread_when_other_thread_is_acti
     assert "62°S异常回波" in rendered
 
 
+def test_prompt_snapshot_projection_anchors_actor_character_and_minimizes_teammate_equipment():
+    session = GameSession.new("group")
+    session.characters["pc_chen_dahu"] = Character(
+        id="pc_chen_dahu",
+        name="陈大虎",
+        player_id="512469473",
+        summary="福建镇海卫军户，长枪手。",
+        tags=[
+            TagValue(key="身份", value="福建镇海卫军户", layer="identity"),
+            TagValue(key="装备", value="精良级长枪一杆、腰刀一口、皮甲一副", layer="equipment"),
+            TagValue(key="状态", value="在营地辎重区询问备用军弩", layer="status"),
+        ],
+    )
+    session.characters["pc_kade"] = Character(
+        id="pc_kade",
+        name="凯德",
+        player_id="158988882",
+        summary="锦衣卫弓弩手，携带神臂弩和千里眼。",
+        tags=[
+            TagValue(key="身份", value="锦衣卫弓弩手", layer="identity"),
+            TagValue(key="装备", value="神臂弩、普通箭、穿甲箭、麻药箭、毒箭、腰刀", layer="equipment"),
+            TagValue(key="辅助工具", value="千里眼、测距工具", layer="equipment"),
+            TagValue(key="状态", value="在营地休整", layer="status"),
+        ],
+    )
+    session.characters["pc_yaka"] = Character(
+        id="pc_yaka",
+        name="雅卡",
+        player_id="360602139",
+        summary="西方雇佣兵，携带军用弩。",
+        tags=[
+            TagValue(key="身份", value="西方雇佣兵", layer="identity"),
+            TagValue(key="主武器", value="军用弩（已维护）", layer="equipment"),
+            TagValue(key="状态", value="在营火旁休息", layer="status"),
+        ],
+    )
+    session.player_character_map = {
+        "512469473": "pc_chen_dahu",
+        "158988882": "pc_kade",
+        "360602139": "pc_yaka",
+    }
+    session.active_character_id = "pc_chen_dahu"
+    session.scene["active_scene_thread_id"] = "character:pc_kade"
+    session.scene["scene_threads"] = {
+        "character:pc_kade": {
+            "summary": "凯德在箭塔上用千里眼侦查。",
+            "participants": ["pc_kade"],
+            "active_character_id": "pc_kade",
+            "updated_at": "2026-05-18T05:33:00+00:00",
+        },
+        "character:pc_chen_dahu": {
+            "summary": "陈大虎在营地辎重区询问有没有备用军弩。",
+            "participants": ["pc_chen_dahu"],
+            "active_character_id": "pc_chen_dahu",
+            "updated_at": "2026-05-18T05:28:00+00:00",
+        },
+    }
+
+    projected_snapshot, _stats = prompt_snapshot_data(
+        session,
+        GameMode.NARRATIVE,
+        "问问营地里有没有多的弩",
+        actor={"player_id": "512469473", "display_name": "gali"},
+        snapshot_projection_enabled=True,
+    )
+
+    assert projected_snapshot["actor_character_id"] == "pc_chen_dahu"
+    assert projected_snapshot["actor_character"]["id"] == "pc_chen_dahu"
+    assert "精良级长枪" in json.dumps(projected_snapshot["actor_character"], ensure_ascii=False)
+    relevant_ids = [item["id"] for item in projected_snapshot["characters"]["relevant"]]
+    assert relevant_ids == ["pc_chen_dahu"]
+    roster_rendered = json.dumps(projected_snapshot["characters"]["roster"], ensure_ascii=False)
+    assert "pc_kade" in roster_rendered
+    assert "pc_yaka" in roster_rendered
+    assert "神臂弩" not in roster_rendered
+    assert "千里眼" not in roster_rendered
+    assert "军用弩" not in roster_rendered
+    assert projected_snapshot["scene"]["scene_threads"]["actor_current"]["scene_thread_id"] == "character:pc_chen_dahu"
+
+
+def test_prompt_snapshot_projection_expands_full_roster_for_explicit_team_equipment_query():
+    session = GameSession.new("group")
+    session.characters["pc_chen_dahu"] = Character(
+        id="pc_chen_dahu",
+        name="陈大虎",
+        player_id="512469473",
+        tags=[TagValue(key="装备", value="精良级长枪一杆、腰刀一口、皮甲一副", layer="equipment")],
+    )
+    session.characters["pc_kade"] = Character(
+        id="pc_kade",
+        name="凯德",
+        player_id="158988882",
+        tags=[TagValue(key="装备", value="神臂弩、普通箭、穿甲箭、麻药箭、毒箭、腰刀", layer="equipment")],
+    )
+    session.player_character_map = {"512469473": "pc_chen_dahu", "158988882": "pc_kade"}
+
+    projected_snapshot, _stats = prompt_snapshot_data(
+        session,
+        GameMode.NARRATIVE,
+        "列出全队装备和状态",
+        actor={"player_id": "512469473"},
+        snapshot_projection_enabled=True,
+    )
+
+    assert isinstance(projected_snapshot["characters"], list)
+    rendered = json.dumps(projected_snapshot["characters"], ensure_ascii=False)
+    assert "精良级长枪" in rendered
+    assert "神臂弩" in rendered
+
+
+def test_prompt_snapshot_projection_uses_actor_only_for_personal_equipment_query():
+    session = GameSession.new("group")
+    session.characters["pc_chen_dahu"] = Character(
+        id="pc_chen_dahu",
+        name="陈大虎",
+        player_id="512469473",
+        tags=[TagValue(key="装备", value="精良级长枪一杆、腰刀一口、皮甲一副", layer="equipment")],
+    )
+    session.characters["pc_kade"] = Character(
+        id="pc_kade",
+        name="凯德",
+        player_id="158988882",
+        tags=[TagValue(key="装备", value="神臂弩、普通箭、穿甲箭、麻药箭、毒箭、腰刀", layer="equipment")],
+    )
+    session.player_character_map = {"512469473": "pc_chen_dahu", "158988882": "pc_kade"}
+
+    projected_snapshot, _stats = prompt_snapshot_data(
+        session,
+        GameMode.NARRATIVE,
+        "我现在有什么装备",
+        actor={"player_id": "512469473"},
+        snapshot_projection_enabled=True,
+    )
+
+    assert projected_snapshot["actor_character_id"] == "pc_chen_dahu"
+    assert projected_snapshot["characters"]["relevant"][0]["id"] == "pc_chen_dahu"
+    rendered = json.dumps(projected_snapshot["characters"], ensure_ascii=False)
+    assert "精良级长枪" in rendered
+    assert "神臂弩" not in rendered
+
+
+def test_system_prompt_includes_actor_character_pronoun_contract():
+    session = GameSession.new("group")
+
+    prompt = build_system_prompt(
+        session,
+        GameMode.NARRATIVE,
+        ["update_character_tags"],
+        actor={"player_id": "player-1"},
+        message="我现在有什么装备",
+    )
+
+    assert "actor_character" in prompt
+    assert "唯一角色锚点" in prompt
+    assert "characters.roster" in prompt
+
+
 def test_prompt_snapshot_projection_keeps_recent_tool_backed_ritual_completion_anchor():
     session = GameSession.new("group")
     session.scene["summary"] = "旧摘要：仪式还没开始，需要先准备。"
