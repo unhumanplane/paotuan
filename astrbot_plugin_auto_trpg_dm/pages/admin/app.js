@@ -109,7 +109,7 @@
     els.sessionList.querySelectorAll(".session-item").forEach(function (item) {
       item.classList.toggle("active", item.dataset.key === sessionKey);
     });
-    var snapshot = await apiGet(sessionEndpoint("snapshot", sessionKey));
+    var snapshot = await apiGet("dm/web/session/snapshot", { session_key: sessionKey });
     if (!snapshot) return;
     renderSnapshot(snapshot);
     await loadAudit(sessionKey);
@@ -144,7 +144,7 @@
 
   async function loadAudit(sessionKey) {
     els.auditList.innerHTML = skeleton(4);
-    var records = await apiGet(sessionEndpoint("audit", sessionKey));
+    var records = await apiGet("dm/web/session/audit", { session_key: sessionKey });
     if (!records) {
       els.auditList.innerHTML = emptyHtml("审计记录加载失败。");
       return;
@@ -168,7 +168,7 @@
 
   async function loadBackups(sessionKey) {
     els.backupList.innerHTML = skeleton(4);
-    var backups = await apiGet(sessionEndpoint("backups", sessionKey));
+    var backups = await apiGet("dm/web/session/backups", { session_key: sessionKey });
     if (!backups) {
       els.backupList.innerHTML = emptyHtml("备份列表加载失败。");
       return;
@@ -186,11 +186,11 @@
     }).join("");
   }
 
-  async function apiGet(endpoint) {
+  async function apiGet(endpoint, params) {
     try {
       var result = bridgeReady
-        ? await bridge.apiGet(endpoint, {})
-        : await fetchPluginApi(endpoint);
+        ? await bridge.apiGet(endpoint, params || {})
+        : await fetchPluginApi(endpoint, params || {});
       return unwrap(result);
     } catch (error) {
       toast(error.message || "请求失败");
@@ -198,16 +198,17 @@
     }
   }
 
-  function sessionEndpoint(kind, sessionKey) {
-    return "dm/web/session/" + kind + "?session_key=" + encodeURIComponent(sessionKey || "");
-  }
-
-  async function fetchPluginApi(endpoint) {
+  async function fetchPluginApi(endpoint, params) {
     var token = window.localStorage ? localStorage.getItem("token") : "";
     if (!token) {
       throw new Error("未登录 AstrBot Dashboard");
     }
-    var response = await fetch("/api/plug/auto_trpg_dm/" + endpoint.replace(/^\/+/, ""), {
+    var url = "/api/plug/auto_trpg_dm/" + endpoint.replace(/^\/+/, "");
+    var query = new URLSearchParams(params || {}).toString();
+    if (query) {
+      url += "?" + query;
+    }
+    var response = await fetch(url, {
       headers: { Authorization: "Bearer " + token },
     });
     var data = await response.json().catch(function () {

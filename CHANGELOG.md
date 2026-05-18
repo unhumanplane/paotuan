@@ -2,6 +2,19 @@
 
 所有已经合入 `main` 的用户可见变更都记录在这里。日期使用香港时区对应的开发日期。
 
+## [0.1.128] - 2026-05-18
+
+### Fixed
+
+- Dashboard 会话详情页在 AstrBot 插件页 Bridge 模式下不再把 `?session_key=...` 拼进 endpoint，而是按官方 `apiGet(endpoint, params)` 约定把 `session_key` 作为参数传递，避免 AstrBot 把整段字符串当作路由并返回“未找到该路由”。
+- 直接访问静态兜底 Dashboard 时继续自动把参数编码为查询串，保持 `/auto-trpg-dm-dashboard/index.html` 的独立访问能力。
+
+### Verified
+
+- `python -m pytest tests/test_admin_web.py -q`
+- `python -m py_compile astrbot_plugin_auto_trpg_dm\core\admin_web.py astrbot_plugin_auto_trpg_dm\main.py tests\test_admin_web.py`
+- `node --check astrbot_plugin_auto_trpg_dm/pages/admin/app.js`
+
 ## [0.1.127] - 2026-05-18
 
 ### Fixed

@@ -54,9 +54,13 @@ def test_admin_web_installs_static_dashboard_fallback(tmp_path):
     assert result["url"] == "/auto-trpg-dm-dashboard/index.html"
     dashboard_dir = tmp_path / "dist" / "auto-trpg-dm-dashboard"
     assert sorted(item.name for item in dashboard_dir.iterdir()) == ["app.js", "index.html", "style.css"]
-    assert "fetchPluginApi" in (dashboard_dir / "app.js").read_text(encoding="utf-8")
-    assert "/api/plug/auto_trpg_dm/" in (dashboard_dir / "app.js").read_text(encoding="utf-8")
-    assert 'sessionEndpoint("snapshot", sessionKey)' in (dashboard_dir / "app.js").read_text(encoding="utf-8")
+    app_js = (dashboard_dir / "app.js").read_text(encoding="utf-8")
+    assert "fetchPluginApi" in app_js
+    assert "/api/plug/auto_trpg_dm/" in app_js
+    assert "bridge.apiGet(endpoint, params || {})" in app_js
+    assert "new URLSearchParams(params || {})" in app_js
+    assert 'apiGet("dm/web/session/snapshot", { session_key: sessionKey })' in app_js
+    assert "?session_key=" not in app_js
 
 
 def test_admin_web_projects_session_snapshot_without_hidden_scene_or_paths(tmp_path):
