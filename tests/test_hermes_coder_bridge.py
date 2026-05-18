@@ -44,6 +44,7 @@ def _bridge(tmp_path, *, groups="", config_groups=None):
         max_notify_chars=20,
         game_data_dir=str(tmp_path / "game_data"),
         game_export_dir=str(tmp_path / "exports"),
+        game_export_send_dir=str(tmp_path / "astrbot_exports"),
         game_log_tail_bytes=400,
         game_audit_tail_bytes=400,
         game_reply_chars=3200,
@@ -172,13 +173,14 @@ def test_build_game_log_reply_uses_requested_group_audit_and_exports(tmp_path):
         encoding="utf-8",
     )
 
-    reply = bridge._build_game_log_reply(
+    result = bridge._build_game_log_result(
         {
             "prompt": "获取 676453921 最新游戏日志",
             "group_id": "1101538762",
             "session_id": "default:GroupMessage:1101538762",
         }
     )
+    reply = result["reply"]
 
     assert "auto_trpg_dm.log" in reply
     assert "default_GroupMessage_676453921.jsonl" in reply
@@ -188,6 +190,12 @@ def test_build_game_log_reply_uses_requested_group_audit_and_exports(tmp_path):
     exports = list(bridge.game_export_dir.glob("game_logs_*_1101538762.txt"))
     assert len(exports) == 1
     assert "audit-tail" in exports[0].read_text(encoding="utf-8")
+    assert result["files"] == [
+        {
+            "path": str(bridge.game_export_send_dir / exports[0].name),
+            "name": exports[0].name,
+        }
+    ]
 
 
 def test_coder_serves_game_log_request_without_starting_hermes(tmp_path, monkeypatch):
@@ -221,6 +229,7 @@ def test_coder_serves_game_log_request_without_starting_hermes(tmp_path, monkeyp
         assert response["data"]["ok"] is True
         assert response["data"]["accepted"] is False
         assert "plugin-tail" in response["data"]["reply"]
+        assert response["data"]["files"][0]["name"].startswith("game_logs_")
 
     asyncio.run(run_case())
 

@@ -40,7 +40,8 @@ DEFAULT_ASTRBOT_API_TIMEOUT_SECONDS = 10
 DEFAULT_MAX_NOTIFY_CHARS = 3500
 DEFAULT_BACKGROUND_ACCEPTED_REPLY = "Hermes 已转入后台执行，完成后会把结果发回群里。"
 DEFAULT_GAME_DATA_DIR = Path("/volume1/docker/astrbot/data/plugin_data/astrbot_plugin_auto_trpg_dm")
-DEFAULT_GAME_EXPORT_DIR = OPS / "exports" / "game_logs"
+DEFAULT_GAME_EXPORT_DIR = Path("/volume1/docker/astrbot/data/plugin_data/astrbot_plugin_hermes_coder/exports/game_logs")
+DEFAULT_GAME_EXPORT_SEND_DIR = Path("/AstrBot/data/plugin_data/astrbot_plugin_hermes_coder/exports/game_logs")
 DEFAULT_GAME_LOG_TAIL_BYTES = 8_000
 DEFAULT_GAME_AUDIT_TAIL_BYTES = 8_000
 DEFAULT_GAME_REPLY_CHARS = 3_200
@@ -300,6 +301,7 @@ class CoderBridge:
         self.max_notify_chars = int(args.max_notify_chars)
         self.game_data_dir = Path(args.game_data_dir)
         self.game_export_dir = Path(args.game_export_dir)
+        self.game_export_send_dir = Path(args.game_export_send_dir)
         self.game_log_tail_bytes = int(args.game_log_tail_bytes)
         self.game_audit_tail_bytes = int(args.game_audit_tail_bytes)
         self.game_reply_chars = int(args.game_reply_chars)
@@ -342,17 +344,25 @@ class CoderBridge:
             group_id = str(payload.get("group_id") or "").strip()
             try:
                 self._session_for_group(group_id)
-                reply = self._build_game_log_reply(payload)
+                game_log_result = self._build_game_log_result(payload)
             except ValueError as exc:
                 return json_response({"ok": False, "error": str(exc)}, status=400)
             except Exception as exc:
                 return json_response({"ok": False, "error": f"game log export failed: {exc}"}, status=500)
+            reply = str(game_log_result.get("reply") or "")
             print(
                 f"coder_game_log_served group={group_id} "
                 f"message={payload.get('message_id') or ''} reply_chars={len(reply)}",
                 flush=True,
             )
-            return json_response({"ok": True, "accepted": False, "reply": reply})
+            return json_response(
+                {
+                    "ok": True,
+                    "accepted": False,
+                    "reply": reply,
+                    "files": game_log_result.get("files") or [],
+                }
+            )
         if not (self.workdir / ".git").exists():
             return json_response({"ok": False, "error": f"workdir is not a git repo: {self.workdir}"}, status=500)
         hermes_prompt = build_prompt(payload)
@@ -408,7 +418,7 @@ class CoderBridge:
             text = f"【Hermes /coder 异常退出：{returncode}】\n{text}"
         return truncate_text(text, self.max_notify_chars)
 
-    def _build_game_log_reply(self, payload: dict[str, Any]) -> str:
+    def _build_game_log_result(self, payload: dict[str, Any]) -> dict[str, Any]:
         group_id = str(payload.get("group_id") or "").strip()
         plugin_log = self.game_data_dir / "logs" / "auto_trpg_dm.log"
         audit_file = self._select_game_audit_file(payload)
@@ -439,8 +449,10 @@ class CoderBridge:
                 audit_tail or "(无可读内容)",
             ]
         )
+        send_file: dict[str, str] | None = None
         try:
-            export_path = self._write_game_log_export(export_body, group_id)
+            export_path, send_path = self._write_game_log_export(export_body, group_id)
+            send_file = {"path": str(send_path), "name": export_path.name}
             summary_lines.append(_file_summary(export_path, "导出文件"))
         except Exception as exc:
             summary_lines.append(f"- 导出文件: 写入失败 ({type(exc).__name__}: {str(exc)[:160]})")
@@ -456,7 +468,13 @@ class CoderBridge:
                 audit_tail[-1200:] if audit_tail else "(无可读内容)",
             ]
         )
-        return truncate_text(reply, self.game_reply_chars)
+        return {
+            "reply": truncate_text(reply, self.game_reply_chars),
+            "files": [send_file] if send_file else [],
+        }
+
+    def _build_game_log_reply(self, payload: dict[str, Any]) -> str:
+        return str(self._build_game_log_result(payload).get("reply") or "")
 
     def _select_game_audit_file(self, payload: dict[str, Any]) -> Path | None:
         audit_dir = self.game_data_dir / "audit"
@@ -513,13 +531,18 @@ class CoderBridge:
                 return path
         return _latest_file(save_dir, ("*.json",))
 
-    def _write_game_log_export(self, body: str, group_id: str) -> Path:
+    def _write_game_log_export(self, body: str, group_id: str) -> tuple[Path, Path]:
         self.game_export_dir.mkdir(parents=True, exist_ok=True)
         timestamp = datetime.now().astimezone().strftime("%Y%m%d_%H%M%S")
         suffix = _safe_session_name(group_id or "private")
         path = self.game_export_dir / f"game_logs_{timestamp}_{suffix}.txt"
         path.write_text(body, encoding="utf-8")
-        return path
+        try:
+            relative = path.relative_to(self.game_export_dir)
+            send_path = self.game_export_send_dir / relative
+        except ValueError:
+            send_path = path
+        return path, send_path
 
     async def notify(self, request: web.Request) -> web.Response:
         payload, error_response = await self._read_signed_json(request)
@@ -618,6 +641,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-notify-chars", type=int, default=int(os.environ.get("HERMES_MAX_NOTIFY_CHARS", str(DEFAULT_MAX_NOTIFY_CHARS))))
     parser.add_argument("--game-data-dir", default=os.environ.get("HERMES_GAME_DATA_DIR", str(DEFAULT_GAME_DATA_DIR)))
     parser.add_argument("--game-export-dir", default=os.environ.get("HERMES_GAME_EXPORT_DIR", str(DEFAULT_GAME_EXPORT_DIR)))
+    parser.add_argument("--game-export-send-dir", default=os.environ.get("HERMES_GAME_EXPORT_SEND_DIR", str(DEFAULT_GAME_EXPORT_SEND_DIR)))
     parser.add_argument("--game-log-tail-bytes", type=int, default=int(os.environ.get("HERMES_GAME_LOG_TAIL_BYTES", str(DEFAULT_GAME_LOG_TAIL_BYTES))))
     parser.add_argument("--game-audit-tail-bytes", type=int, default=int(os.environ.get("HERMES_GAME_AUDIT_TAIL_BYTES", str(DEFAULT_GAME_AUDIT_TAIL_BYTES))))
     parser.add_argument("--game-reply-chars", type=int, default=int(os.environ.get("HERMES_GAME_REPLY_CHARS", str(DEFAULT_GAME_REPLY_CHARS))))

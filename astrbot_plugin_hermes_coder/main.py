@@ -24,7 +24,7 @@ except ModuleNotFoundError:  # AstrBot test/mocked environments may expose regex
                 return fn
             return decorator
 from astrbot.api.star import Context, Star, register
-from astrbot.core.message.components import Plain
+from astrbot.core.message.components import File, Plain
 from astrbot.core.message.message_event_result import MessageChain
 from astrbot.core.star.filter.command import GreedyStr
 from astrbot.core.utils.astrbot_path import get_astrbot_data_path
@@ -39,6 +39,9 @@ DEFAULT_LOG_MAX_BYTES = 1_000_000
 DEFAULT_LOG_BACKUP_COUNT = 3
 DEFAULT_ACK_TEXT = "Hermes 已收到 /coder 请求，开始处理。长任务可能需要几分钟。"
 CODER_LOGGER_NAME = "astrbot_plugin_hermes_coder.private"
+DEFAULT_FILE_SEND_PATH_PREFIXES = {
+    "/AstrBot/data/plugin_data/astrbot_plugin_hermes_coder/exports/",
+}
 
 
 def configure_coder_logging(
@@ -79,6 +82,14 @@ def noop_coder_logger() -> logging.Logger:
     return plugin_logger
 
 
+async def run_blocking(func, *args):
+    to_thread = getattr(asyncio, "to_thread", None)
+    if to_thread is not None:
+        return await to_thread(func, *args)
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(None, lambda: func(*args))
+
+
 @register(
     "astrbot_plugin_hermes_coder",
     "codex",
@@ -100,6 +111,8 @@ class HermesCoderPlugin(Star):
         self.max_reply_chars = max(500, self._config_int("max_reply_chars", DEFAULT_MAX_REPLY_CHARS))
         self.ack_enabled = self._config_bool("ack_enabled", True)
         self.ack_text = self._config_str("ack_text", DEFAULT_ACK_TEXT)
+        self.file_send_enabled = self._config_bool("file_send_enabled", True)
+        self.file_send_path_prefixes = self._config_str_set("file_send_path_prefixes") or set(DEFAULT_FILE_SEND_PATH_PREFIXES)
         self.log_enabled = self._config_bool("log_enabled", True)
         self.log_max_bytes = max(10_000, self._config_int("log_max_bytes", DEFAULT_LOG_MAX_BYTES))
         self.log_backup_count = max(1, self._config_int("log_backup_count", DEFAULT_LOG_BACKUP_COUNT))
@@ -211,7 +224,7 @@ class HermesCoderPlugin(Star):
         await self._send_immediate_ack(event, payload)
         try:
             response = await asyncio.wait_for(
-                asyncio.to_thread(self._post_bridge, payload),
+                run_blocking(self._post_bridge, payload),
                 timeout=self.timeout_seconds + 5,
             )
         except asyncio.TimeoutError:
@@ -245,18 +258,63 @@ class HermesCoderPlugin(Star):
             text = "Hermes 没有返回文本结果。"
         if len(text) > self.max_reply_chars:
             text = text[: self.max_reply_chars].rstrip() + "\n\n[已截断]"
+        file_components = self._response_file_components(response)
         self.coder_logger.info(
-            "request_completed group=%s sender=%s message=%s status_code=%s ok=%s reply_chars=%s elapsed_ms=%s",
+            "request_completed group=%s sender=%s message=%s status_code=%s ok=%s reply_chars=%s files=%s elapsed_ms=%s",
             group_id or "(private)",
             payload.get("sender_id") or "",
             payload.get("message_id") or "",
             response.get("status_code") or "",
             response.get("ok") if "ok" in response else "",
             len(text),
+            len(file_components),
             int((time.monotonic() - started_at) * 1000),
         )
-        yield event.plain_result(text)
+        if file_components and callable(getattr(event, "chain_result", None)):
+            try:
+                yield event.chain_result([Plain(text), *file_components])
+            except Exception as exc:
+                self.coder_logger.warning(
+                    "request_file_result_failed group=%s sender=%s message=%s error=%s",
+                    group_id or "(private)",
+                    payload.get("sender_id") or "",
+                    payload.get("message_id") or "",
+                    self._safe_error(exc),
+                )
+                yield event.plain_result(text)
+        else:
+            yield event.plain_result(text)
         event.stop_event()
+
+    def _response_file_components(self, response: dict[str, Any]) -> list[Any]:
+        if not self.file_send_enabled:
+            return []
+        raw_files = response.get("files")
+        if not isinstance(raw_files, list):
+            return []
+
+        components: list[Any] = []
+        for raw_file in raw_files[:3]:
+            if not isinstance(raw_file, dict):
+                continue
+            file_path = str(raw_file.get("path") or raw_file.get("file") or "").strip()
+            if not file_path or not self._is_allowed_file_path(file_path):
+                continue
+            file_name = str(raw_file.get("name") or Path(file_path).name or "hermes-coder-export.txt").strip()
+            file_name = Path(file_name).name or "hermes-coder-export.txt"
+            try:
+                components.append(File(name=file_name, file=file_path))
+            except Exception as exc:
+                self.coder_logger.warning("response_file_component_failed path=%s error=%s", file_path, self._safe_error(exc))
+        return components
+
+    def _is_allowed_file_path(self, file_path: str) -> bool:
+        normalized = file_path.replace("\\", "/")
+        for prefix in self.file_send_path_prefixes:
+            normalized_prefix = str(prefix).replace("\\", "/").rstrip("/") + "/"
+            if normalized.startswith(normalized_prefix):
+                return True
+        return False
 
     async def _send_immediate_ack(self, event: AstrMessageEvent, payload: dict[str, Any]) -> None:
         if not self.ack_enabled:

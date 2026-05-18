@@ -58,6 +58,20 @@
     "hint": "Hermes 已收到 /coder 请求，开始处理。长任务可能需要几分钟。",
     "default": "Hermes 已收到 /coder 请求，开始处理。长任务可能需要几分钟。"
   },
+  "file_send_enabled": {
+    "description": "是否允许 /coder 把 Hermes bridge 返回的安全导出文件作为群文件发送。",
+    "type": "bool",
+    "hint": "true",
+    "default": true
+  },
+  "file_send_path_prefixes": {
+    "description": "允许发送的文件路径前缀白名单。只应包含 AstrBot 容器内可读的 Hermes 导出目录。",
+    "type": "list",
+    "hint": "/AstrBot/data/plugin_data/astrbot_plugin_hermes_coder/exports/",
+    "default": [
+      "/AstrBot/data/plugin_data/astrbot_plugin_hermes_coder/exports/"
+    ]
+  },
   "log_enabled": {
     "description": "是否启用 /coder 独立文件日志。日志只记录请求元信息、耗时和错误，不记录密钥或完整 prompt。",
     "type": "bool",

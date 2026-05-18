@@ -50,6 +50,11 @@ def _install_fake_astrbot_modules():
         def __init__(self, text=""):
             self.text = text
 
+    class File:
+        def __init__(self, name="", file=""):
+            self.name = name
+            self.file = file
+
     class MessageChain:
         def __init__(self, chain=None):
             self.chain = chain or []
@@ -66,6 +71,7 @@ def _install_fake_astrbot_modules():
     star.register = register
     astrbot_path.get_astrbot_data_path = get_astrbot_data_path
     command.GreedyStr = GreedyStr
+    components.File = File
     components.Plain = Plain
     message_event_result.MessageChain = MessageChain
 
@@ -115,6 +121,15 @@ class FakeEvent:
 
     def get_sender_id(self):
         return self._sender_id
+
+    def plain_result(self, text):
+        return {"kind": "plain", "text": text}
+
+    def chain_result(self, components):
+        return {"kind": "chain", "components": components}
+
+    def stop_event(self):
+        self.stopped = True
 
 
 def test_group_whitelist_normalizes_values():
@@ -216,5 +231,73 @@ def test_immediate_ack_uses_context_send_message():
         session_id, chain = context.sent[0]
         assert session_id == "aiocqhttp:GroupMessage:676453921"
         assert "".join(getattr(item, "text", "") for item in chain.chain) == "处理中"
+
+    asyncio.run(run_case())
+
+
+def test_response_file_components_only_allow_configured_export_prefixes():
+    plugin = HermesCoderPlugin.__new__(HermesCoderPlugin)
+    plugin.file_send_enabled = True
+    plugin.file_send_path_prefixes = {"/AstrBot/data/plugin_data/astrbot_plugin_hermes_coder/exports/"}
+    plugin.coder_logger = logging.getLogger("test-hermes-coder-files")
+
+    components = plugin._response_file_components(
+        {
+            "files": [
+                {
+                    "path": "/AstrBot/data/plugin_data/astrbot_plugin_hermes_coder/exports/game_logs/latest.txt",
+                    "name": "../latest.txt",
+                },
+                {
+                    "path": "/AstrBot/data/private/secret.txt",
+                    "name": "secret.txt",
+                },
+            ]
+        }
+    )
+
+    assert len(components) == 1
+    assert getattr(components[0], "name") == "latest.txt"
+    assert getattr(components[0], "file") == "/AstrBot/data/plugin_data/astrbot_plugin_hermes_coder/exports/game_logs/latest.txt"
+
+
+def test_handle_coder_returns_chain_result_with_export_file(monkeypatch):
+    async def run_case():
+        plugin = HermesCoderPlugin.__new__(HermesCoderPlugin)
+        plugin.enabled = True
+        plugin.group_whitelist = {"676453921"}
+        plugin.allow_private_chat = False
+        plugin.bridge_secret = "secret"
+        plugin.timeout_seconds = 5
+        plugin.max_prompt_chars = 4000
+        plugin.max_reply_chars = 3500
+        plugin.ack_enabled = False
+        plugin.file_send_enabled = True
+        plugin.file_send_path_prefixes = {"/AstrBot/data/plugin_data/astrbot_plugin_hermes_coder/exports/"}
+        plugin.coder_logger = logging.getLogger("test-hermes-coder-file-result")
+
+        def fake_post_bridge(payload):
+            assert payload["prompt"] == "获取最新游戏日志"
+            return {
+                "ok": True,
+                "reply": "日志导出好了",
+                "files": [
+                    {
+                        "path": "/AstrBot/data/plugin_data/astrbot_plugin_hermes_coder/exports/game_logs/latest.txt",
+                        "name": "latest.txt",
+                    }
+                ],
+            }
+
+        monkeypatch.setattr(plugin, "_post_bridge", fake_post_bridge)
+
+        results = []
+        async for result in plugin._handle_coder(FakeEvent(), "获取最新游戏日志"):
+            results.append(result)
+
+        assert len(results) == 1
+        assert results[0]["kind"] == "chain"
+        assert any(getattr(item, "text", "") == "日志导出好了" for item in results[0]["components"])
+        assert any(getattr(item, "file", "").endswith("/latest.txt") for item in results[0]["components"])
 
     asyncio.run(run_case())
