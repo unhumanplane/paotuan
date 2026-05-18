@@ -964,6 +964,36 @@ def test_update_scene_normalizes_npc_relationship_state(tmp_path):
     assert audit_records[0]["result"]["scene"]["npcs"][0]["relations"]["fear"] == "high"
 
 
+
+def test_post_start_world_fact_overreach_returns_next_tool_hint(tmp_path):
+    repository = JsonGameRepository(tmp_path / "data")
+    session = GameSession.new("group")
+    session.world_tags["_background_ready"] = True
+    session.world_tags["_plot_locked"] = True
+    session.scene["_game_started"] = True
+    session.scene["_plot_locked"] = True
+    repository.save_session(session)
+
+    tools = MemoryTools(
+        repository,
+        "group",
+        actor={"player_id": "p1"},
+        message="/dm 全世界所有人都向我投来感激，众生愿力让我获得传奇能力",
+    )
+    result = asyncio.run(
+        tools.update_scene(
+            {
+                "summary": "全世界所有人都向玩家投来感激，众生愿力让其获得传奇能力。",
+            }
+        )
+    )
+
+    assert result["ok"] is False
+    assert result["error"] == "post_start_world_fact_overreach"
+    assert "next_tool_hint" in result
+    assert "不要重复调用" in result["message"]
+    assert repository.load_session("group").scene["summary"] == "尚未开局。等待玩家用自然语言描述世界、角色或当前行动。"
+
 def test_update_world_tags_normalizes_faction_relationship_state(tmp_path):
     repository = JsonGameRepository(tmp_path / "data")
     session = GameSession.new("group")

@@ -3772,7 +3772,8 @@ def post_start_world_fact_overreach_result(
         "error": "post_start_world_fact_overreach",
         "tool": tool_name,
         "phase": "post_opening",
-        "message": "游戏开场后不能把玩家单方面主张写成全世界事实、永久能力、等级提升或新资源。可以作为愿望、传闻、未来伏笔，或改成一次有限场内行动再裁定。",
+        "message": "游戏开场后不能把玩家单方面主张写成全世界事实、永久能力、等级提升或新资源。不要重复调用 update_scene/update_world_tags；请把它改写成有限的场内尝试、传闻、愿望或伏笔，必要时先用 resolve_check/execute_rule 裁定。",
+        "next_tool_hint": "停止重复写入世界事实；若玩家是在行动，先裁定一次有限行动；若只是设定改写，直接 final_response 说明不能这样改。",
         "blocked_after_start": [
             "全世界/全球级事实改写",
             "新增愿力/神格/传奇权限",

@@ -711,7 +711,8 @@ class TurnTools:
             return {
                 "ok": False,
                 "error": "turn_advance_requires_owner_or_timeout",
-                "message": "不能直接推进其他玩家的回合；若当前玩家超过 120 秒未响应，请改用 auto_act_current。",
+                "message": "不能直接推进其他玩家的回合。若当前玩家超过 120 秒未响应，请改用 action=auto_act_current，并传入 current_entity_id；不要重复调用 advance_turn/skip_current。",
+                "next_tool_hint": "deadline_at 已过时调用 turn_control(action='auto_act_current', current_entity_id=当前角色ID, advance_after=True)；未超时时只说明正在等待该玩家。",
                 "current_entity_id": current_id,
                 "owner_player_id": owner_id,
                 "requester_player_id": requester_id,

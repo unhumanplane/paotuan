@@ -2202,3 +2202,20 @@ class InMemoryRepository:
 
     def last_audit_records(self, session_id, limit=20):
         return self.audit_records.get(session_id, [])[-limit:]
+
+
+def test_state_write_guard_result_includes_next_tool_hint():
+    from astrbot_plugin_auto_trpg_dm.core.router import _tool_call_requires_adjudication_support
+
+    result = _tool_call_requires_adjudication_support(
+        "我射击瞭望兵然后躲回掩体",
+        [],
+        tool_name="update_scene",
+    )
+
+    assert result["ok"] is False
+    assert result["error"] == "adjudication_guard_blocked_state_write"
+    assert result["reason"] == "missing_execute_rule_for_risky_state_write"
+    assert "next_tool_hint" in result
+    assert "resolve_check" in result["next_tool_hint"]
+    assert "不要重复调用" in result["message"]

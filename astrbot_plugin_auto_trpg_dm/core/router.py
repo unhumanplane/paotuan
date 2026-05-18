@@ -4173,9 +4173,12 @@ def _blocked_state_write_result(
         "error": "adjudication_guard_blocked_state_write",
         "reason": reason,
         "message": (
-            "这步涉及风险、对抗或客观状态变化，当前检定或规则参数未通过；没有写入场景。"
-            "请先用 resolve_check、execute_rule、战棋或回合工具完成结算。"
+            "这步涉及风险、对抗或客观状态变化，当前缺少必要支撑，所以没有写入场景。"
+            "下一步请只补齐缺失支撑：需要检定/伤害/资源时先调用 resolve_check 或 execute_rule；"
+            "需要位置、距离、视线、移动、射击或轮次时先调用战棋/turn_control 工具。"
+            "不要重复调用同一个 update_scene/update_character_tags。"
         ),
+        "next_tool_hint": _state_write_guard_next_tool_hint(reason),
         "tool_names": [str(item.get("tool") or "") for item in tool_results if isinstance(item, dict)],
     }
     if invalid_rule_result:
@@ -4185,6 +4188,16 @@ def _blocked_state_write_result(
             if invalid_rule_result.get(key) not in (None, "", [], {})
         }
     return result
+
+
+def _state_write_guard_next_tool_hint(reason: str) -> str:
+    if reason == "missing_execute_rule_for_risky_state_write":
+        return "先调用 resolve_check 或 execute_rule，得到成功/失败/部分成功后再写入状态；若已有检定失败，直接按失败结果 final_response。"
+    if reason == "missing_spatial_or_turn_tool_for_state_write":
+        return "先调用 turn_control 或可用战棋/空间工具确认当前行动者、位置、距离、视线或回合，再写入状态；若目标不明确，直接询问具体目标。"
+    if reason == "invalid_rule_arguments_block_state_write":
+        return "修正 resolve_check/execute_rule 参数后重试检定；不要跳过失败的规则调用直接写入状态。"
+    return "先补齐客观裁定工具结果，再写入状态；不要重复提交同一个状态写入。"
 
 
 def _state_write_guard_blocked(tool_results: list[dict[str, Any]]) -> bool:
