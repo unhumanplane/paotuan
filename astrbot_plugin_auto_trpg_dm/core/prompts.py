@@ -278,7 +278,7 @@ def _project_snapshot_for_profile(
         actor_character = _find_character_projection(snapshot.get("characters", []), actor_character_id)
         if actor_character:
             projected["actor_character"] = actor_character
-    projected["scene"] = _project_scene(snapshot.get("scene", {}), profile, actor_character_id=actor_character_id)
+    projected["scene"] = _project_scene(snapshot.get("scene", {}), profile, actor_character_id=actor_character_id, message=message)
     projected["world_tags"] = _project_world_tags(snapshot.get("world_tags", {}), profile)
     projected["characters"] = _project_characters(
         snapshot.get("characters", []),
@@ -295,7 +295,7 @@ def _project_snapshot_for_profile(
     return projected
 
 
-def _project_scene(scene: Any, profile: str, *, actor_character_id: str = "") -> Any:
+def _project_scene(scene: Any, profile: str, *, actor_character_id: str = "", message: str = "") -> Any:
     if not isinstance(scene, dict):
         return scene
     active_thread_id = str(scene.get("active_scene_thread_id") or "").strip()
@@ -319,7 +319,7 @@ def _project_scene(scene: Any, profile: str, *, actor_character_id: str = "") ->
             continue
         if key == "last_resolution" and _is_fact_check_resolution(value):
             continue
-        projected_value = _project_scene_value(key, value, profile)
+        projected_value = _project_scene_value(key, value, profile, message=message)
         if projected_value not in ({}, [], "", None):
             projected[key] = projected_value
     threads = _project_scene_threads(raw_threads, active_thread_id, profile, actor_character_id=actor_character_id)
@@ -358,7 +358,7 @@ SCENE_PROJECTION_DROP_PREFIXES = (
 )
 
 
-def _project_scene_value(key: str, value: Any, profile: str) -> Any:
+def _project_scene_value(key: str, value: Any, profile: str, *, message: str = "") -> Any:
     if _looks_like_relationship_projection_key(key):
         return _project_generic_value(project_public_relation_state(value), depth=3, text_limit=280, item_limit=16)
     if key in {"summary", "current_conflict", "_opening_intro"}:
@@ -376,7 +376,7 @@ def _project_scene_value(key: str, value: Any, profile: str) -> Any:
     if key == "event_timeline":
         return _project_event_timeline_for_prompt(value, profile)
     if key == "entity_facts":
-        return _project_entity_facts_for_prompt(value, profile)
+        return _project_entity_facts_for_prompt(value, profile, message=message)
     if isinstance(value, dict):
         return _project_mapping(value, depth=2, text_limit=360, item_limit=16)
     if isinstance(value, list):
@@ -403,18 +403,50 @@ def _project_event_timeline_for_prompt(value: Any, profile: str) -> Any:
     return projected
 
 
-def _project_entity_facts_for_prompt(value: Any, profile: str) -> Any:
+def _project_entity_facts_for_prompt(value: Any, profile: str, *, message: str = "") -> Any:
     if not isinstance(value, dict):
         return value
     limit = 6 if profile in {"state_query", "character_profile"} else 10
     projected: dict[str, Any] = {}
-    for index, (entity_id, fact) in enumerate(value.items()):
-        if index >= limit:
-            break
-        if not isinstance(fact, dict):
-            continue
-        projected[str(entity_id)] = project_visible_scene_value(fact, depth=3, text_limit=260, item_limit=8)
+    fact_items = [
+        (str(entity_id), fact)
+        for entity_id, fact in value.items()
+        if isinstance(fact, dict)
+    ]
+    query_text = _normalized_projection_text(message)
+    fact_items.sort(
+        key=lambda item: (
+            _entity_fact_relevance_score(item[0], item[1], query_text),
+            str(item[1].get("updated_at") or ""),
+            str(item[1].get("created_at") or ""),
+            item[0],
+        ),
+        reverse=True,
+    )
+    for entity_id, fact in fact_items[:limit]:
+        projected[entity_id] = project_visible_scene_value(fact, depth=3, text_limit=260, item_limit=8)
     return projected
+
+
+def _entity_fact_relevance_score(entity_id: str, fact: dict[str, Any], query_text: str) -> int:
+    if not query_text:
+        return 0
+    candidates = [entity_id, fact.get("name", "")]
+    aliases = fact.get("aliases") or fact.get("alias") or []
+    if isinstance(aliases, str):
+        candidates.append(aliases)
+    elif isinstance(aliases, list):
+        candidates.extend(str(item) for item in aliases)
+    for candidate in candidates:
+        normalized = _normalized_projection_text(candidate)
+        if normalized and normalized in query_text:
+            return 2
+    compact_fact_text = _normalized_projection_text(
+        " ".join(str(fact.get(key) or "") for key in ("current_status", "historical_facts", "unknowns"))
+    )
+    if compact_fact_text and any(token for token in query_text.split() if len(token) >= 3 and token in compact_fact_text):
+        return 1
+    return 0
 
 
 def _project_scene_threads(value: Any, active_thread_id: str, profile: str, *, actor_character_id: str = "") -> Any:

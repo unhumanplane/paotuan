@@ -45,6 +45,8 @@ DEFAULT_GAME_EXPORT_SEND_DIR = Path("/AstrBot/data/plugin_data/astrbot_plugin_he
 DEFAULT_GAME_LOG_TAIL_BYTES = 8_000
 DEFAULT_GAME_AUDIT_TAIL_BYTES = 8_000
 DEFAULT_GAME_REPLY_CHARS = 3_200
+DEFAULT_PLUGIN_REVIEW_SCRIPT = OPS / "bin" / "review_plugin_logs.sh"
+DEFAULT_PLUGIN_REVIEW_REPLY = "插件日志审阅/自动修复已交给 Paotuan 审阅脚本在后台执行，完成后会把结果发回群里。"
 
 
 def require_aiohttp_web():
@@ -137,6 +139,19 @@ def truncate_text(text: str, limit: int) -> str:
     if len(text) <= limit:
         return text
     return text[:limit].rstrip() + "\n\n[已截断]"
+
+
+def is_plugin_review_request(prompt: str) -> bool:
+    text = (prompt or "").strip().lower()
+    if not text:
+        return False
+    review_markers = ("审阅", "审查", "复盘", "review")
+    fix_markers = ("自动修复", "修复", "优化", "fix")
+    plugin_markers = ("插件", "plugin", "auto_trpg_dm", "跑团", "游戏日志", "独立日志", "日志")
+    self_review_markers = ("不要让你自己审阅", "插件自己调用审阅", "调用审阅", "审阅脚本", "review_plugin_logs")
+    if any(marker in text for marker in self_review_markers):
+        return True
+    return any(marker in text for marker in review_markers) and any(marker in text for marker in fix_markers) and any(marker in text for marker in plugin_markers)
 
 
 def is_game_log_request(prompt: str) -> bool:
@@ -263,6 +278,23 @@ def build_prompt(payload: dict[str, Any]) -> str:
     )
 
 
+def run_plugin_review_script(script_path: Path, user_prompt: str, timeout: int) -> tuple[int, str]:
+    if not script_path.exists():
+        raise RuntimeError(f"plugin review script not found: {script_path}")
+    env = command_env()
+    env["PAOTUAN_REVIEW_REQUEST"] = user_prompt
+    proc = subprocess.run(
+        [str(script_path)],
+        cwd=str(OPS),
+        env=env,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        timeout=timeout,
+    )
+    return proc.returncode, proc.stdout or ""
+
+
 def run_hermes(prompt: str, timeout: int, workdir: Path) -> tuple[int, str]:
     cmd = ["hermes", "--accept-hooks", "--worktree", "-z", prompt]
     proc = subprocess.run(
@@ -305,6 +337,8 @@ class CoderBridge:
         self.game_log_tail_bytes = int(args.game_log_tail_bytes)
         self.game_audit_tail_bytes = int(args.game_audit_tail_bytes)
         self.game_reply_chars = int(args.game_reply_chars)
+        self.plugin_review_script = Path(args.plugin_review_script)
+        self.plugin_review_reply = str(args.plugin_review_reply).strip() or DEFAULT_PLUGIN_REVIEW_REPLY
         self.started_at = time.time()
 
     async def health(self, request: web.Request) -> web.Response:
@@ -340,6 +374,20 @@ class CoderBridge:
             return json_response({"ok": False, "error": "empty prompt"}, status=400)
         if len(prompt) > self.max_prompt_chars:
             return json_response({"ok": False, "error": "prompt too long"}, status=400)
+        if is_plugin_review_request(prompt):
+            group_id = str(payload.get("group_id") or "").strip()
+            try:
+                self._session_for_group(group_id)
+                hermes_prompt = build_prompt(payload)
+                asyncio.create_task(self._run_plugin_review_job(payload, hermes_prompt))
+            except ValueError as exc:
+                return json_response({"ok": False, "error": str(exc)}, status=400)
+            print(
+                f"coder_plugin_review_accepted group={group_id} "
+                f"message={payload.get('message_id') or ''}",
+                flush=True,
+            )
+            return json_response({"ok": True, "accepted": True, "reply": self.plugin_review_reply})
         if is_game_log_request(prompt):
             group_id = str(payload.get("group_id") or "").strip()
             try:
@@ -374,6 +422,46 @@ class CoderBridge:
         )
         asyncio.create_task(self._run_coder_job(payload, hermes_prompt))
         return json_response({"ok": True, "accepted": True, "reply": DEFAULT_BACKGROUND_ACCEPTED_REPLY})
+
+    async def _run_plugin_review_job(self, payload: dict[str, Any], hermes_prompt: str) -> None:
+        group_id = str(payload.get("group_id") or "").strip()
+        message_id = str(payload.get("message_id") or "").strip()
+        try:
+            session = self._session_for_group(group_id)
+            print(f"coder_plugin_review_started group={group_id} message={message_id}", flush=True)
+            returncode, output = await run_blocking(
+                run_plugin_review_script,
+                self.plugin_review_script,
+                hermes_prompt,
+                self.job_timeout_seconds,
+            )
+            text = self._format_plugin_review_reply(returncode, output)
+            print(
+                f"coder_plugin_review_completed group={group_id} message={message_id} "
+                f"returncode={returncode} output_chars={len(output or '')} notify_chars={len(text)}",
+                flush=True,
+            )
+        except subprocess.TimeoutExpired:
+            text = f"【Paotuan 插件审阅/自动修复超时】任务超过 {self.job_timeout_seconds} 秒仍未完成，已停止等待。"
+        except Exception as exc:
+            text = f"【Paotuan 插件审阅/自动修复执行失败】{str(exc)[:300]}"
+        try:
+            api_key = read_secret(self.astrbot_api_key_path)
+            api_result = await run_blocking(self._post_astrbot_message, api_key, session, text)
+            if not api_result.get("ok"):
+                print(f"coder_plugin_review_notify_failed group={group_id} message={message_id} error={api_result.get('error')}", flush=True)
+            else:
+                print(f"coder_plugin_review_notify_sent group={group_id} message={message_id} session={session}", flush=True)
+        except Exception as exc:
+            print(f"coder_plugin_review_notify_failed group={group_id} message={message_id} error={str(exc)[:200]}", flush=True)
+
+    def _format_plugin_review_reply(self, returncode: int, output: str) -> str:
+        text = tail_text((output or "").strip(), self.max_output_chars)
+        if not text:
+            text = "Paotuan 插件审阅/自动修复任务完成，但没有返回文本结果。"
+        if returncode != 0:
+            text = f"【Paotuan 插件审阅/自动修复异常退出：{returncode}】\n{text}"
+        return truncate_text(text, self.max_notify_chars)
 
     async def _run_coder_job(self, payload: dict[str, Any], hermes_prompt: str) -> None:
         group_id = str(payload.get("group_id") or "").strip()
@@ -645,6 +733,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--game-log-tail-bytes", type=int, default=int(os.environ.get("HERMES_GAME_LOG_TAIL_BYTES", str(DEFAULT_GAME_LOG_TAIL_BYTES))))
     parser.add_argument("--game-audit-tail-bytes", type=int, default=int(os.environ.get("HERMES_GAME_AUDIT_TAIL_BYTES", str(DEFAULT_GAME_AUDIT_TAIL_BYTES))))
     parser.add_argument("--game-reply-chars", type=int, default=int(os.environ.get("HERMES_GAME_REPLY_CHARS", str(DEFAULT_GAME_REPLY_CHARS))))
+    parser.add_argument("--plugin-review-script", default=os.environ.get("HERMES_PLUGIN_REVIEW_SCRIPT", str(DEFAULT_PLUGIN_REVIEW_SCRIPT)))
+    parser.add_argument("--plugin-review-reply", default=os.environ.get("HERMES_PLUGIN_REVIEW_REPLY", DEFAULT_PLUGIN_REVIEW_REPLY))
     return parser.parse_args()
 
 

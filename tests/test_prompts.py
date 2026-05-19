@@ -85,6 +85,7 @@ def test_prompt_projection_includes_compact_event_timeline_and_entity_facts():
             "current_status": "已确认生还；当前所在不明",
             "historical_facts": ["曾在中央控制室观察ROV操作。"],
             "unknowns": ["逃生路线未知"],
+            "updated_at": "2026-05-14T03:20:00+00:00",
         }
     }
 
@@ -96,6 +97,43 @@ def test_prompt_projection_includes_compact_event_timeline_and_entity_facts():
 
     assert snapshot["scene"]["event_timeline"][0]["id"] == "event_shidong_survived"
     assert snapshot["scene"]["entity_facts"]["npc_shidong"]["current_status"] == "已确认生还；当前所在不明"
+
+
+def test_prompt_projection_prefers_recent_entity_facts_over_stale_long_term_noise():
+    session = GameSession.new("group")
+    stale_facts = {
+        f"npc_stale_{index}": {
+            "entity_type": "npc",
+            "name": f"旧噪声{index}",
+            "current_status": "早期错误结论：已经死亡。",
+            "updated_at": f"2026-05-14T03:{index:02d}:00+00:00",
+        }
+        for index in range(12)
+    }
+    session.scene["entity_facts"] = {
+        **stale_facts,
+        "npc_shidong": {
+            "entity_type": "npc",
+            "name": "史东",
+            "current_status": "已确认生还；当前所在不明",
+            "historical_facts": ["曾在中央控制室观察ROV操作。"],
+            "unknowns": ["逃生路线未知"],
+            "updated_at": "2026-05-14T02:20:00+00:00",
+        },
+    }
+
+    snapshot, _stats = prompt_snapshot_data(
+        session,
+        GameMode.NARRATIVE,
+        message="史东现在到底是什么状态？",
+        actor={"player_id": "player-1"},
+    )
+
+    projected_facts = snapshot["scene"]["entity_facts"]
+    rendered = json.dumps(projected_facts, ensure_ascii=False)
+    assert "npc_shidong" in projected_facts
+    assert "已确认生还" in rendered
+    assert "npc_stale_0" not in projected_facts
 
 
 def test_system_prompt_prefers_overview_topology_renderer_before_llm_svg_fallback():

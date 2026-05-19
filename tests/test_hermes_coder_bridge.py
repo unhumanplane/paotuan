@@ -48,6 +48,8 @@ def _bridge(tmp_path, *, groups="", config_groups=None):
         game_log_tail_bytes=400,
         game_audit_tail_bytes=400,
         game_reply_chars=3200,
+        plugin_review_script=str(tmp_path / "review_plugin_logs.sh"),
+        plugin_review_reply="review accepted",
     )
     return bridge_mod.CoderBridge(args)
 
@@ -269,3 +271,98 @@ def test_run_coder_job_posts_result_to_astrbot(tmp_path, monkeypatch):
 def test_background_accepted_reply_constant_is_defined():
     assert bridge_mod.DEFAULT_BACKGROUND_ACCEPTED_REPLY
     assert "后台" in bridge_mod.DEFAULT_BACKGROUND_ACCEPTED_REPLY
+
+
+
+def test_plugin_review_request_detection_targets_review_fix_prompts():
+    assert bridge_mod.is_plugin_review_request("不要让你自己审阅，让插件自己调用审阅，实现自动修复版")
+    assert bridge_mod.is_plugin_review_request("审阅插件日志并自动修复")
+    assert not bridge_mod.is_plugin_review_request("获取最新游戏日志")
+    assert not bridge_mod.is_plugin_review_request("审查两个未合并 PR")
+
+
+def test_coder_starts_plugin_review_script_without_running_generic_hermes(tmp_path, monkeypatch):
+    async def run_case():
+        bridge = _bridge(tmp_path, groups="1101538762")
+        bridge.plugin_review_script.write_text("#!/bin/sh\necho ok\n", encoding="utf-8")
+        captured = {}
+
+        async def fake_read_signed_json(_request):
+            return {
+                "prompt": "审阅插件日志并自动修复",
+                "group_id": "1101538762",
+                "message_id": "msg-review",
+                "session_id": "default:GroupMessage:1101538762",
+            }, None
+
+        async def fake_run_plugin_review_job(payload, hermes_prompt):
+            captured["payload"] = payload
+            captured["prompt"] = hermes_prompt
+
+        def fake_run_hermes(*_args):
+            raise AssertionError("generic run_hermes should not be called for plugin review requests")
+
+        def fake_json_response(data, *args, **kwargs):
+            del args
+            return {"data": data, "status": kwargs.get("status")}
+
+        monkeypatch.setattr(bridge, "_read_signed_json", fake_read_signed_json)
+        monkeypatch.setattr(bridge, "_run_plugin_review_job", fake_run_plugin_review_job)
+        monkeypatch.setattr(bridge_mod, "run_hermes", fake_run_hermes)
+        monkeypatch.setattr(bridge_mod, "json_response", fake_json_response)
+
+        response = await bridge.coder(object())
+
+        await asyncio.sleep(0)
+        assert response["status"] is None
+        assert response["data"]["ok"] is True
+        assert response["data"]["accepted"] is True
+        assert response["data"]["reply"] == "review accepted"
+        assert captured["payload"]["message_id"] == "msg-review"
+        assert "审阅插件日志并自动修复" in captured["prompt"]
+
+    asyncio.run(run_case())
+
+
+def test_run_plugin_review_script_passes_owner_request_env(tmp_path, monkeypatch):
+    script = tmp_path / "review_plugin_logs.sh"
+    script.write_text("#!/bin/sh\nprintf '%s' \"$PAOTUAN_REVIEW_REQUEST\"\n", encoding="utf-8")
+    script.chmod(0o755)
+
+    returncode, output = bridge_mod.run_plugin_review_script(script, "owner request", 5)
+
+    assert returncode == 0
+    assert output == "owner request"
+
+
+def test_run_plugin_review_job_posts_result_to_astrbot(tmp_path, monkeypatch):
+    async def run_case():
+        bridge = _bridge(tmp_path, groups="1101538762")
+        captured = {}
+
+        def fake_run_review(script_path, user_prompt, timeout):
+            captured["script_path"] = script_path
+            captured["user_prompt"] = user_prompt
+            captured["timeout"] = timeout
+            return 0, "审阅脚本完成"
+
+        def fake_post(api_key, session, text):
+            captured["api_key"] = api_key
+            captured["session"] = session
+            captured["text"] = text
+            return {"ok": True}
+
+        monkeypatch.setattr(bridge_mod, "run_plugin_review_script", fake_run_review)
+        monkeypatch.setattr(bridge, "_post_astrbot_message", fake_post)
+
+        await bridge._run_plugin_review_job(
+            {"group_id": "1101538762", "message_id": "msg-review"},
+            "review prompt",
+        )
+
+        assert captured["timeout"] == 1800
+        assert captured["user_prompt"] == "review prompt"
+        assert captured["session"] == "default:GroupMessage:1101538762"
+        assert captured["text"] == "审阅脚本完成"
+
+    asyncio.run(run_case())

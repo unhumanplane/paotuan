@@ -4641,9 +4641,40 @@ def _looks_like_rules_or_adjudication_meta_request(text: str) -> bool:
     return any(term in normalized for term in meta_terms) and any(term in normalized for term in rules_context)
 
 
+def _looks_like_late_join_character_request(text: str) -> bool:
+    normalized = str(text or "").strip().lower()
+    if not normalized:
+        return False
+    query_terms = ("哪些", "列表", "一览", "当前", "现在", "所有", "全部", "谁", "有没有")
+    if any(term in normalized for term in query_terms):
+        return False
+    join_markers = (
+        "我要加入",
+        "我想加入",
+        "申请加入",
+        "加入游戏",
+        "加入团",
+        "补入",
+        "新角色",
+        "角色名",
+        "人设",
+        "设定",
+        "背景",
+        "扮演",
+        "加入:",
+        "加入：",
+    )
+    return any(marker in normalized for marker in join_markers)
+
+
 def _looks_like_player_roster_request(text: str) -> bool:
     normalized = str(text or "").strip().lower()
     if not normalized:
+        return False
+    # “我要加入：……”是补入建卡意图，不是查询“谁加入了”。
+    # 之前 roster_terms/query_terms 的宽松匹配会把带有“加入/角色”的长建卡文本
+    # 误判成玩家列表查询，导致新玩家反复收到 roster 而没有进入 character_creation。
+    if _looks_like_late_join_character_request(normalized):
         return False
     exact = {
         "玩家列表",
