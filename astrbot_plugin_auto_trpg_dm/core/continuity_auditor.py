@@ -1053,6 +1053,12 @@ def _project_scene_patch_to_relevant_threads(
     threads = _scene_threads(session.scene)
     target_ids = _scene_thread_ids_from_tool_results(tool_results, threads)
     target_ids.update(_scene_thread_ids_matching_scene_patch(thread_patch, threads))
+    if _scene_patch_looks_like_shared_resolution(thread_patch, tool_results):
+        target_ids.update(
+            str(thread_id)
+            for thread_id, thread in threads.items()
+            if isinstance(thread, dict) and _scene_thread_is_open_character_thread(str(thread_id), thread)
+        )
     if not target_ids and len(threads) == 1:
         target_ids.update(str(thread_id) for thread_id in threads.keys())
     if not target_ids:
@@ -1116,6 +1122,36 @@ def _scene_thread_ids_matching_scene_patch(
         if patched_hook_ids and patched_hook_ids & _ids_from_list_of_dicts(thread.get("open_hooks")):
             target_ids.add(str(thread_id))
     return target_ids
+
+
+def _scene_patch_looks_like_shared_resolution(patch: dict[str, Any], tool_results: list[dict[str, Any]]) -> bool:
+    text = _flatten_text(patch)
+    if not text:
+        return False
+    resolution_terms = (
+        "已结束",
+        "已收束",
+        "已肃清",
+        "全院已肃清",
+        "无剩余敌人",
+        "全部残敌已击杀",
+        "战斗已经收束",
+        "战斗已结束",
+        "当前主要风险",
+    )
+    if not _contains_any(text, resolution_terms):
+        return False
+    return _has_recent_tool_backed_scene_fact(tool_results)
+
+
+def _scene_thread_is_open_character_thread(thread_id: str, thread: dict[str, Any]) -> bool:
+    if _scene_thread_is_closed(thread):
+        return False
+    if thread_id.startswith("character:"):
+        return True
+    if str(thread.get("active_character_id") or "").strip():
+        return True
+    return any(str(item or "").startswith("pc_") for item in thread.get("participants") or [])
 
 
 def _merge_scene_thread_projection(thread: dict[str, Any], patch: dict[str, Any]) -> bool:

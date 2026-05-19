@@ -891,6 +891,87 @@ def test_audit_scene_patch_projects_pressure_clock_and_stakes_to_thread():
     assert "当前前哨战斗已经收束" in thread["stakes"]
 
 
+def test_audit_global_scene_repair_projects_shared_outpost_resolution_to_all_open_character_threads():
+    session = GameSession.new("group")
+    for character_id, name, player_id in (
+        ("pc_kade", "凯德", "p1"),
+        ("pc_yang_yongxin", "杨永信", "p2"),
+        ("pc_yaka", "雅卡", "p3"),
+    ):
+        session.characters[character_id] = Character(id=character_id, name=name, player_id=player_id)
+        session.player_character_map[player_id] = character_id
+    session.scene.update(
+        {
+            "summary": "旧状态：前哨院内还有水井残敌，隘口增援已经抵达。",
+            "current_conflict": "旧状态：水井残敌尚未补刀，杨永信还在等第二箭。",
+            "scene_threads": {
+                "character:pc_kade": {
+                    "summary": "旧状态：凯德仍被院内残敌牵制。",
+                    "current_conflict": "旧状态：水井残敌尚未补刀，杨永信还在等第二箭。",
+                    "participants": ["pc_kade"],
+                    "active_character_id": "pc_kade",
+                },
+                "character:pc_yang_yongxin": {
+                    "summary": "旧状态：杨永信仍暴露在碎石坡上等待第二箭。",
+                    "current_conflict": "旧状态：水井残敌尚未补刀，杨永信还在等第二箭。",
+                    "participants": ["pc_yang_yongxin"],
+                    "active_character_id": "pc_yang_yongxin",
+                },
+                "character:pc_yaka": {
+                    "summary": "旧状态：雅卡还在和隘口增援混战。",
+                    "current_conflict": "旧状态：隘口增援已经抵达。",
+                    "participants": ["pc_yaka"],
+                    "active_character_id": "pc_yaka",
+                },
+                "session": {
+                    "status": "archived",
+                    "summary": "更旧的第8轮前哨战斗。",
+                },
+            },
+        }
+    )
+    payload = {
+        "safe_patches": {
+            "scene": {
+                "summary": "第2天上午，前哨站院内战斗已结束，前哨站全院已肃清。",
+                "current_conflict": "全院已肃清，无剩余敌人；当前主要风险来自已逃报信的哨兵、隘口陷阱和可能到来的桃源教增援。",
+                "current_objective": "与队伍商议下一步行动计划。",
+            }
+        }
+    }
+    tool_results = [
+        {
+            "tool": "update_scene",
+            "result": {
+                "ok": True,
+                "scene_thread_id": "character:pc_yang_yongxin",
+                "summary": "第2天上午，前哨站院内战斗已结束，前哨站全院已肃清。",
+                "current_conflict": "全院已肃清，无剩余敌人；当前主要风险来自已逃报信的哨兵、隘口陷阱和可能到来的桃源教增援。",
+                "current_objective": "与队伍商议下一步行动计划。",
+            },
+        }
+    ]
+
+    result = apply_continuity_audit_patches(
+        session,
+        payload,
+        actor={"player_id": "p2"},
+        player_message="隘口也打完了啊，你确认一下",
+        completion="更正：前哨全院已肃清。",
+        tool_results=tool_results,
+    )
+
+    projection = next(item for item in result["applied"] if item.get("type") == "scene_thread_projection")
+    assert set(projection["thread_ids"]) == {"character:pc_kade", "character:pc_yang_yongxin", "character:pc_yaka"}
+    assert "session" not in projection["thread_ids"]
+    for thread_id in projection["thread_ids"]:
+        thread = session.scene["scene_threads"][thread_id]
+        assert "全院已肃清" in thread["current_conflict"]
+        assert "水井残敌" not in json.dumps(thread, ensure_ascii=False)
+        assert "第二箭" not in json.dumps(thread, ensure_ascii=False)
+        assert "隘口增援已经抵达" not in json.dumps(thread, ensure_ascii=False)
+
+
 def test_normalize_active_scene_thread_ignores_closed_active_thread():
     session = GameSession.new("group")
     session.scene["active_scene_thread_id"] = "character:pc_esmeralda"
