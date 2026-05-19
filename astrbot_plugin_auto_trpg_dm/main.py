@@ -60,7 +60,7 @@ from .tools.registry import ToolRegistry
 from .tools.turn_tools import TurnTools
 
 
-PLUGIN_VERSION = "0.1.129"
+PLUGIN_VERSION = "0.1.130"
 
 DEFAULT_REASSURANCE_PHRASES = (
     "正在翻找合适的骰子。",
@@ -1713,6 +1713,8 @@ class AutoTrpgDmPlugin(Star):
     def _action_pacing_reply(self, session_id: str, actor: dict[str, str], routed_message: str) -> str:
         text = self._dedupe_text(routed_message)
         if _looks_like_terminal_or_interlude_for_pacing(text):
+            return ""
+        if _looks_like_late_join_character_request(text):
             return ""
         player_id = str(actor.get("player_id") or "").strip()
         if not player_id or not _looks_like_paced_player_action(text):
@@ -4645,6 +4647,8 @@ def _looks_like_late_join_character_request(text: str) -> bool:
     normalized = str(text or "").strip().lower()
     if not normalized:
         return False
+    if normalized in {"加入", "加入。", "加入！", "join"}:
+        return True
     query_terms = ("哪些", "列表", "一览", "当前", "现在", "所有", "全部", "谁", "有没有")
     if any(term in normalized for term in query_terms):
         return False

@@ -11,6 +11,39 @@ class GameModeStateMachine:
     RULE_HINTS = ("规则", "机制", "检定", "伤害公式", "判定方式", "怎么骰")
     BATTLE_HINTS = ("战棋", "地图", "坐标", "移动", "格", "攻击距离", "视线", "回合", "轮动", "行动顺序", "下一位")
     RESOLUTION_HINTS = ("结算", "场面结算", "结果", "命中", "伤害", "消耗", "豁免", "继续", "跳过", "无人响应")
+    POST_START_CHARACTER_HINTS = (
+        "人物卡",
+        "角色卡",
+        "车卡",
+        "建卡",
+        "给我创建",
+        "帮我创建",
+        "给我建",
+        "帮我建",
+        "创建人物",
+        "创建角色",
+        "创建啊",
+        "建出来",
+        "绑定角色",
+        "换新角色",
+        "加入游戏",
+        "我要加入游戏",
+        "我加入",
+        "我要加入",
+        "角色名",
+        "角色名字",
+        "加入队伍",
+        "加入战场",
+        "新角色加入",
+        "补位",
+        "替补",
+        "后继角色",
+        "重新加入",
+        "重新进团",
+        "重新入团",
+        "角色还没落地",
+        "我随身带",
+    )
     LIVE_ACTION_HINTS = (
         "攻击",
         "施法",
@@ -53,14 +86,16 @@ class GameModeStateMachine:
         battle = session.battle or {}
         turn = battle.get("turn") if isinstance(battle.get("turn"), dict) else {}
         campaign_started = self._campaign_started(session)
+        if campaign_started and self._looks_like_post_start_character_request(text):
+            return GameMode.CHARACTER_CREATION
+        if campaign_started and self._looks_like_late_join_intent(text):
+            return GameMode.CHARACTER_CREATION
         if combat_lifecycle_active(session):
             return GameMode.TACTICAL
         if any(hint in text for hint in self.BATTLE_HINTS):
             return GameMode.TACTICAL
         if campaign_started and self._looks_like_live_action(text):
             return GameMode.RESOLUTION
-        if campaign_started and self._looks_like_post_start_character_request(text):
-            return GameMode.CHARACTER_CREATION
         if not campaign_started and self._looks_like_character_request(text):
             return GameMode.CHARACTER_CREATION
         if self._looks_like_start_request(text) and not battle.get("active"):
@@ -99,40 +134,28 @@ class GameModeStateMachine:
     def _looks_like_post_start_character_request(text: str) -> bool:
         if not text:
             return False
+        return any(token in text for token in GameModeStateMachine.POST_START_CHARACTER_HINTS)
+
+    @staticmethod
+    def _looks_like_late_join_intent(text: str) -> bool:
+        if not text:
+            return False
+        query_terms = ("哪些", "列表", "一览", "当前", "现在", "所有", "全部", "谁", "有没有")
+        if any(term in text for term in query_terms):
+            return False
+        if text in {"加入", "加入。", "加入！", "join"}:
+            return True
         return any(
-            token in text
-            for token in (
-                "人物卡",
-                "角色卡",
-                "车卡",
-                "建卡",
-                "给我创建",
-                "帮我创建",
-                "给我建",
-                "帮我建",
-                "创建人物",
-                "创建角色",
-                "创建啊",
-                "建出来",
-                "绑定角色",
-                "换新角色",
-                "加入游戏",
-                "我要加入游戏",
-                "我加入",
-                "我要加入",
-                "角色名",
-                "角色名字",
-                "加入队伍",
-                "加入战场",
-                "新角色加入",
-                "补位",
-                "替补",
-                "后继角色",
-                "重新加入",
-                "重新进团",
-                "重新入团",
-                "角色还没落地",
-                "我随身带",
+            marker in text
+            for marker in (
+                "想加入",
+                "要加入",
+                "申请加入",
+                "参与这个团",
+                "参加这个团",
+                "进团",
+                "入团",
+                "补入",
             )
         )
 

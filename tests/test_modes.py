@@ -136,6 +136,33 @@ def test_late_join_create_request_after_campaign_start_enters_character_creation
     assert mode == GameMode.CHARACTER_CREATION
 
 
+def test_late_join_single_word_after_campaign_start_enters_character_creation_even_in_combat():
+    session = GameSession.new("s")
+    session.scene["_game_started"] = True
+    session.characters["pc_chen_dahu"] = object()
+    session.player_character_map = {"512469473": "pc_chen_dahu"}
+    session.battle = {"active": True}
+
+    mode = GameModeStateMachine().detect(session, "加入")
+
+    assert mode == GameMode.CHARACTER_CREATION
+
+
+def test_late_join_without_character_word_after_campaign_start_enters_character_creation_before_action_routing():
+    session = GameSession.new("s")
+    session.scene["_game_started"] = True
+    session.characters["pc_chen_dahu"] = object()
+    session.player_character_map = {"512469473": "pc_chen_dahu"}
+    session.battle = {"active": True}
+
+    mode = GameModeStateMachine().detect(
+        session,
+        "我要加入，我叫老铂，是西方炼金术士，随身带了一些炼金药剂，来附近找材料。",
+    )
+
+    assert mode == GameMode.CHARACTER_CREATION
+
+
 def test_retirement_backstory_stays_resolution_in_live_campaign():
     session = GameSession.new("s")
     session.scene["_game_started"] = True
