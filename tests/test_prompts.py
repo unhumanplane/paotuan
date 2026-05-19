@@ -99,6 +99,52 @@ def test_prompt_projection_includes_compact_event_timeline_and_entity_facts():
     assert snapshot["scene"]["entity_facts"]["npc_shidong"]["current_status"] == "已确认生还；当前所在不明"
 
 
+def test_prompt_projection_continuity_anchor_keeps_active_thread_resolution_and_pressure():
+    session = GameSession.new("group")
+    session.characters["pc_kade"] = Character(id="pc_kade", name="凯德", player_id="p1")
+    session.player_character_map["p1"] = "pc_kade"
+    session.scene.update(
+        {
+            "active_scene_thread_id": "character:pc_kade",
+            "scene_threads": {
+                "character:pc_kade": {
+                    "summary": "凯德已经完成攻击并离开尸体旁的阴影。",
+                    "current_conflict": "本轮攻击已经结算；目标倒地，不需要重复攻击。",
+                    "current_objective": "趁敌人倒地后继续潜伏侦查。",
+                    "stakes": "若停留太久，巡逻队可能发现尸体。",
+                    "pressure_clock": {
+                        "label": "巡逻队接近",
+                        "tick": 1,
+                        "max": 4,
+                        "description": "攻击已结束，剩余压力是巡逻队可能发现现场。",
+                        "status": "active",
+                    },
+                    "last_resolution": "凯德上一轮攻击已命中并完成伤害结算，敌人已倒地。",
+                    "participants": ["pc_kade"],
+                    "active_character_id": "pc_kade",
+                    "updated_at": "2026-05-19T13:40:00+00:00",
+                }
+            },
+        }
+    )
+
+    snapshot, _stats = prompt_snapshot_data(
+        session,
+        GameMode.NARRATIVE,
+        message="我潜伏过去静默侦查",
+        actor={"player_id": "p1"},
+    )
+
+    anchor = snapshot["scene"]["continuity_anchor"]
+    rendered_anchor = json.dumps(anchor, ensure_ascii=False)
+    active_thread = snapshot["scene"]["scene_threads"]["active"]
+    assert "上一轮攻击已命中并完成伤害结算" in anchor["active_thread_last_resolution"]
+    assert "本轮攻击已经结算" in anchor["active_thread_current_conflict"]
+    assert "攻击已结束" in rendered_anchor
+    assert active_thread["last_resolution"] == "凯德上一轮攻击已命中并完成伤害结算，敌人已倒地。"
+    assert "不需要重复攻击" in json.dumps(active_thread, ensure_ascii=False)
+
+
 def test_prompt_projection_prefers_recent_entity_facts_over_stale_long_term_noise():
     session = GameSession.new("group")
     stale_facts = {

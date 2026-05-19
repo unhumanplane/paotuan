@@ -559,6 +559,7 @@ def _project_scene_thread(thread: dict[str, Any], profile: str, *, active: bool)
         "clues",
         "open_hooks",
         "mysteries",
+        "last_resolution",
         "scene_time_label",
         "scene_time_of_day",
         "participants",
@@ -633,7 +634,17 @@ def _project_continuity_anchor(
     active_thread_id = _effective_active_scene_thread_id(threads, str(scene.get("active_scene_thread_id") or "").strip())
     active_thread = threads.get(active_thread_id) if isinstance(threads, dict) and active_thread_id else None
     if isinstance(active_thread, dict) and not _scene_thread_is_closed(active_thread):
-        for key in ("location", "summary", "current_conflict", "current_objective", "scene_time_label", "scene_time_of_day"):
+        for key in (
+            "location",
+            "summary",
+            "current_conflict",
+            "current_objective",
+            "stakes",
+            "pressure_clock",
+            "last_resolution",
+            "scene_time_label",
+            "scene_time_of_day",
+        ):
             value = active_thread.get(key)
             if value in (None, "", [], {}):
                 continue
