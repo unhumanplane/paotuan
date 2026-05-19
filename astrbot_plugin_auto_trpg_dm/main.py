@@ -60,7 +60,7 @@ from .tools.registry import ToolRegistry
 from .tools.turn_tools import TurnTools
 
 
-PLUGIN_VERSION = "0.1.131"
+PLUGIN_VERSION = "0.1.132"
 
 DEFAULT_REASSURANCE_PHRASES = (
     "正在翻找合适的骰子。",

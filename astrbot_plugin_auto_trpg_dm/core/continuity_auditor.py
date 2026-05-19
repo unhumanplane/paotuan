@@ -62,6 +62,7 @@ CONTINUITY_AUDITOR_SYSTEM_PROMPT = """你是独立上下文的跑团连续性审
       "summary": "可选；只有在新摘要完全由工具结果或较新存档事实支持时才给出",
       "current_conflict": "可选",
       "current_objective": "可选",
+      "pressure_clock": "可选；只修正已由工具结果或较新权威状态支持的时钟 tick/status/description",
       "open_hooks": "可选；只修正已确认事实和未知项的表达",
       "npcs": "可选；只用于把旧 known_facts 时间限定化或同步已确认状态，不能创造新 NPC 真相"
     }
@@ -210,7 +211,16 @@ SCENE_MIRROR_KEYS = (
     "factions",
     "relations",
 )
-SCENE_PATCH_KEYS = {"summary", "current_conflict", "current_objective", "open_hooks", "clues", "stakes", "npcs"}
+SCENE_PATCH_KEYS = {
+    "summary",
+    "current_conflict",
+    "current_objective",
+    "open_hooks",
+    "clues",
+    "stakes",
+    "pressure_clock",
+    "npcs",
+}
 LOW_RISK_STATUS_TAG_KEYS = {"当前所在", "当前状态", "最近行动"}
 
 
@@ -602,6 +612,8 @@ def _scene_audit_view(scene: dict[str, Any]) -> dict[str, Any]:
         "summary": _short_text(scene.get("summary"), 900),
         "current_conflict": _short_text(scene.get("current_conflict"), 500),
         "current_objective": _short_text(scene.get("current_objective"), 500),
+        "stakes": _short_text(scene.get("stakes"), 500),
+        "pressure_clock": _compact_json_value(scene.get("pressure_clock"), depth=3, text_limit=360),
         "open_hooks": _compact_json_value(scene.get("open_hooks"), depth=3),
         "entity_facts": _compact_json_value(scene.get("entity_facts"), depth=4, text_limit=360, item_limit=16),
         "event_timeline": _compact_json_value(scene.get("event_timeline"), depth=4, text_limit=360, item_limit=16),
@@ -632,6 +644,8 @@ def _scene_thread_audit_view(thread: dict[str, Any]) -> dict[str, Any]:
         "summary": _short_text(thread.get("summary"), 700),
         "current_conflict": _short_text(thread.get("current_conflict"), 360),
         "current_objective": _short_text(thread.get("current_objective"), 360),
+        "stakes": _short_text(thread.get("stakes"), 360),
+        "pressure_clock": _compact_json_value(thread.get("pressure_clock"), depth=3, text_limit=300),
         "open_hooks": _compact_json_value(thread.get("open_hooks"), depth=3, text_limit=300, item_limit=8),
         "npcs": _compact_json_value(thread.get("npcs"), depth=3, text_limit=300, item_limit=8),
         "participants": list(thread.get("participants") or [])[:12],

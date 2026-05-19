@@ -807,6 +807,90 @@ def test_audit_scene_patch_can_time_qualify_npc_known_fact_with_tool_evidence():
     assert "是否随船沉没" not in thread["open_hooks"][0]["text"]
 
 
+def test_audit_scene_patch_projects_pressure_clock_and_stakes_to_thread():
+    session = GameSession.new("group")
+    session.scene.update(
+        {
+            "current_conflict": "旧状态：隘口已全面警戒，哨兵仍在放箭。",
+            "stakes": "旧状态：隘口随时增援。",
+            "pressure_clock": {
+                "label": "隘口警觉",
+                "tick": 6,
+                "max": 4,
+                "description": "旧状态：哨兵锁定凯德位置。",
+                "status": "active",
+            },
+            "scene_threads": {
+                "character:pc_kade": {
+                    "summary": "凯德在隘口侧翼。",
+                    "participants": ["pc_kade"],
+                    "active_character_id": "pc_kade",
+                    "current_conflict": "旧状态：隘口已全面警戒，哨兵仍在放箭。",
+                    "stakes": "旧状态：隘口随时增援。",
+                    "pressure_clock": {
+                        "label": "隘口警觉",
+                        "tick": 6,
+                        "max": 4,
+                        "description": "旧状态：哨兵锁定凯德位置。",
+                        "status": "active",
+                    },
+                }
+            },
+        }
+    )
+    payload = {
+        "safe_patches": {
+            "scene": {
+                "current_conflict": "后山隘口暂未触发新战斗；报信人逃脱只代表后续增援风险。",
+                "stakes": "后山隘口存在后续增援风险，但当前前哨战斗已经收束。",
+                "pressure_clock": {
+                    "label": "隘口增援风险",
+                    "tick": 1,
+                    "max": 4,
+                    "description": "报信人逃脱只代表后续增援风险，隘口当前未全面开战。",
+                    "status": "watching",
+                },
+            }
+        }
+    }
+    tool_results = [
+        {
+            "tool": "update_scene",
+            "args": {"scene_thread_id": "character:pc_kade"},
+            "result": {
+                "ok": True,
+                "scene_thread_id": "character:pc_kade",
+                "current_conflict": "后山隘口暂未触发新战斗；报信人逃脱只代表后续增援风险。",
+                "stakes": "后山隘口存在后续增援风险，但当前前哨战斗已经收束。",
+                "pressure_clock": {
+                    "label": "隘口增援风险",
+                    "tick": 1,
+                    "max": 4,
+                    "description": "报信人逃脱只代表后续增援风险，隘口当前未全面开战。",
+                    "status": "watching",
+                },
+            },
+        }
+    ]
+
+    result = apply_continuity_audit_patches(
+        session,
+        payload,
+        actor={"player_id": "p1"},
+        player_message="隘口也重复",
+        completion="更正：隘口当前只是增援风险。",
+        tool_results=tool_results,
+    )
+
+    thread = session.scene["scene_threads"]["character:pc_kade"]
+    assert any(item.get("type") == "scene" for item in result["applied"])
+    assert any(item.get("type") == "scene_thread_projection" for item in result["applied"])
+    assert session.scene["pressure_clock"]["tick"] == 1
+    assert thread["pressure_clock"]["tick"] == 1
+    assert "全面警戒" not in thread["current_conflict"]
+    assert "当前前哨战斗已经收束" in thread["stakes"]
+
+
 def test_normalize_active_scene_thread_ignores_closed_active_thread():
     session = GameSession.new("group")
     session.scene["active_scene_thread_id"] = "character:pc_esmeralda"
