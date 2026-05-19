@@ -2221,3 +2221,35 @@ def test_state_write_guard_result_includes_next_tool_hint():
     assert "next_tool_hint" in result
     assert "resolve_check" in result["next_tool_hint"]
     assert "不要重复调用" in result["message"]
+
+
+def test_narrative_attack_state_write_after_roll_does_not_require_spatial_tool():
+    from astrbot_plugin_auto_trpg_dm.core.router import _tool_call_requires_adjudication_support
+
+    session = GameSession.new("group-1")
+    session.scene["_game_started"] = True
+    result = _tool_call_requires_adjudication_support(
+        "瞄准射击仓库屋檐下的弓箭手",
+        [{"tool": "resolve_check", "result": {"ok": True, "outcome": "success"}}],
+        session=session,
+        tool_name="update_scene",
+    )
+
+    assert result == {}
+
+
+def test_tactical_attack_state_write_still_requires_spatial_or_turn_tool_after_roll():
+    from astrbot_plugin_auto_trpg_dm.core.router import _tool_call_requires_adjudication_support
+
+    session = GameSession.new("group-1")
+    session.scene["_game_started"] = True
+    session.mode = GameMode.TACTICAL
+    result = _tool_call_requires_adjudication_support(
+        "瞄准射击仓库屋檐下的弓箭手",
+        [{"tool": "resolve_check", "result": {"ok": True, "outcome": "success"}}],
+        session=session,
+        tool_name="update_scene",
+    )
+
+    assert result["ok"] is False
+    assert result["reason"] == "missing_spatial_or_turn_tool_for_state_write"

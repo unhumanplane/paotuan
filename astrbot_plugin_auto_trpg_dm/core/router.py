@@ -4126,10 +4126,16 @@ def _needs_strict_spatial_tool(text: str, *, session: Any | None = None) -> bool
         return False
     if _contains_any_term(text, STRICT_SPATIAL_REQUIRED_ACTION_TERMS):
         return True
-    if _contains_any_term(text, ("攻击", "射击", "近战", "远程", "冲锋")):
-        return True
+    # In freeform narrative mode, attacks/shots are often resolvable with a roll plus
+    # natural-language scene context. Requiring a grid/turn tool for every "射击/攻击"
+    # caused valid death/injury state writes to be blocked after successful checks,
+    # leaving stale enemies in scene fields. Only escalate generic combat verbs to
+    # spatial support when a tactical space is actually active.
     if _session_has_active_tactical_space(session):
-        return _contains_any_term(text, SPATIAL_REQUIRED_ACTION_TERMS)
+        return _contains_any_term(
+            text,
+            SPATIAL_REQUIRED_ACTION_TERMS + ("攻击", "射击", "近战", "远程", "冲锋"),
+        )
     return False
 
 
