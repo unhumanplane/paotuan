@@ -288,7 +288,11 @@ class ToolRegistry:
             ),
             "update_character_tags": make_tool(
                 name="update_character_tags",
-                description="新增或覆盖角色 Tag。优先传结构化 tags；若玩家刚用自然语言补充职业、专长、装备、风格、弱点或默认战斗行为，可把原文放入 raw_text 由本地兜底解析。不要用它直接修改战棋坐标。",
+                description=(
+                    "新增或覆盖角色 Tag。优先传结构化 tags；若玩家刚用自然语言补充职业、专长、装备、风格、弱点或默认战斗行为，"
+                    "可把原文放入 raw_text 由本地兜底解析。不要用它直接修改战棋坐标。玩家行动涉及攻击、射击、闪避、潜行、"
+                    "受伤、装填、资源消耗或其他风险/对抗结果时，必须先有 resolve_check 或 execute_rule 的成功结果；否则本工具会被裁定守卫拒绝。"
+                ),
                 model=UpdateCharacterTagsArgs,
                 handler=memory_tools.update_character_tags,
             ),
@@ -298,6 +302,8 @@ class ToolRegistry:
                     "更新当前场景、冲突、地点、NPC 摘要、可见线索和开放钩子等叙事状态。"
                     "并行角色线会按 scene_thread_id/当前角色/地点隔离；写入地点线时尽量带 location，"
                     "必要时可带 scene_time_label/scene_time_of_day 描述当前全局时段。"
+                    "玩家行动涉及攻击、射击、闪避、潜行、受伤、死亡、装填、资源消耗或其他风险/对抗结果时，"
+                    "必须先有 resolve_check 或 execute_rule 的成功结果；不要先用 update_scene 把未裁定结果写成事实。"
                     "不要指望 summary/current_objective/current_conflict/stakes 里的“退场、被驱逐、结局、终幕”等文字改变线程状态；"
                     "若确有工具/审计证据支持关闭线程，必须显式传 status=closed/resolved/retired/archived。"
                     "不能把单个角色私自写到第二天、天亮、入夜或长休后；时间跳转必须通过全局 timeline_patch/cycle_control。"
