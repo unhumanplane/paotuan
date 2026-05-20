@@ -1444,8 +1444,12 @@ class MemoryTools:
             return safe_id
         if safe_id in session.characters:
             return safe_id
-        if owner_id and bound_id and bound_id in session.characters:
-            return bound_id
+        # An explicit, non-generic character id that does not exist must not silently
+        # fall back to the actor's current binding. In successor/rejoin flows the LLM
+        # may try to update the new id before creating/binding it; falling back here
+        # contaminates the retired old card with the new character's equipment/status.
+        # Returning safe_id lets update_character_tags fail with character_not_found so
+        # the model can call create_character/bind_player_character instead.
         return safe_id
 
     def _maybe_create_battle_character_stub(

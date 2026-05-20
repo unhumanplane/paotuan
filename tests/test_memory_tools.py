@@ -167,7 +167,37 @@ def test_elite_operative_successor_exceeds_party_balance():
     assert any(term in result["candidate_profile"]["matched_terms"] for term in ("特种潜水", "隐藏的轻武器", "潜艇投放"))
 
 
-def test_start_game_accepts_json_string_outline_and_text_scene(tmp_path):
+def test_update_character_tags_explicit_missing_successor_does_not_fall_back_to_retired_bound_character(tmp_path):
+    repository = JsonGameRepository(tmp_path / "data")
+    session = GameSession.new("group")
+    session.world_tags["_background_ready"] = True
+    session.scene["_game_started"] = True
+    session.characters["pc_kade"] = Character(
+        id="pc_kade",
+        name="凯德",
+        player_id="p1",
+        tags=[TagValue(key="退场状态", value="已永久退场，由赵得胜替换", layer="status")],
+    )
+    session.player_character_map["p1"] = "pc_kade"
+    repository.save_session(session)
+
+    tools = MemoryTools(repository, "group", actor={"player_id": "p1"}, message="我是赵得胜，不是凯德")
+    result = asyncio.run(
+        tools.update_character_tags(
+            "pc_zhao_desheng",
+            tags=[{"key": "装备", "value": "子母手铳、手抛雷", "layer": "equipment"}],
+        )
+    )
+
+    saved = repository.load_session("group")
+    kade_tags = {tag.key: tag.value for tag in saved.characters["pc_kade"].tags}
+    assert result["ok"] is False
+    assert result["error"] == "character_not_found"
+    assert result["character_id"] == "pc_zhao_desheng"
+    assert "装备" not in kade_tags
+
+
+def test_create_character_successor_rebinds_retired_owner_and_records_replacement(tmp_path):
     repository = JsonGameRepository(tmp_path / "data")
     session = GameSession.new("group")
     session.world_tags.update(
