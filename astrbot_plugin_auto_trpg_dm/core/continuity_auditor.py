@@ -227,6 +227,31 @@ SCENE_PATCH_KEYS = {
     "npcs",
 }
 LOW_RISK_STATUS_TAG_KEYS = {"当前所在", "位置", "当前状态", "处境", "最近行动", "最近行动结果"}
+COMBAT_RESOLUTION_TERMS = (
+    "已肃清",
+    "已清除",
+    "彻底肃清",
+    "全部残敌已",
+    "无剩余活敌",
+    "无直接威胁",
+    "战斗已结束",
+    "战斗已经收束",
+    "院内尘土落定",
+)
+STALE_COMBAT_HOOK_TERMS = (
+    "仍在缠斗",
+    "还在缠斗",
+    "仍在继续",
+    "战斗仍在继续",
+    "仍有残敌",
+    "还有残敌",
+    "仍有",
+    "还有",
+    "需尽快收尾",
+    "支援后院",
+    "后院战斗需",
+)
+COMBAT_LOCATION_TERMS = ("后院", "前院", "石屋", "院内", "寨门", "水井", "沙袋", "隘口")
 
 
 class ContinuityAuditor:
@@ -342,6 +367,10 @@ def apply_deterministic_continuity_repairs(
     active_result = normalize_active_scene_thread(session)
     if active_result.get("changed"):
         result["applied"].append(active_result)
+
+    stale_result = normalize_resolved_combat_continuity(session)
+    if stale_result.get("changed"):
+        result["applied"].append(stale_result)
     return result
 
 
@@ -499,7 +528,68 @@ def apply_continuity_audit_patches(
     active_result = normalize_active_scene_thread(session)
     if active_result.get("changed"):
         result["applied"].append(active_result)
+
+    stale_result = normalize_resolved_combat_continuity(session)
+    if stale_result.get("changed"):
+        result["applied"].append(stale_result)
     return result
+
+
+def normalize_resolved_combat_continuity(session: GameSession) -> dict[str, Any]:
+    """Suppress stale local-combat hooks after newer state says that fight is over."""
+    scene = session.scene if isinstance(session.scene, dict) else {}
+    resolved_locations = _resolved_combat_locations(session)
+    if not resolved_locations:
+        return {"type": "resolved_combat_continuity_normalized", "changed": False}
+
+    changed_scene_keys: list[str] = []
+    for key in ("summary", "current_conflict", "current_objective", "stakes"):
+        value = scene.get(key)
+        if isinstance(value, str) and _stale_combat_text_for_locations(value, resolved_locations):
+            scene[key] = _resolved_combat_replacement(value, resolved_locations)
+            changed_scene_keys.append(key)
+
+    if _rewrite_stale_combat_hooks(scene.get("open_hooks"), resolved_locations):
+        changed_scene_keys.append("open_hooks")
+
+    changed_threads: list[str] = []
+    for thread_id, thread in _scene_threads(scene).items():
+        if not isinstance(thread, dict) or _scene_thread_is_closed(thread):
+            continue
+        thread_changed = []
+        for key in ("summary", "current_conflict", "current_objective", "stakes"):
+            value = thread.get(key)
+            if isinstance(value, str) and _stale_combat_text_for_locations(value, resolved_locations):
+                thread[key] = _resolved_combat_replacement(value, resolved_locations)
+                thread_changed.append(key)
+        if _rewrite_stale_combat_hooks(thread.get("open_hooks"), resolved_locations):
+            thread_changed.append("open_hooks")
+        if thread_changed:
+            thread["updated_at"] = utc_now_iso()
+            changed_threads.append(str(thread_id))
+
+    changed_tags: list[dict[str, Any]] = []
+    for character_id, character in session.characters.items():
+        for tag in character.tags or []:
+            value = tag.value
+            if not isinstance(value, str):
+                continue
+            if not _stale_combat_text_for_locations(value, resolved_locations):
+                continue
+            tag.value = _resolved_combat_replacement(value, resolved_locations)
+            tag.source = "continuity_deterministic_repair"
+            tag.layer = tag.layer or infer_tag_layer(tag.key)
+            changed_tags.append({"character_id": character_id, "key": tag.key})
+
+    changed = bool(changed_scene_keys or changed_threads or changed_tags)
+    return {
+        "type": "resolved_combat_continuity_normalized",
+        "changed": changed,
+        "locations": sorted(resolved_locations),
+        "scene_keys": sorted(set(changed_scene_keys)),
+        "thread_ids": changed_threads,
+        "character_tags": changed_tags[:16],
+    }
 
 
 def normalize_active_scene_thread(session: GameSession) -> dict[str, Any]:
@@ -1137,20 +1227,95 @@ def _scene_patch_looks_like_shared_resolution(patch: dict[str, Any], tool_result
     text = _flatten_text(patch)
     if not text:
         return False
-    resolution_terms = (
+    resolution_terms = COMBAT_RESOLUTION_TERMS + (
         "已结束",
         "已收束",
-        "已肃清",
         "全院已肃清",
-        "无剩余敌人",
         "全部残敌已击杀",
-        "战斗已经收束",
-        "战斗已结束",
         "当前主要风险",
     )
     if not _contains_any(text, resolution_terms):
         return False
     return _has_recent_tool_backed_scene_fact(tool_results)
+
+
+def _resolved_combat_locations(session: GameSession) -> set[str]:
+    scene = session.scene if isinstance(session.scene, dict) else {}
+    if isinstance(session.battle, dict) and session.battle.get("active") is True:
+        return set()
+    authoritative = _flatten_text(
+        [
+            scene.get("last_resolution"),
+            scene.get("summary"),
+            scene.get("current_conflict"),
+            scene.get("current_objective"),
+            scene.get("_recent_narrative_events"),
+            _character_status_and_note_text(session),
+        ]
+    )
+    if not _contains_any(authoritative, COMBAT_RESOLUTION_TERMS):
+        return set()
+    return {location for location in COMBAT_LOCATION_TERMS if location in authoritative}
+
+
+def _character_status_and_note_text(session: GameSession) -> str:
+    chunks: list[Any] = []
+    for character in session.characters.values():
+        for tag in character.tags or []:
+            layer = str(tag.layer or infer_tag_layer(tag.key)).lower()
+            if layer in {"status", "notes"} or _contains_any(str(tag.key), ("状态", "位置", "行动", "确认")):
+                chunks.append({"key": tag.key, "value": tag.value})
+    return _flatten_text(chunks)
+
+
+def _stale_combat_text_for_locations(text: str, locations: set[str]) -> bool:
+    if not text or not locations:
+        return False
+    return any(location in text for location in locations) and _contains_any(text, STALE_COMBAT_HOOK_TERMS)
+
+
+def _resolved_combat_replacement(old_text: str, locations: set[str]) -> str:
+    location = _first_location_in_text(old_text, locations)
+    if location:
+        return f"【已过期】{location}旧战斗钩子已被较新存档覆盖：{location}残敌已肃清，无剩余活敌。"
+    return "【已过期】旧战斗钩子已被较新存档覆盖：该处残敌已肃清，无剩余活敌。"
+
+
+def _first_location_in_text(text: str, locations: set[str]) -> str:
+    for location in COMBAT_LOCATION_TERMS:
+        if location in locations and location in text:
+            return location
+    return sorted(locations)[0] if locations else ""
+
+
+def _rewrite_stale_combat_hooks(value: Any, locations: set[str]) -> bool:
+    if isinstance(value, list):
+        changed = False
+        for index, item in enumerate(value):
+            if isinstance(item, dict):
+                item_changed = False
+                for key, raw in list(item.items()):
+                    if isinstance(raw, str) and _stale_combat_text_for_locations(raw, locations):
+                        item[key] = _resolved_combat_replacement(raw, locations)
+                        item_changed = True
+                if item_changed:
+                    item.setdefault("status", "resolved")
+                    changed = True
+                continue
+            if isinstance(item, str) and _stale_combat_text_for_locations(item, locations):
+                value[index] = _resolved_combat_replacement(item, locations)
+                changed = True
+        return changed
+    if isinstance(value, dict):
+        changed = False
+        for key, raw in list(value.items()):
+            if isinstance(raw, str) and _stale_combat_text_for_locations(raw, locations):
+                value[key] = _resolved_combat_replacement(raw, locations)
+                changed = True
+            elif isinstance(raw, (dict, list)) and _rewrite_stale_combat_hooks(raw, locations):
+                changed = True
+        return changed
+    return False
 
 
 def _scene_thread_is_open_character_thread(thread_id: str, thread: dict[str, Any]) -> bool:

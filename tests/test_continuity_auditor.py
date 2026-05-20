@@ -7,6 +7,7 @@ from astrbot_plugin_auto_trpg_dm.core.continuity_auditor import (
     apply_deterministic_continuity_repairs,
     continuity_audit_should_run,
     normalize_active_scene_thread,
+    normalize_resolved_combat_continuity,
 )
 from astrbot_plugin_auto_trpg_dm.core.models import Character, GameMode, GameSession
 
@@ -1156,3 +1157,64 @@ def test_audit_patch_scene_can_use_completion_as_tool_backed_evidence():
     assert any(item["type"] == "scene" for item in result["applied"])
     assert session.scene["summary"] == "震天雷在石屋内爆炸，屋内守军阵脚大乱"
     assert session.scene["current_conflict"] == "石屋守军被爆炸压制，局势转向清剿残敌"
+
+
+
+def test_normalize_resolved_combat_continuity_retires_stale_local_hooks():
+    session = GameSession.new("group")
+    session.scene.update(
+        {
+            "summary": "阿狐清空石屋，后院老徐和雅卡还在缠斗。",
+            "current_objective": "确认石屋是否还有残敌，然后支援后院老徐和雅卡的战斗",
+            "current_conflict": "石屋被震天雷内部引爆，前院肃清；后院战斗仍在继续",
+            "stakes": "后院战斗需尽快收尾，否则史东寨将完成防御部署。",
+            "last_resolution": {
+                "outcome": "凯德确认：后院全部残敌已被杨永信和陈大虎合力清除，无剩余活敌。"
+            },
+            "open_hooks": [
+                {"id": "backyard", "text": "后院仍有残敌和老徐缠斗"},
+            ],
+            "scene_threads": {
+                "character:pc_yaka": {
+                    "summary": "雅卡在后院接战中，老徐在左侧架刀。",
+                    "current_conflict": "后院仍有沙袋垛后的持刀敌兵和老徐缠斗",
+                    "participants": ["pc_yaka"],
+                    "active_character_id": "pc_yaka",
+                }
+            },
+        }
+    )
+    session.characters["pc_yaka"] = Character(id="pc_yaka", name="雅卡", player_id="p1")
+    session.characters["pc_yaka"].upsert_tags(
+        [
+            {
+                "key": "当前位置",
+                "value": "前院已被阿狐震天雷清空；后院仍有沙袋垛后的持刀敌兵和老徐缠斗",
+                "layer": "status",
+            }
+        ]
+    )
+
+    result = normalize_resolved_combat_continuity(session)
+
+    assert result["changed"] is True
+    assert "后院" in result["locations"]
+    assert "已过期" in session.scene["current_conflict"]
+    assert "仍在继续" not in session.scene["current_conflict"]
+    assert session.scene["open_hooks"][0]["status"] == "resolved"
+    assert "仍有" not in session.scene["scene_threads"]["character:pc_yaka"]["current_conflict"]
+    tag_value = session.characters["pc_yaka"].tags[0].value
+    assert "已过期" in tag_value
+    assert "缠斗" not in tag_value
+
+
+def test_normalize_resolved_combat_continuity_does_not_touch_active_battle():
+    session = GameSession.new("group")
+    session.battle = {"active": True}
+    session.scene["last_resolution"] = "后院残敌已清除一人。"
+    session.scene["current_conflict"] = "后院战斗仍在继续"
+
+    result = normalize_resolved_combat_continuity(session)
+
+    assert result["changed"] is False
+    assert session.scene["current_conflict"] == "后院战斗仍在继续"
