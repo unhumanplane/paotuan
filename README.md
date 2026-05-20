@@ -206,6 +206,11 @@ pip install honcho
 | `continuity_auditor_model_provider` | `default` | 连续性审计器使用的模型 provider。 |
 | `continuity_auditor_max_tokens` | `1200` | 连续性审计器输出 token 上限建议值。 |
 | `llm_tool_loop_max_steps` | `16` | 单次 `/dm` 请求内最多允许的 LLM 工具循环步数。 |
+| `forensic_dumps_enabled` | `true` | 是否启用每轮取证转储。默认开启。 |
+| `forensic_max_turns_per_session` | `500` | 每个会话最多保留的取证转储轮数。 |
+| `forensic_retain_days` | `30` | 取证转储保留天数。 |
+| `forensic_include_prompts` | `true` | 取证转储是否包含完整提示词文本。 |
+| `forensic_include_raw_response` | `true` | 取证转储是否包含 LLM 原始响应对象。 |
 | `ambient_image_enabled` | `false` | 是否启用 TRPG 氛围图片。 |
 | `ambient_image_api_mode` | `images` | 图片 API 路径：`images` 或 `chat_completions`。 |
 | `ambient_image_base_url` | `https://www.packyapi.com` | 图片 API base URL。 |
@@ -232,6 +237,7 @@ data/plugin_data/astrbot_plugin_auto_trpg_dm/
   ambient_images/
   rulebooks/
   logs/
+  dumps/        # 取证转储（默认开启； forensic_dumps_enabled=false 时不生成）
 ```
 
 这些数据不应该提交到 Git。它们可能包含跑团记录、玩家发言摘要、地图输出和审计信息。
@@ -314,6 +320,7 @@ GitHub Actions 会在 push 和 PR 上运行：
 ## 相关文档
 
 - [CHANGELOG.md](CHANGELOG.md)
+- [docs/forensic-dump-system.md](docs/forensic-dump-system.md) — 取证转储系统说明与启用指南
 - [docs/honcho-external-memory.md](docs/honcho-external-memory.md)
 - [docs/ambient-image-api.md](docs/ambient-image-api.md)
 - [docs/dm-outbound-cleanup.md](docs/dm-outbound-cleanup.md)
