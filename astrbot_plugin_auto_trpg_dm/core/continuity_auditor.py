@@ -211,6 +211,11 @@ SCENE_MIRROR_KEYS = (
     "factions",
     "relations",
 )
+DERIVED_ACTIVE_THREAD_KEYS = (
+    "active_thread_summary",
+    "active_thread_current_conflict",
+    "active_thread_current_objective",
+)
 SCENE_PATCH_KEYS = {
     "summary",
     "current_conflict",
@@ -1067,11 +1072,15 @@ def _project_scene_patch_to_relevant_threads(
             target_ids.add(active_id)
 
     updated_ids = []
+    shared_resolution = _scene_patch_looks_like_shared_resolution(thread_patch, tool_results)
     for thread_id in sorted(target_ids):
         thread = threads.get(thread_id)
         if not isinstance(thread, dict) or _scene_thread_is_closed(thread):
             continue
-        if _merge_scene_thread_projection(thread, thread_patch):
+        changed = _merge_scene_thread_projection(thread, thread_patch)
+        if shared_resolution and _clear_derived_active_thread_fields(thread):
+            changed = True
+        if changed:
             thread["updated_at"] = utc_now_iso()
             updated_ids.append(thread_id)
     if not updated_ids:
@@ -1167,6 +1176,15 @@ def _merge_scene_thread_projection(thread: dict[str, Any], patch: dict[str, Any]
             continue
         if thread.get(key) != value:
             thread[key] = _compact_json_value(value, depth=3)
+            changed = True
+    return changed
+
+
+def _clear_derived_active_thread_fields(thread: dict[str, Any]) -> bool:
+    changed = False
+    for key in DERIVED_ACTIVE_THREAD_KEYS:
+        if key in thread:
+            thread.pop(key, None)
             changed = True
     return changed
 

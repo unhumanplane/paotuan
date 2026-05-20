@@ -908,6 +908,9 @@ def test_audit_global_scene_repair_projects_shared_outpost_resolution_to_all_ope
                 "character:pc_kade": {
                     "summary": "旧状态：凯德仍被院内残敌牵制。",
                     "current_conflict": "旧状态：水井残敌尚未补刀，杨永信还在等第二箭。",
+                    "active_thread_summary": "旧派生：凯德仍被隘口哨兵拉弓瞄准。",
+                    "active_thread_current_conflict": "旧派生：隘口哨兵正拉弓瞄准他所在方位。",
+                    "active_thread_current_objective": "旧派生：从新位置侦察隘口敌情。",
                     "participants": ["pc_kade"],
                     "active_character_id": "pc_kade",
                 },
@@ -970,6 +973,10 @@ def test_audit_global_scene_repair_projects_shared_outpost_resolution_to_all_ope
         assert "水井残敌" not in json.dumps(thread, ensure_ascii=False)
         assert "第二箭" not in json.dumps(thread, ensure_ascii=False)
         assert "隘口增援已经抵达" not in json.dumps(thread, ensure_ascii=False)
+    kade_thread = session.scene["scene_threads"]["character:pc_kade"]
+    assert "active_thread_summary" not in kade_thread
+    assert "active_thread_current_conflict" not in kade_thread
+    assert "active_thread_current_objective" not in kade_thread
 
 
 def test_normalize_active_scene_thread_ignores_closed_active_thread():
