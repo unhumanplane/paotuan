@@ -1697,10 +1697,26 @@ class IntentRouter:
                 func_tool=toolset,
             )
             tool_calls = self._extract_tool_calls(response)
-            completion_text = getattr(response, "completion_text", "") or str(response)
+            completion_text = _response_completion_text(response)
             if not tool_calls:
                 tool_calls = self._extract_text_tool_calls(completion_text)
             if not tool_calls:
+                if _looks_like_tool_role_response(response, completion_text) and all_tool_results:
+                    if step + 1 < self.max_steps:
+                        get_plugin_logger().warning(
+                            "llm_tool_role_without_final_text session=%s step=%s action=retry_final_text",
+                            session_id,
+                            step + 1,
+                        )
+                        prompt = (
+                            "上一轮模型返回了工具角色/空消息，不能直接展示给玩家。"
+                            "请不要再输出内部对象或工具角色内容；请基于已有工具结果，"
+                            "用自然语言给玩家一个简洁的最终叙事。"
+                        )
+                        continue
+                    fallback = _tool_loop_fallback_reply(all_tool_results)
+                    if fallback:
+                        completion_text = fallback
                 completion_text = self._sanitize_completion_text(completion_text)
                 renderer_summary = classify_map_renderer_results(all_tool_results)
                 text_map_signals = detect_text_map_signals(completion_text)
@@ -1936,9 +1952,10 @@ class IntentRouter:
             contexts=contexts,
             system_prompt=system_prompt,
         )
-        completion_text = self._sanitize_completion_text(
-            getattr(final_response, "completion_text", "") or str(final_response)
-        )
+        completion_text = _response_completion_text(final_response)
+        if _looks_like_tool_role_response(final_response, completion_text):
+            completion_text = _tool_loop_fallback_reply(all_tool_results) or completion_text
+        completion_text = self._sanitize_completion_text(completion_text)
         return ToolLoopResult(
             await guarded_completion(completion_text),
             all_tool_results,
@@ -4952,6 +4969,84 @@ def _final_response_reply(tool_results: list[dict[str, Any]]) -> str | None:
             if text:
                 return text
     return None
+
+
+def _response_completion_text(response: Any) -> str:
+    text = getattr(response, "completion_text", None)
+    if text is None and isinstance(response, dict):
+        text = response.get("completion_text") or response.get("text") or response.get("content")
+    if text is None:
+        text = ""
+    return str(text or "")
+
+
+def _looks_like_tool_role_response(response: Any, completion_text: str) -> bool:
+    role = str(getattr(response, "role", "") or "").strip().lower()
+    if not role and isinstance(response, dict):
+        role = str(response.get("role") or "").strip().lower()
+    text = str(completion_text or "")
+    if role == "tool":
+        return True
+    if not text.strip():
+        return False
+    return "LLMResponse(role='tool'" in text or 'LLMResponse(role="tool"' in text
+
+
+def _tool_loop_fallback_reply(tool_results: list[dict[str, Any]]) -> str | None:
+    final_reply = _final_response_reply(tool_results)
+    if final_reply:
+        return final_reply
+    successful: list[tuple[str, str]] = []
+    failed: list[str] = []
+    for item in tool_results or []:
+        if not isinstance(item, dict):
+            continue
+        tool_name = str(item.get("tool") or "").strip()
+        if not tool_name:
+            continue
+        result = item.get("result")
+        if isinstance(result, dict) and result.get("ok") is False:
+            reason = str(result.get("reason") or result.get("message") or result.get("error") or "").strip()
+            failed.append(f"{tool_name}：{reason}" if reason else tool_name)
+            continue
+        summary = _tool_result_summary_text(result)
+        successful.append((tool_name, summary))
+    if successful:
+        details = []
+        for tool_name, summary in successful[-4:]:
+            details.append(f"{tool_name}：{summary}" if summary else f"{tool_name} 已完成")
+        return "本轮结算已完成：" + "；".join(details) + "。"
+    if failed:
+        return "本轮工具结算未能完成：" + "；".join(failed[-3:]) + "。请补充目标或下一步行动。"
+    return None
+
+
+def _tool_result_summary_text(result: Any) -> str:
+    if isinstance(result, dict):
+        for key in (
+            "reply",
+            "message",
+            "summary",
+            "outcome",
+            "result",
+            "status",
+            "effect",
+            "description",
+        ):
+            value = result.get(key)
+            if isinstance(value, (str, int, float)) and str(value).strip():
+                return _short_inferred_text(str(value), 160)
+        compact = {
+            key: result.get(key)
+            for key in ("total", "dc", "success", "damage", "target", "state", "updated_tags")
+            if key in result
+        }
+        if compact:
+            return _short_inferred_text(json.dumps(compact, ensure_ascii=False, default=str), 160)
+        return ""
+    if isinstance(result, (str, int, float)) and str(result).strip():
+        return _short_inferred_text(str(result), 160)
+    return ""
 
 
 def _audit_safe_tool_results(tool_results: list[dict[str, Any]]) -> list[dict[str, Any]]:

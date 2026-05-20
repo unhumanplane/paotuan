@@ -226,7 +226,7 @@ SCENE_PATCH_KEYS = {
     "pressure_clock",
     "npcs",
 }
-LOW_RISK_STATUS_TAG_KEYS = {"当前所在", "当前状态", "最近行动"}
+LOW_RISK_STATUS_TAG_KEYS = {"当前所在", "位置", "当前状态", "处境", "最近行动", "最近行动结果"}
 
 
 class ContinuityAuditor:
@@ -481,7 +481,7 @@ def apply_continuity_audit_patches(
                 continue
             if value in (None, "", [], {}):
                 continue
-            if _scene_patch_value_is_backed(session, value, tool_results):
+            if _scene_patch_value_is_backed(session, value, tool_results, completion=completion):
                 applied_scene_patch[key] = _compact_json_value(value, depth=3)
         if applied_scene_patch:
             session.scene.update(applied_scene_patch)
@@ -1232,11 +1232,17 @@ def _ids_from_list_of_dicts(value: Any) -> set[str]:
     return ids
 
 
-def _scene_patch_value_is_backed(session: GameSession, value: Any, tool_results: list[dict[str, Any]]) -> bool:
+def _scene_patch_value_is_backed(
+    session: GameSession,
+    value: Any,
+    tool_results: list[dict[str, Any]],
+    *,
+    completion: str = "",
+) -> bool:
     value_text = _flatten_text(value)
     if not value_text:
         return False
-    evidence = _flatten_text([_tool_results_text(tool_results), session.scene.get("last_resolution")])
+    evidence = _flatten_text([_tool_results_text(tool_results), session.scene.get("last_resolution"), completion])
     if not evidence:
         return False
     tokens = _salient_tokens(value_text)
@@ -1555,15 +1561,16 @@ def _low_risk_status_tag_is_evidence_backed(
     value_text = _normalized_projection_text(value)
     if not value_text:
         return False
-    if value_text in _normalized_projection_text(source):
+    normalized_source = _normalized_projection_text(source)
+    if value_text in normalized_source:
         return True
-    if key == "当前所在":
+    if key in LOW_RISK_STATUS_TAG_KEYS:
         tokens = [
             token
             for token in re.split(r"[\s,，。；;、/\\|:：.!！?？()\[\]{}<>《》\"'“”]+", str(value))
             if len(token.strip()) >= 2
         ]
-        return bool(tokens and any(_normalized_projection_text(token) in _normalized_projection_text(source) for token in tokens))
+        return bool(tokens and any(_normalized_projection_text(token) in normalized_source for token in tokens))
     return False
 
 

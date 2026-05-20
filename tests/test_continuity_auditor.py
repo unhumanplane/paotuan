@@ -1082,3 +1082,77 @@ def test_normalize_active_scene_thread_alias_merge_preserves_open_canonical_over
     assert "status" not in thread
     assert thread["summary"] == "规范线程：雅卡在会议厅。"
     assert session.scene["active_scene_thread_id"] == "character:pc_yaka"
+
+
+def test_audit_patch_applies_low_risk_recent_action_result_tag():
+    session = GameSession.new("group")
+    session.scene["_game_started"] = True
+    session.characters["pc_ahu"] = Character(id="pc_ahu", name="阿狐", player_id="p1")
+    session.player_character_map = {"p1": "pc_ahu"}
+    payload = {
+        "safe_patches": {
+            "character_tags": [
+                {
+                    "character_id": "pc_ahu",
+                    "tags": [
+                        {
+                            "key": "最近行动结果",
+                            "value": "震天雷滚入石屋后爆炸，守军阵脚大乱",
+                            "layer": "status",
+                        }
+                    ],
+                }
+            ]
+        }
+    }
+
+    result = apply_continuity_audit_patches(
+        session,
+        payload,
+        actor={"player_id": "p1"},
+        player_message="滚震天雷进石屋",
+        completion="震天雷滚入石屋后爆炸，守军阵脚大乱。",
+        tool_results=[
+            {
+                "tool": "execute_rule",
+                "args": {"rule_name": "震天雷"},
+                "result": {"ok": True, "message": "震天雷滚入石屋后爆炸，守军阵脚大乱"},
+            }
+        ],
+    )
+
+    assert not result["rejected"]
+    assert any(item["type"] == "character_tags" for item in result["applied"])
+    assert any(tag.key == "最近行动结果" and "震天雷" in tag.value for tag in session.characters["pc_ahu"].tags)
+
+
+def test_audit_patch_scene_can_use_completion_as_tool_backed_evidence():
+    session = GameSession.new("group")
+    session.scene["_game_started"] = True
+    payload = {
+        "safe_patches": {
+            "scene": {
+                "summary": "震天雷在石屋内爆炸，屋内守军阵脚大乱",
+                "current_conflict": "石屋守军被爆炸压制，局势转向清剿残敌",
+            }
+        }
+    }
+
+    result = apply_continuity_audit_patches(
+        session,
+        payload,
+        actor={"player_id": "p1"},
+        player_message="滚震天雷进石屋",
+        completion="震天雷在石屋内爆炸，屋内守军阵脚大乱，局势转向清剿残敌。",
+        tool_results=[
+            {
+                "tool": "execute_rule",
+                "args": {"rule_name": "震天雷"},
+                "result": {"ok": True, "message": "爆炸成功"},
+            }
+        ],
+    )
+
+    assert any(item["type"] == "scene" for item in result["applied"])
+    assert session.scene["summary"] == "震天雷在石屋内爆炸，屋内守军阵脚大乱"
+    assert session.scene["current_conflict"] == "石屋守军被爆炸压制，局势转向清剿残敌"

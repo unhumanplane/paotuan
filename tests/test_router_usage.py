@@ -486,6 +486,123 @@ def test_router_accepts_final_response_tool_as_loop_completion():
     assert records[-1]["tool_results"][0]["tool"] == "final_response"
 
 
+def test_router_retries_tool_role_response_instead_of_returning_repr():
+    class FirstToolCallResponse:
+        completion_text = ""
+        tools_call_name = ["resolve_check"]
+        tools_call_args = [{"check": "acrobatics", "dc": 13}]
+        tool_calls = []
+
+    class ToolRoleResponse:
+        role = "tool"
+        completion_text = ""
+        tools_call_name = []
+        tools_call_args = []
+        tool_calls = []
+
+        def __str__(self):
+            return "LLMResponse(role='tool', result_chain=MessageChain(...))"
+
+    class FakeLoopLlm:
+        def __init__(self):
+            self.calls = 0
+            self.prompts = []
+
+        async def __call__(self, **kwargs):
+            self.calls += 1
+            self.prompts.append(kwargs.get("prompt", ""))
+            if self.calls == 1:
+                return FirstToolCallResponse()
+            if self.calls == 2:
+                return ToolRoleResponse()
+            return FakeLlmResponse("你贴着窗下滚入震天雷，屋内爆响后守军阵脚大乱。")
+
+    class ResolveExecutor:
+        async def execute(self, tool_name, args):
+            assert tool_name == "resolve_check"
+            return {"ok": True, "total": 15, "dc": 13, "outcome": "success"}
+
+    async def run_case():
+        repository = InMemoryRepository()
+        router = IntentRouter.__new__(IntentRouter)
+        llm = FakeLoopLlm()
+        router.max_steps = 4
+        router._llm_generate = llm
+        router.repository = repository
+
+        result = await router._run_llm_tool_loop(
+            chat_provider_id="fake-provider",
+            system_prompt="system",
+            initial_prompt="玩家行动",
+            toolset=object(),
+            tool_executor=ResolveExecutor(),
+            session_id="group-1",
+            raw_player_message="滚震天雷进石屋",
+            available_tool_names=["resolve_check"],
+        )
+        return result, llm
+
+    result, llm = asyncio.run(run_case())
+
+    assert "LLMResponse" not in result.completion_text
+    assert "震天雷" in result.completion_text
+    assert llm.calls == 3
+    assert "工具角色/空消息" in llm.prompts[-1]
+
+
+def test_router_falls_back_from_tool_role_response_at_max_steps():
+    class FirstToolCallResponse:
+        completion_text = ""
+        tools_call_name = ["resolve_check"]
+        tools_call_args = [{"check": "acrobatics", "dc": 13}]
+        tool_calls = []
+
+    class ToolRoleResponse:
+        role = "tool"
+        completion_text = ""
+        tools_call_name = []
+        tools_call_args = []
+        tool_calls = []
+
+    class FakeLoopLlm:
+        def __init__(self):
+            self.calls = 0
+
+        async def __call__(self, **kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                return FirstToolCallResponse()
+            return ToolRoleResponse()
+
+    class ResolveExecutor:
+        async def execute(self, tool_name, args):
+            return {"ok": True, "total": 15, "dc": 13, "outcome": "success"}
+
+    async def run_case():
+        repository = InMemoryRepository()
+        router = IntentRouter.__new__(IntentRouter)
+        llm = FakeLoopLlm()
+        router.max_steps = 2
+        router._llm_generate = llm
+        router.repository = repository
+        return await router._run_llm_tool_loop(
+            chat_provider_id="fake-provider",
+            system_prompt="system",
+            initial_prompt="玩家行动",
+            toolset=object(),
+            tool_executor=ResolveExecutor(),
+            session_id="group-1",
+            raw_player_message="滚震天雷进石屋",
+            available_tool_names=["resolve_check"],
+        )
+
+    result = asyncio.run(run_case())
+
+    assert "LLMResponse" not in result.completion_text
+    assert "本轮结算已完成" in result.completion_text
+    assert "resolve_check" in result.completion_text
+
+
 def test_character_card_final_reply_guard_blocks_unverified_elite_join():
     session = GameSession.new("group-1")
     session.world_tags["_plot_locked"] = True
