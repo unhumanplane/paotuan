@@ -167,6 +167,31 @@
     "type": "bool",
     "hint": "true"
   },
+  "forensic_dumps_enabled": {
+    "description": "是否启用每轮取证转储。开启后会在 dumps/<session_id>/ 下保存完整的状态快照、提示词、LLM 原始响应和工具调用链。",
+    "type": "bool",
+    "hint": "true"
+  },
+  "forensic_max_turns_per_session": {
+    "description": "每个会话最多保留的取证转储轮数。超过时会删除最旧的转储。",
+    "type": "int",
+    "hint": "500"
+  },
+  "forensic_retain_days": {
+    "description": "取证转储保留天数。超过该天数的旧转储会在写入新转储时被清理。",
+    "type": "int",
+    "hint": "30"
+  },
+  "forensic_include_prompts": {
+    "description": "取证转储是否包含完整的 system_prompt 和 user_prompt 文本。关闭后仍可分析状态差异和工具调用，但无法重建 LLM 看到的完整上下文。",
+    "type": "bool",
+    "hint": "true"
+  },
+  "forensic_include_raw_response": {
+    "description": "取证转储是否包含 LLM 原始响应对象（提取后的安全字典）。关闭后只保留 completion_text 和提取出的 tool_calls。",
+    "type": "bool",
+    "hint": "true"
+  },
   "llm_tool_loop_max_steps": {
     "description": "LLM 在单次 /dm 请求内最多可进行的工具循环步数。每步可包含多个工具调用；达到上限后会基于已有工具结果输出阶段性回复。",
     "type": "int",
