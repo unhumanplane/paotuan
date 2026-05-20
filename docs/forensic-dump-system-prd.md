@@ -163,10 +163,10 @@ Disk savings from gzip are real (~80–90% for text-heavy JSON), but the primary
 | Key | Default | Description |
 |---|---|---|
 | `forensic_dumps_enabled` | `false` | Master switch. |
-| `forensic_max_turns_per_session` | `200` | Delete oldest dumps when exceeded. |
+| `forensic_max_turns_per_session` | `500` | Delete oldest dumps when exceeded. |
 | `forensic_retain_days` | `30` | Delete dumps older than N days on write. |
-| `forensic_include_prompts` | `true` | Include full prompt text in envelope. |
-| `forensic_include_raw_response` | `true` | Include `raw_response_safe` in envelope. |
+| `forensic_include_prompts` | `false` | Include full prompt text in envelope. |
+| `forensic_include_raw_response` | `false` | Include `raw_response_safe` in envelope. |
 
 ## Capture Architecture
 

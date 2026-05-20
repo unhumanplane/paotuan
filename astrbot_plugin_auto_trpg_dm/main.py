@@ -282,11 +282,11 @@ class AutoTrpgDmPlugin(Star):
         llm_tool_loop_max_steps = max(1, self._config_int("llm_tool_loop_max_steps", 16))
         self.prompt_snapshot_projection_enabled = prompt_snapshot_projection_enabled
         self.heartbeat_idle_log_interval = heartbeat_idle_log_interval
-        self.forensic_dumps_enabled = self._config_bool("forensic_dumps_enabled", True)
+        self.forensic_dumps_enabled = self._config_bool("forensic_dumps_enabled", False)
         self.forensic_max_turns = max(1, self._config_int("forensic_max_turns_per_session", 500))
         self.forensic_retain_days = max(1, self._config_int("forensic_retain_days", 30))
-        self.forensic_include_prompts = self._config_bool("forensic_include_prompts", True)
-        self.forensic_include_raw_response = self._config_bool("forensic_include_raw_response", True)
+        self.forensic_include_prompts = self._config_bool("forensic_include_prompts", False)
+        self.forensic_include_raw_response = self._config_bool("forensic_include_raw_response", False)
         ambient_image_provider = AmbientImageProvider(ambient_image_config)
         tool_registry = ToolRegistry(
             repository=self.repository,
@@ -311,6 +311,8 @@ class AutoTrpgDmPlugin(Star):
             continuity_auditor_model_provider=self._config_str("continuity_auditor_model_provider", "default") or "default",
             continuity_auditor_max_tokens=self._config_int("continuity_auditor_max_tokens", 1200),
             prompt_snapshot_projection_enabled=prompt_snapshot_projection_enabled,
+            forensic_max_turns=self.forensic_max_turns,
+            forensic_retain_days=self.forensic_retain_days,
         )
         migrated = self._migrate_legacy_turn_fields()
         if migrated:
@@ -554,7 +556,7 @@ class AutoTrpgDmPlugin(Star):
                 },
             )
         collector = None
-        if self.forensic_dumps_enabled:
+        if getattr(self, "forensic_dumps_enabled", False):
             collector = ForensicCollector(
                 include_prompts=self.forensic_include_prompts,
                 include_raw_response=self.forensic_include_raw_response,
