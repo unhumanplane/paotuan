@@ -49,7 +49,7 @@ def _install_fake_astrbot_modules():
 
 _install_fake_astrbot_modules()
 
-from astrbot_plugin_auto_trpg_dm.core.models import Character, GameMode, GameSession
+from astrbot_plugin_auto_trpg_dm.core.models import Character, GameMode, GameSession, TagValue
 from astrbot_plugin_auto_trpg_dm.rules.python_runtime import PythonRuleRuntime
 from astrbot_plugin_auto_trpg_dm.storage.json_repository import JsonGameRepository
 from astrbot_plugin_auto_trpg_dm.tools.registry import ToolRegistry
@@ -154,6 +154,54 @@ def test_tool_registry_unbound_post_start_actor_cannot_write_scene_before_bindin
     assert "bind_player_character" in names
     assert "update_scene" not in names
     assert "cycle_control" not in names
+
+
+def test_tool_registry_treats_terminal_bound_character_as_rejoin_scope():
+    registry = _registry_with_started_session()
+    session = registry.repository.load_session("group")
+    bound = session.characters["pc_bound"]
+    bound.tags.append(
+        TagValue(
+            key="退场确认",
+            value="受伤返回营地养伤，永久退场",
+            type="text",
+            source="test",
+            layer="status",
+        )
+    )
+    registry.repository.save_session(session)
+
+    _toolset, names, _executor, _specs = registry.for_mode(
+        GameMode.CHARACTER_CREATION,
+        "group",
+        actor={"player_id": "bound-player", "display_name": "凯德"},
+        message="我的人物卡依然绑定着凯德 [pc_kade]，立即解绑并换新角色赵得胜",
+    )
+
+    assert "create_character" in names
+    assert "bind_player_character" in names
+    assert "update_character_tags" in names
+    assert "update_scene" not in names
+    assert "cycle_control" not in names
+
+
+def test_tool_registry_post_game_character_profile_requests_keep_binding_tools():
+    registry = _registry_with_started_session()
+    session = registry.repository.load_session("group")
+    session.scene["_encounter_ended_at"] = "2026-05-20T00:00:00+00:00"
+    registry.repository.save_session(session)
+
+    _toolset, names, _executor, _specs = registry.for_mode(
+        GameMode.NARRATIVE,
+        "group",
+        actor={"player_id": "bound-player", "display_name": "凯德"},
+        message="凯德退场了，我的新角色赵得胜加入，立即更新人物卡绑定",
+    )
+
+    assert "create_character" in names
+    assert "bind_player_character" in names
+    assert "update_character_tags" in names
+    assert "session_control" in names
 
 
 def test_tool_registry_exposes_timeline_fact_tools_for_narrative():

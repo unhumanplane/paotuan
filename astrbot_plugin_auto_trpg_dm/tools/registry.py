@@ -29,6 +29,7 @@ from .memory_tools import (
     UpdateCharacterTagsArgs,
     UpdateSceneArgs,
     UpdateWorldTagsArgs,
+    _character_is_terminal_for_rejoin,
     has_campaign_background,
 )
 from .overview_topology_render_tools import (
@@ -1205,12 +1206,21 @@ def _post_start_unbound_actor_scope(session: Any, actor: dict[str, str] | None) 
     if not player_id:
         return False
     bound_id = str((session.player_character_map or {}).get(player_id, "") or "").strip()
-    return not bool(bound_id and bound_id in (session.characters or {}))
+    if not bool(bound_id and bound_id in (session.characters or {})):
+        return True
+    try:
+        return bool(_character_is_terminal_for_rejoin(session, bound_id))
+    except Exception:
+        return False
 
 
 def _post_game_tool_names(message: str) -> list[str]:
     text = str(message or "").strip().lower()
     names = ["query_core_rules", "session_control", "estimate_token_usage"]
+    if _contains_any(text, CHARACTER_PROFILE_TERMS):
+        for name in ("create_character", "bind_player_character", "update_character_tags"):
+            if name not in names:
+                names.insert(0, name)
     scene_or_rest_terms = (
         "背景",
         "间幕",
