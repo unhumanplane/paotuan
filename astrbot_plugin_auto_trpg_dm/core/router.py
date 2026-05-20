@@ -388,6 +388,8 @@ class IntentRouter:
         continuity_auditor_model_provider: str = "default",
         continuity_auditor_max_tokens: int = 1200,
         prompt_snapshot_projection_enabled: bool = True,
+        forensic_max_turns: int = 500,
+        forensic_retain_days: int = 30,
     ):
         self.astr_context = astr_context
         self.repository = repository
@@ -406,6 +408,8 @@ class IntentRouter:
         self.continuity_auditor_model_provider = continuity_auditor_model_provider
         self.continuity_auditor_max_tokens = continuity_auditor_max_tokens
         self.prompt_snapshot_projection_enabled = prompt_snapshot_projection_enabled
+        self.forensic_max_turns = forensic_max_turns
+        self.forensic_retain_days = forensic_retain_days
         self._session_locks: dict[str, asyncio.Lock] = {}
         self._session_turn_locks: dict[str, asyncio.Lock] = {}
 
@@ -1347,7 +1351,12 @@ class IntentRouter:
 
     async def _write_forensic_dump(self, session_id: str, envelope: dict[str, Any]) -> None:
         try:
-            self.repository.write_turn_dump(session_id, envelope)
+            self.repository.write_turn_dump(
+                session_id,
+                envelope,
+                max_turns=self.forensic_max_turns,
+                retain_days=self.forensic_retain_days,
+            )
         except Exception as exc:
             get_plugin_logger().warning(
                 "forensic_dump_write_failed session=%s error=%s",

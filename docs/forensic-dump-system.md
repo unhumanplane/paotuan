@@ -15,18 +15,18 @@ Add to your AstrBot plugin config (`data/auto_trpg_dm/config.json` or via the we
   "forensic_dumps_enabled": true,
   "forensic_max_turns_per_session": 500,
   "forensic_retain_days": 30,
-  "forensic_include_prompts": true,
-  "forensic_include_raw_response": true
+  "forensic_include_prompts": false,
+  "forensic_include_raw_response": false
 }
 ```
 
 | Flag | Default | Meaning |
 |---|---|---|
-| `forensic_dumps_enabled` | `true` | Master switch. `false` = collector is never created. |
+| `forensic_dumps_enabled` | `false` | Master switch. `false` = collector is never created. |
 | `forensic_max_turns_per_session` | `500` | Max dump files kept per session. Older files are deleted automatically. |
 | `forensic_retain_days` | `30` | Dump files older than this are deleted regardless of count. |
-| `forensic_include_prompts` | `true` | If `false`, prompts are replaced with char counts and hashes (privacy/size). |
-| `forensic_include_raw_response` | `true` | If `false`, raw LLM response objects are omitted. |
+| `forensic_include_prompts` | `false` | If `false`, prompts are replaced with char counts and hashes (privacy/size). |
+| `forensic_include_raw_response` | `false` | If `false`, raw LLM response objects are omitted. |
 
 ## What gets captured per turn
 
