@@ -85,6 +85,7 @@ def test_collector_omits_prompts_when_disabled():
     envelope = collector.build_envelope()
     assert envelope["prompts"]["included"] is False
     assert "system_prompt" not in envelope["prompts"]
+    assert "prompt_hashes" not in envelope.get("metadata", {})
 
 
 def test_collector_records_llm_interaction():
@@ -203,3 +204,82 @@ def test_repository_turn_dump_rotation_by_count(tmp_path):
         )
     dumps = repo.list_turn_dumps("group")
     assert len(dumps) == 3
+
+
+def test_end_to_end_turn_dump_written(tmp_path):
+    """Integration test: collector -> envelope -> repository -> actual file on disk."""
+    repo = JsonGameRepository(tmp_path / "data")
+
+    collector = ForensicCollector(include_prompts=True, include_raw_response=True)
+    collector.start_turn(
+        session_id="sess_1",
+        cycle_id=7,
+        turn_sequence=7,
+        actor={"player_id": "u1", "name": "Alice"},
+        player_message="I attack the goblin",
+    )
+    collector.record_state_before({"title": "Before", "characters": {}})
+    collector.record_prompts(
+        system_prompt="You are a DM.",
+        user_prompt="Player says: I attack",
+        tool_names=["resolve_check"],
+        tool_specs=[{"name": "resolve_check"}],
+        projection_stats={"chars": 50},
+        component_chars={"system": 20},
+    )
+    collector.record_llm_request(
+        step=1,
+        prompt="prompt text",
+        contexts=[{"role": "user", "content": "hi"}],
+        system_prompt="You are a DM.",
+    )
+    collector.record_llm_response(
+        step=1,
+        completion_text="You roll a 15 and hit.",
+        tool_calls=[{"name": "resolve_check", "args": {}}],
+        raw_response_safe={"id": "r1"},
+        usage={"prompt_tokens": 10},
+        finish_reason="stop",
+    )
+    collector.record_tool_execution(
+        step=1,
+        tool="resolve_check",
+        args={"difficulty": 12},
+        result={"success": True},
+        guard_blocked=False,
+        guard_reason="",
+    )
+    collector.record_guard("action_reasonableness", "pass", {})
+    collector.record_state_after({"title": "After", "characters": {"c1": {"name": "Bob"}}})
+    collector.record_final_output(
+        completion_text="You roll a 15 and hit.",
+        dice_summary="1d20=15",
+        pending_outputs=[],
+        sent_to_player=True,
+    )
+    envelope = collector.build_envelope()
+
+    path = repo.write_turn_dump("sess_1", envelope)
+    assert path.exists()
+
+    data = json.loads(path.read_text(encoding="utf-8"))
+    assert data["envelope_version"] == "1.0"
+    assert data["session_id"] == "sess_1"
+    assert data["cycle_id"] == 7
+    assert data["player_message"] == "I attack the goblin"
+    assert data["state"]["before"]["title"] == "Before"
+    assert data["state"]["after"]["title"] == "After"
+    assert data["prompts"]["system_prompt"] == "You are a DM."
+    assert len(data["llm_interactions"]) == 1
+    assert data["llm_interactions"][0]["response"]["completion_text"] == "You roll a 15 and hit."
+    assert len(data["llm_interactions"][0]["tool_executions"]) == 1
+    assert data["llm_interactions"][0]["tool_executions"][0]["tool"] == "resolve_check"
+    assert len(data["guards_fired"]) == 1
+    assert data["guards_fired"][0]["name"] == "action_reasonableness"
+    assert data["final_output"]["completion_text"] == "You roll a 15 and hit."
+    assert data["metadata"]["envelope_size_bytes"] > 0
+    assert "prompt_hashes" in data["metadata"]
+    assert data["metadata"]["prompt_hashes"]["system"] != ""
+
+    dumps = repo.list_turn_dumps("sess_1")
+    assert len(dumps) == 1
