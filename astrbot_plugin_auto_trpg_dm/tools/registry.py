@@ -22,6 +22,7 @@ from .memory_tools import (
     BindPlayerCharacterArgs,
     ClarifyEntityTimelineArgs,
     CreateCharacterArgs,
+    EventCardArgs,
     MemoryTools,
     RecordTimelineEventArgs,
     SessionControlArgs,
@@ -325,6 +326,16 @@ class ToolRegistry:
                 model=RecordTimelineEventArgs,
                 handler=memory_tools.record_timeline_event,
             ),
+            "record_event_card": make_tool(
+                name="record_event_card",
+                description=(
+                    "事件卡：一张卡里原子记录事件时间线，并可同步批量更新场景补丁、角色卡补丁和实体时间线说明。"
+                    "适合“某个事件过后，统一批量落盘角色状态/场景状态”的场景，避免连续修补。"
+                    "同卡内的角色补丁仍受开场后锁卡和裁定守卫约束；不要用它创造隐藏真相。"
+                ),
+                model=EventCardArgs,
+                handler=memory_tools.record_event_card,
+            ),
             "clarify_entity_timeline": make_tool(
                 name="clarify_entity_timeline",
                 description=(
@@ -534,6 +545,7 @@ class ToolRegistry:
                 "update_character_tags",
                 "update_world_tags",
                 "record_timeline_event",
+                "record_event_card",
                 "clarify_entity_timeline",
                 "start_game",
                 "register_rule",
@@ -588,6 +600,7 @@ class ToolRegistry:
                     "register_rule",
                     "update_scene",
                     "record_timeline_event",
+                    "record_event_card",
                     "clarify_entity_timeline",
                     "session_control",
                     "estimate_token_usage",
@@ -614,6 +627,7 @@ class ToolRegistry:
                     "update_scene",
                     "update_character_tags",
                     "record_timeline_event",
+                    "record_event_card",
                     "clarify_entity_timeline",
                     "session_control",
                     "estimate_token_usage",
@@ -640,6 +654,7 @@ class ToolRegistry:
                     "update_scene",
                     "update_character_tags",
                     "record_timeline_event",
+                    "record_event_card",
                     "clarify_entity_timeline",
                     "session_control",
                     "estimate_token_usage",
@@ -702,6 +717,7 @@ class ToolRegistry:
                 "bind_player_character",
                 "update_scene",
                 "record_timeline_event",
+                "record_event_card",
                 "clarify_entity_timeline",
                 "start_game",
                 "list_rules",
@@ -711,6 +727,7 @@ class ToolRegistry:
         base_tools = [
             "update_scene",
             "record_timeline_event",
+            "record_event_card",
             "clarify_entity_timeline",
             "update_world_tags",
             "create_character",

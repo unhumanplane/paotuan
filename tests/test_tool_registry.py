@@ -213,8 +213,10 @@ def test_tool_registry_exposes_timeline_fact_tools_for_narrative():
     )
 
     assert "record_timeline_event" in names
+    assert "record_event_card" in names
     assert "clarify_entity_timeline" in names
     assert any(spec["name"] == "record_timeline_event" for spec in specs)
+    assert any(spec["name"] == "record_event_card" for spec in specs)
     assert any(spec["name"] == "clarify_entity_timeline" for spec in specs)
 
 

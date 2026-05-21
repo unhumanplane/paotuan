@@ -1309,3 +1309,99 @@ def test_clarify_entity_timeline_time_qualifies_stale_npc_fact(tmp_path):
     assert npc["unknowns"] == ["逃生路线未知", "当前所在未知"]
     assert "是否随船沉没" not in hook["text"]
     assert "已确认生还" in hook["text"]
+
+
+def test_record_event_card_can_batch_event_scene_and_character_updates(tmp_path):
+    repository = JsonGameRepository(tmp_path / "data")
+    session = GameSession.new("group")
+    session.world_tags["_background_ready"] = True
+    session.active_character_id = "pc_face"
+    session.characters["pc_face"] = Character(
+        id="pc_face",
+        name="交涉者",
+        player_id="p1",
+        summary="擅长交涉和情报整理。",
+    )
+    session.player_character_map["p1"] = "pc_face"
+    session.scene["active_scene_thread_id"] = "character:pc_face"
+    session.scene["scene_threads"] = {
+        "character:pc_face": {
+            "summary": "旧的场景摘要。",
+            "current_objective": "旧目标",
+            "open_hooks": [],
+        }
+    }
+    repository.save_session(session)
+
+    tools = MemoryTools(repository, "group", actor={"player_id": "p1"}, message="/dm 事件后统一整理")
+    result = asyncio.run(
+        tools.record_event_card(
+            event_id="event_after_flood_recap",
+            event_type="scene_shift",
+            summary="洪水退去后，幸存者重新集合并确认现状。",
+            entities=["pc_face", "npc_shidong"],
+            source={"tool": "scene_audit", "success": True},
+            evidence=["scene audit", "pc report"],
+            scene_patch={
+                "summary": "洪水退去后，队伍在残骸旁重整。",
+                "current_objective": "先确认幸存者和失联者状态。",
+                "open_hooks": [
+                    {
+                        "id": "hook_followup_people",
+                        "text": "失联者去了哪里？",
+                        "status": "open",
+                        "visibility": "observed",
+                    }
+                ],
+            },
+            character_patches=[
+                {
+                    "character_id": "pc_face",
+                    "tags": [
+                        {
+                            "key": "当前状态",
+                            "layer": "status",
+                            "value": "全身湿透但仍可行动",
+                            "type": "text",
+                            "source": "scene audit",
+                        }
+                    ],
+                }
+            ],
+            entity_clarifications=[
+                {
+                    "entity_id": "npc_shidong",
+                    "entity_type": "npc",
+                    "name": "史东",
+                    "current_status": "已确认生还；当前所在不明",
+                    "historical_facts": ["洪水前曾在控制区附近出现。"],
+                    "unknowns": ["当前所在未知"],
+                    "authoritative_events": ["event_after_flood_recap"],
+                    "evidence": ["scene audit"],
+                    "scene_thread_id": "character:pc_face",
+                    "replace_conflicting_current_fact": True,
+                    "open_hook_id": "hook_followup_people",
+                    "open_hook_text": "史东已确认生还，但目前下落不明。",
+                }
+            ],
+        )
+    )
+
+    saved = repository.load_session("group")
+    thread = saved.scene["scene_threads"]["character:pc_face"]
+    npc = thread["npcs"][0]
+
+    assert result["ok"] is True
+    assert result["event"]["id"] == "event_after_flood_recap"
+    assert any(item["type"] == "timeline_event" for item in result["applied"])
+    assert any(item["type"] == "scene_patch" for item in result["applied"])
+    assert any(item["type"] == "character_patch" for item in result["applied"])
+    assert any(item["type"] == "entity_fact" for item in result["applied"])
+    assert saved.scene["event_timeline"][0]["id"] == "event_after_flood_recap"
+    assert thread["current_objective"] == "先确认幸存者和失联者状态。"
+    assert thread["summary"] == "洪水退去后，队伍在残骸旁重整。"
+    assert thread["open_hooks"][0]["id"] == "hook_followup_people"
+    assert saved.characters["pc_face"].tags[0].value == "全身湿透但仍可行动"
+    assert saved.scene["entity_facts"]["npc_shidong"]["current_status"] == "已确认生还；当前所在不明"
+    assert npc["status"] == "已确认生还；当前所在不明"
+    assert npc["unknowns"] == ["当前所在未知"]

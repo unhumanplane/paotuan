@@ -111,6 +111,24 @@ class ClarifyEntityTimelineArgs(BaseModel):
     open_hook_text: str = Field(default="", description="Optional hook text. Must preserve confirmed facts and only ask about unknowns.")
 
 
+class EventCardArgs(BaseModel):
+    event_id: str = Field(default="", description="Stable event id. Leave empty to derive one from event_type/entities.")
+    event_type: str = Field(default="event", description="Event category, for example scene_shift or npc_status_confirmed.")
+    summary: str = Field(..., description="Short authoritative event summary; do not add hidden truth.")
+    entities: List[str] = Field(default_factory=list, description="Related character/NPC/item/location ids.")
+    status: str = Field(default="confirmed", description="confirmed, suspected, retracted, or superseded.")
+    visibility: str = Field(default="observed_or_confirmed", description="observed, confirmed, suspected, or observed_or_confirmed.")
+    source: Dict[str, Any] = Field(default_factory=dict, description="Optional structured source such as tool result, DC, total, success.")
+    evidence: List[str] = Field(default_factory=list, description="Existing tool/audit/state evidence; no invented evidence.")
+    unknowns: List[str] = Field(default_factory=list, description="Known unknowns produced by this event.")
+    order: Optional[int] = Field(default=None, description="Optional relative order. If empty, appended after existing events.")
+    supersedes: List[str] = Field(default_factory=list, description="Older event ids this event corrects or supersedes.")
+    retracted_by: str = Field(default="", description="Event id or repair id that retracts this event, when status=retracted.")
+    scene_patch: Dict[str, Any] = Field(default_factory=dict, description="同一事件后的场景补丁；会和事件一起记录")
+    character_patches: List[Dict[str, Any]] = Field(default_factory=list, description="同一事件后需要批量更新的角色卡补丁")
+    entity_clarifications: List[Dict[str, Any]] = Field(default_factory=list, description="同一事件后需要批量更新的实体时间线说明")
+
+
 SCENE_THREAD_CONTROL_KEYS = {"scene_thread_id", "thread_id", "_scene_thread_id"}
 SCENE_THREAD_METADATA_KEYS = {
     "scene_thread_id",
@@ -863,6 +881,297 @@ class MemoryTools:
                 "replace_conflicting_current_fact": replace_conflicting_current_fact,
                 "open_hook_id": open_hook_id,
                 "open_hook_text": open_hook_text,
+            },
+            result,
+        )
+        return result
+
+    async def record_event_card(
+        self,
+        event_id: str = "",
+        event_type: str = "event",
+        summary: str = "",
+        entities: Optional[List[str]] = None,
+        status: str = "confirmed",
+        visibility: str = "observed_or_confirmed",
+        source: Optional[Dict[str, Any]] = None,
+        evidence: Optional[List[str]] = None,
+        unknowns: Optional[List[str]] = None,
+        order: Optional[int] = None,
+        supersedes: Optional[List[str]] = None,
+        retracted_by: str = "",
+        scene_patch: Optional[Dict[str, Any]] = None,
+        character_patches: Optional[List[Dict[str, Any]]] = None,
+        entity_clarifications: Optional[List[Dict[str, Any]]] = None,
+    ) -> Dict[str, Any]:
+        summary_text = _short_tag_value(summary, 500)
+        if not summary_text:
+            result = {
+                "ok": False,
+                "error": "empty_summary",
+                "message": "record_event_card needs a concise authoritative summary.",
+            }
+            self._audit("record_event_card", {"event_id": event_id, "summary": summary}, result)
+            return result
+        session = self.repository.load_session(self.session_id)
+        gate = background_required_result(session, "record_event_card")
+        if gate:
+            self._audit("record_event_card", {"event_id": event_id, "summary": summary_text}, gate)
+            return gate
+        event = _build_timeline_event(
+            session.scene,
+            event_id=event_id,
+            event_type=event_type,
+            summary=summary_text,
+            entities=entities or [],
+            status=status,
+            visibility=visibility,
+            source=source or {},
+            evidence=evidence or [],
+            unknowns=unknowns or [],
+            order=order,
+            supersedes=supersedes or [],
+            retracted_by=retracted_by,
+        )
+        timeline = _event_timeline(session.scene)
+        existing = _timeline_event_by_id(timeline, str(event["id"]))
+        action = "updated" if existing is not None else "created"
+        if existing is not None:
+            existing.update(event)
+            event = existing
+        else:
+            timeline.append(event)
+        _sort_event_timeline(timeline)
+
+        applied: list[dict[str, Any]] = [{"type": "timeline_event", "event_id": event["id"], "action": action}]
+        character_results: list[dict[str, Any]] = []
+        entity_results: list[dict[str, Any]] = []
+
+        if scene_patch:
+            if patch_has_per_player_timeline(scene_patch):
+                result = {
+                    "ok": False,
+                    "error": "per_player_timeline_forbidden",
+                    "message": "时间线是全团共享权威状态，不能按玩家或角色分别写入不同日期/时段。",
+                }
+                self._audit("record_event_card", {"event_id": event_id, "scene_patch": scene_patch}, result)
+                return result
+            timeline_patch, remaining_scene_patch = extract_timeline_patch(scene_patch)
+            if timeline_patch:
+                validation = validate_global_timeline_advance(session, timeline_patch)
+                if not validation.get("ok"):
+                    self._audit("record_event_card", {"event_id": event_id, "scene_patch": scene_patch}, validation)
+                    return validation
+                session.timeline = apply_timeline_patch(
+                    session.timeline,
+                    timeline_patch,
+                    reason=self.message or "record_event_card",
+                    cycle_id=session.current_cycle_id,
+                )
+                applied.append({"type": "timeline_patch", "patch": timeline_patch})
+            scene_patch = remaining_scene_patch
+            if scene_patch and not timeline_patch and patch_mentions_implicit_timeline_advance(scene_patch):
+                result = {
+                    "ok": False,
+                    "error": "timeline_patch_required",
+                    "message": (
+                        "场景补丁里包含跨日、天亮、入夜、长休或等待到下一时段的推进；"
+                        "必须通过全团同步 timeline_patch/cycle_control 处理，不能只写入某条 scene thread。"
+                    ),
+                    "timeline": timeline_view(session.timeline),
+                }
+                self._audit("record_event_card", {"event_id": event_id, "scene_patch": scene_patch}, result)
+                return result
+            if scene_patch:
+                normalized_patch = normalize_relationship_collections(normalize_scene_tracking_patch(scene_patch))
+                thread_id = _resolve_scene_thread_id(session, self.actor, self.message, normalized_patch)
+                normalized_patch = {
+                    key: value
+                    for key, value in normalized_patch.items()
+                    if key not in SCENE_THREAD_METADATA_KEYS
+                }
+                scene_threads = _scene_threads(session.scene)
+                _coalesce_character_thread_alias(session.scene, scene_threads, thread_id)
+                scene_thread = _merge_scene_thread(
+                    dict(scene_threads.get(thread_id) or {}),
+                    normalized_patch,
+                    actor=self.actor,
+                    character_id=_actor_character_id(session, self.actor),
+                )
+                scene_threads[thread_id] = scene_thread
+                _write_scene_mirror(session.scene, thread_id, scene_thread, normalized_patch)
+                applied.append({"type": "scene_patch", "scene_thread_id": thread_id})
+
+        for patch in character_patches or []:
+            if not isinstance(patch, dict):
+                result = {"ok": False, "error": "invalid_character_patch", "patch": patch}
+                self._audit("record_event_card", {"event_id": event_id, "character_patch": patch}, result)
+                return result
+            character_id = str(patch.get("character_id") or "").strip()
+            if not character_id:
+                result = {"ok": False, "error": "missing_character_id", "patch": patch}
+                self._audit("record_event_card", {"event_id": event_id, "character_patch": patch}, result)
+                return result
+            tags = patch.get("tags")
+            raw_text = str(patch.get("raw_text") or "")
+            allow_stub_creation = bool(patch.get("allow_stub_creation", False))
+            owner_id = str(self.actor.get("player_id", "") or "").strip()
+            safe_id = self._resolve_existing_character_id(session, character_id, owner_id)
+            character = session.characters.get(safe_id)
+            if not character and allow_stub_creation and (tags or raw_text):
+                character = self._maybe_create_battle_character_stub(session, safe_id, owner_id)
+            if not character:
+                result = {"ok": False, "error": "character_not_found", "character_id": safe_id}
+                self._audit("record_event_card", {"event_id": event_id, "character_patch": patch}, result)
+                return result
+            owner_guard = self._character_owner_guard(session, safe_id, owner_id)
+            if owner_guard:
+                self._audit("record_event_card", {"event_id": event_id, "character_patch": patch}, owner_guard)
+                return owner_guard
+            source_text = raw_text or (tags if isinstance(tags, str) else "")
+            normalized_tags = normalize_tags(tags)
+            inferred_from_raw_text = False
+            if not normalized_tags and source_text:
+                normalized_tags = infer_tags_from_text(str(source_text))
+                inferred_from_raw_text = bool(normalized_tags)
+            if not normalized_tags and source_text:
+                normalized_tags = [
+                    {
+                        "key": "待裁定补充",
+                        "value": _short_tag_value(str(source_text), 240),
+                        "type": "text",
+                        "source": "local_fallback",
+                        "layer": "notes",
+                    }
+                ]
+                inferred_from_raw_text = True
+            if not normalized_tags:
+                result = {
+                    "ok": False,
+                    "error": "empty_tags",
+                    "message": "record_event_card 里的角色补丁需要至少一个 tag；未改动角色。",
+                    "character_id": safe_id,
+                }
+                self._audit("record_event_card", {"event_id": event_id, "character_patch": patch}, result)
+                return result
+            blocked_tags: List[Dict[str, Any]] = []
+            if _campaign_game_started(session):
+                normalized_tags, blocked_tags = filter_runtime_character_tags_after_start(normalized_tags)
+                if not normalized_tags:
+                    result = character_card_locked_after_start_result(
+                        "record_event_card",
+                        safe_id,
+                        owner_id,
+                        message="游戏已经开场，既有角色卡锁定；不能补写职业、能力、装备、默认战斗行为或背景。只能记录伤势、生命/资源消耗、临时状态、最近行动结果，以及已有场内依据的关系后果。",
+                    )
+                    result["blocked_tags"] = blocked_tags
+                    self._audit("record_event_card", {"event_id": event_id, "character_patch": patch}, result)
+                    return result
+            else:
+                validation = validate_character_card_payload(name=character.name, summary=character.summary, tags=normalized_tags, require_name=False)
+                if validation:
+                    self._audit("record_event_card", {"event_id": event_id, "character_patch": patch}, validation)
+                    return validation
+                balance = validate_character_card_party_balance(
+                    session,
+                    safe_id,
+                    name=character.name,
+                    summary=character.summary,
+                    tags=_merged_character_tags(character, normalized_tags),
+                )
+                if balance:
+                    self._audit("record_event_card", {"event_id": event_id, "character_patch": patch}, balance)
+                    return balance
+            character.upsert_tags(normalized_tags)
+            patch_result = {
+                "character_id": safe_id,
+                "character": character_as_dict(character),
+                "inferred_from_raw_text": inferred_from_raw_text,
+                "updated_tags": normalized_tags,
+            }
+            if blocked_tags:
+                patch_result["character_card_locked_after_start"] = True
+                patch_result["blocked_tags"] = blocked_tags
+            character_results.append(patch_result)
+            applied.append({"type": "character_patch", "character_id": safe_id, "tag_count": len(normalized_tags)})
+
+        for item in entity_clarifications or []:
+            if not isinstance(item, dict):
+                result = {"ok": False, "error": "invalid_entity_clarification", "patch": item}
+                self._audit("record_event_card", {"event_id": event_id, "entity_clarification": item}, result)
+                return result
+            safe_entity_id = _safe_entity_id(item.get("entity_id") or "")
+            if not safe_entity_id:
+                result = {"ok": False, "error": "invalid_entity_id"}
+                self._audit("record_event_card", {"event_id": event_id, "entity_clarification": item}, result)
+                return result
+            fact = _build_entity_fact(
+                entity_id=safe_entity_id,
+                entity_type=str(item.get("entity_type") or "npc"),
+                name=str(item.get("name") or ""),
+                current_status=str(item.get("current_status") or ""),
+                historical_facts=list(item.get("historical_facts") or []),
+                unknowns=list(item.get("unknowns") or []),
+                authoritative_events=list(item.get("authoritative_events") or []),
+                evidence=list(item.get("evidence") or []),
+            )
+            entity_facts = _entity_facts(session.scene)
+            previous = dict(entity_facts.get(safe_entity_id) or {})
+            entity_facts[safe_entity_id] = fact
+            entity_result: dict[str, Any] = {"entity_id": safe_entity_id, "entity_fact": fact, "previous": previous}
+            thread_id = str(item.get("scene_thread_id") or "").strip()
+            if thread_id or item.get("replace_conflicting_current_fact") or item.get("open_hook_text"):
+                resolved_thread_id = _resolve_scene_thread_id(
+                    session,
+                    self.actor,
+                    self.message,
+                    {"scene_thread_id": thread_id} if thread_id else {},
+                )
+                threads = _scene_threads(session.scene)
+                _coalesce_character_thread_alias(session.scene, threads, resolved_thread_id)
+                thread = dict(threads.get(resolved_thread_id) or {})
+                if item.get("replace_conflicting_current_fact"):
+                    _clarify_entity_in_scene_thread(thread, fact)
+                if item.get("open_hook_text"):
+                    hook_id = _safe_hook_id(item.get("open_hook_id") or "", safe_entity_id)
+                    _upsert_open_hook(thread, hook_id=hook_id, text=_short_tag_value(str(item.get("open_hook_text") or ""), 360))
+                threads[resolved_thread_id] = thread
+                _write_scene_mirror(session.scene, resolved_thread_id, thread, thread)
+                entity_result["scene_thread_id"] = resolved_thread_id
+            entity_results.append(entity_result)
+            applied.append({"type": "entity_fact", "entity_id": safe_entity_id})
+
+        self.repository.save_session(session)
+        result = {
+            "ok": True,
+            "action": action,
+            "event": event,
+            "scene": session.scene,
+            "timeline": timeline_view(session.timeline),
+            "applied": applied,
+        }
+        if character_results:
+            result["character_patches"] = character_results
+        if entity_results:
+            result["entity_clarifications"] = entity_results
+        self._audit(
+            "record_event_card",
+            {
+                "event_id": event_id,
+                "event_type": event_type,
+                "summary": summary_text,
+                "entities": entities or [],
+                "status": status,
+                "visibility": visibility,
+                "source": source or {},
+                "evidence": evidence or [],
+                "unknowns": unknowns or [],
+                "order": order,
+                "supersedes": supersedes or [],
+                "retracted_by": retracted_by,
+                "scene_patch": scene_patch or {},
+                "character_patches": character_patches or [],
+                "entity_clarifications": entity_clarifications or [],
             },
             result,
         )
