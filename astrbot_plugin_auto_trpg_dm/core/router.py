@@ -1560,6 +1560,7 @@ class IntentRouter:
         map_guard = build_map_request_guard(raw_player_message, available_tool_names)
         renderer_retry_requested = False
         legacy_map_fallback_requested = False
+        adjudication_completion_retry_requested = False
 
         async def append_map_guard_audit(
             action: str,
@@ -1630,6 +1631,21 @@ class IntentRouter:
                 session_id,
                 guard_result.get("actor_character_id", ""),
                 ",".join(str(item) for item in guard_result.get("equipment_terms", [])),
+            )
+
+        def adjudication_completion_guard_for(completion_text: str) -> dict[str, Any]:
+            try:
+                guard_session = self.repository.load_session(session_id)
+            except Exception:
+                guard_session = None
+            if guard_session is None:
+                return {}
+            return _adjudication_completeness_guard(
+                guard_session,
+                actor=actor or {},
+                player_message=raw_player_message,
+                completion=completion_text,
+                tool_results=all_tool_results,
             )
 
         async def guarded_completion(completion_text: str) -> str:
@@ -1774,12 +1790,54 @@ class IntentRouter:
                         renderer_retry_requested = True
                         continue
                     await append_map_guard_audit(
-                        "missing_data_response",
+                        "llm_supplement_requested",
                         "renderer_not_attempted_after_retry" if renderer_retry_requested else "renderer_not_attempted",
                         completion=completion_text,
                         text_map_signals=text_map_signals,
                     )
+                    contexts.append(
+                        {
+                            "role": "user",
+                            "content": prompt,
+                        }
+                    )
+                    contexts.append(
+                        {
+                            "role": "assistant",
+                            "content": completion_text,
+                        }
+                    )
+                    supplement_response = await self._llm_generate(
+                        chat_provider_id=chat_provider_id,
+                        prompt=(
+                            "渲染工具仍未触发。请不要声称图片/SVG/附件已经生成；"
+                            "改用自然语言补充当前可见信息、缺失的结构化地图数据，"
+                            "并给玩家一个可继续行动或补充数据的简短回复。"
+                        ),
+                        contexts=contexts,
+                        system_prompt=system_prompt,
+                    )
+                    supplement_text = self._sanitize_completion_text(_response_completion_text(supplement_response))
+                    if supplement_text:
+                        return ToolLoopResult(supplement_text, all_tool_results)
                     return ToolLoopResult(build_missing_map_data_response(), all_tool_results)
+                completion_guard = adjudication_completion_guard_for(completion_text)
+                if (
+                    completion_guard
+                    and not adjudication_completion_retry_requested
+                    and step + 1 < self.max_steps
+                    and {"resolve_check", "execute_rule"}.intersection(set(available_tool_names or ()))
+                ):
+                    contexts.append({"role": "user", "content": prompt})
+                    contexts.append({"role": "assistant", "content": completion_text})
+                    prompt = (
+                        "最终回复完成度守卫发现：本轮玩家动作包含风险、对抗或不确定结果，"
+                        "但回复声称已成功/命中/造成后果时还缺少 resolve_check 或 execute_rule 支撑。"
+                        "请不要直接口头写死成功；优先调用 resolve_check 或 execute_rule 完成客观结算，"
+                        "如目标或方式不足则用 final_response 简短询问一个必要澄清。"
+                    )
+                    adjudication_completion_retry_requested = True
+                    continue
                 completion_text = await guarded_completion(completion_text)
                 get_plugin_logger().info(
                     "llm_text_response session=%s step=%s chars=%s",
@@ -1890,9 +1948,31 @@ class IntentRouter:
             )
             final_reply = _final_response_reply(tool_results)
             if final_reply is not None and not tool_guard_blocked:
-                completion_text = await guarded_completion(
-                    self._sanitize_completion_text(final_reply)
-                )
+                sanitized_final_reply = self._sanitize_completion_text(final_reply)
+                completion_guard = adjudication_completion_guard_for(sanitized_final_reply)
+                if (
+                    completion_guard
+                    and not adjudication_completion_retry_requested
+                    and step + 1 < self.max_steps
+                    and {"resolve_check", "execute_rule"}.intersection(set(available_tool_names or ()))
+                ):
+                    contexts.append(
+                        {
+                            "role": "user",
+                            "content": "本轮工具返回（已投影，仅含叙事可用字段）：\n"
+                            + json.dumps(project_tool_results_for_dm_prompt(tool_results), ensure_ascii=False, indent=2),
+                        }
+                    )
+                    contexts.append(
+                        {
+                            "role": "user",
+                            "content": "最终回复完成度守卫发现：本轮玩家动作包含风险、对抗或不确定结果，但 final_response 声称已成功/命中/造成后果时还缺少 resolve_check 或 execute_rule 支撑。请优先调用 resolve_check 或 execute_rule 完成客观结算；如目标或方式不足则用 final_response 简短询问一个必要澄清。",
+                        }
+                    )
+                    adjudication_completion_retry_requested = True
+                    prompt = "请按完成度守卫要求补齐客观结算工具，或询问一个必要澄清；不要直接写死未检定成功。"
+                    continue
+                completion_text = await guarded_completion(sanitized_final_reply)
                 get_plugin_logger().info(
                     "llm_final_response_tool session=%s step=%s chars=%s",
                     session_id,

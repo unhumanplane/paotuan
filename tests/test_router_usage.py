@@ -1148,14 +1148,18 @@ def test_router_retries_visual_map_request_when_llm_skips_renderer():
     assert "战场示意" not in str(guard_records[-1])
 
 
-def test_router_replaces_text_map_bypass_with_missing_data_response_after_retry():
+def test_router_returns_llm_supplement_when_visual_map_tool_still_not_triggered_after_retry():
     class FakeLoopLlm:
         def __init__(self):
             self.calls = 0
+            self.prompts = []
 
         async def __call__(self, **kwargs):
             self.calls += 1
-            return FakeLlmResponse("地图如下：\n+---+---+\n| P | E |\n+---+---+")
+            self.prompts.append(kwargs["prompt"])
+            if self.calls < 3:
+                return FakeLlmResponse("地图如下：\n+---+---+\n| P | E |\n+---+---+")
+            return FakeLlmResponse("工具没触发；我先补充可见情况，请提供结构化地图数据后再制图。")
 
     class NoToolExecutor:
         async def execute(self, tool_name, args):
@@ -1184,10 +1188,10 @@ def test_router_replaces_text_map_bypass_with_missing_data_response_after_retry(
     result, llm, records = asyncio.run(run_case())
     guard_records = [item for item in records if item.get("type") == "visual_map_request_guard"]
 
-    assert llm.calls == 2
-    assert "结构化地图数据" in result.completion_text
-    assert "+---+" not in result.completion_text
-    assert guard_records[-1]["action"] == "missing_data_response"
+    assert llm.calls == 3
+    assert "补充当前可见信息" in llm.prompts[-1]
+    assert result.completion_text == "工具没触发；我先补充可见情况，请提供结构化地图数据后再制图。"
+    assert guard_records[-1]["action"] == "llm_supplement_requested"
     assert guard_records[-1]["reason"] == "renderer_not_attempted_after_retry"
     assert guard_records[-1]["text_map_signals"] == ["ascii_box_grid"]
 
@@ -1792,6 +1796,88 @@ def test_completion_guard_still_requires_spatial_tool_for_tactical_movement():
     )
 
     assert completion_guard["reason"] == "missing_spatial_or_turn_tool_for_positioned_outcome"
+
+
+def test_router_retries_final_response_risky_outcome_without_roll_support():
+    class PrematureFinalResponse:
+        completion_text = ""
+        tools_call_name = ["final_response"]
+        tools_call_args = [{"reply": "雅卡开枪命中哨兵，哨兵倒下。"}]
+        tool_calls = []
+
+    class FixedToolCallResponse:
+        completion_text = ""
+        tools_call_name = ["resolve_check", "update_scene", "final_response"]
+        tools_call_args = [
+            {"ability": "dexterity", "dc": 14, "reason": "雅卡射击哨兵"},
+            {"patch": {"summary": "雅卡射击哨兵后，寨墙警戒被惊动。"}},
+            {"reply": "枪声撕开夜色，哨兵被压制，寨墙上的火把开始晃动。"},
+        ]
+        tool_calls = []
+
+    class FakeLoopLlm:
+        def __init__(self):
+            self.calls = 0
+            self.prompts = []
+
+        async def __call__(self, **kwargs):
+            self.calls += 1
+            self.prompts.append(kwargs["prompt"])
+            if self.calls == 1:
+                return PrematureFinalResponse()
+            return FixedToolCallResponse()
+
+    class RecordingExecutor:
+        def __init__(self):
+            self.calls = []
+
+        async def execute(self, tool_name, args):
+            self.calls.append((tool_name, args))
+            if tool_name == "resolve_check":
+                return {"ok": True, "outcome": "success", "total": 18, "dc": 14}
+            if tool_name == "update_scene":
+                return {"ok": True, "scene": args.get("patch", {})}
+            if tool_name == "final_response":
+                return {"ok": True, "reply": args.get("reply", "")}
+            raise AssertionError(f"unexpected tool: {tool_name}")
+
+    async def run_case():
+        repository = InMemoryRepository()
+        session = GameSession.new("group-1")
+        session.world_tags["_plot_locked"] = True
+        session.scene["_game_started"] = True
+        repository.save_session(session)
+        router = IntentRouter.__new__(IntentRouter)
+        llm = FakeLoopLlm()
+        executor = RecordingExecutor()
+        router.max_steps = 3
+        router._llm_generate = llm
+        router.repository = repository
+
+        result = await router._run_llm_tool_loop(
+            chat_provider_id="fake-provider",
+            system_prompt="system",
+            initial_prompt="玩家行动",
+            toolset=object(),
+            tool_executor=executor,
+            session_id="group-1",
+            raw_player_message="我射击寨墙上的哨兵",
+            available_tool_names=["resolve_check", "update_scene", "final_response"],
+        )
+        return result, llm, executor, repository.last_audit_records("group-1", limit=20)
+
+    result, llm, executor, records = asyncio.run(run_case())
+
+    assert llm.calls == 2
+    assert "完成度守卫" in llm.prompts[-1]
+    assert [name for name, _args in executor.calls] == [
+        "final_response",
+        "resolve_check",
+        "update_scene",
+        "final_response",
+    ]
+    assert result.completion_text == "枪声撕开夜色，哨兵被压制，寨墙上的火把开始晃动。"
+    assert not [record for record in records if record.get("type") == "adjudication_completeness_guard"]
 
 
 def test_router_does_not_append_completeness_guard_after_successful_check_and_final_response():
