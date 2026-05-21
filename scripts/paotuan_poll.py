@@ -138,6 +138,13 @@ def _match_first(patterns: list[str], text: str) -> str:
     return ''
 
 
+def _truncate(text: str, limit: int) -> str:
+    text = ' '.join(str(text or '').strip().split())
+    if len(text) <= limit:
+        return text
+    return text[: max(0, limit - 3)].rstrip() + '...'
+
+
 def commit_subject_from_report(report: str) -> str:
     return _match_first(
         [
@@ -183,6 +190,66 @@ def build_pr_monitor_error_notification(error: str) -> str:
             '【Paotuan PR 监控异常】',
             f'GitHub PR API 暂时不可用：{error}',
             '部署轮询会继续按计划重试；如果连续出现，再检查 NAS 到 GitHub 的网络或代理。',
+        ]
+    )
+
+
+def format_pr_line(pr: dict[str, Any]) -> str:
+    return (
+        f"PR #{pr.get('number')} {pr.get('title') or ''} "
+        f"by {pr.get('user') or 'unknown'} "
+        f"state={pr.get('state') or 'unknown'} head={pr.get('head') or 'unknown'}"
+    )
+
+
+def build_pr_attention_notification(prs: list[dict[str, Any]], *, reason: str) -> str:
+    lines = [f'[Paotuan PR attention] {reason}']
+    for pr in prs[:6]:
+        lines.append(format_pr_line(pr))
+        if pr.get('url'):
+            lines.append(str(pr.get('url')))
+    if len(prs) > 6:
+        lines.append(f'... and {len(prs) - 6} more')
+    lines.append('Lightweight notice only; use /coder for deep review or merge judgment.')
+    return '\n'.join(lines)
+
+
+def build_deploy_failure_notification(context: dict[str, Any], history: dict[str, Any]) -> str:
+    commit = short_commit(history.get('commit'))
+    reason = str(history.get('reason') or '').strip() or 'unknown'
+    combined = '\n'.join(str(context.get(k, '')) for k in ('deploy_output_tail', 'latest_report_tail'))
+    error = str(history.get('error') or '').strip()
+    if not error:
+        error = _match_first(
+            [
+                r'(Permission denied:[^\n]+)',
+                r'(Non-streaming API call timed out[^\n]*)',
+                r'(Concurrency limit exceeded[^\n]*)',
+                r'(git ls-remote[^\n]+)',
+                r'(SSL_ERROR_[A-Z_]+[^\n]*)',
+                r'(Empty reply from server[^\n]*)',
+            ],
+            combined,
+        )
+    if not error:
+        error = 'see latest deployment report'
+    return '\n'.join(
+        [
+            '[Paotuan deploy failed]',
+            f'status=failed commit={commit} reason={reason}',
+            f'failure={_truncate(error, 320)}',
+            'handled directly by poll script; Hermes agent was not woken for this deterministic deploy failure.',
+        ]
+    )
+
+
+def build_deploy_poll_exception_notification(context: dict[str, Any]) -> str:
+    error = str(context.get('deploy_output_tail') or '').strip() or 'unknown'
+    return '\n'.join(
+        [
+            '[Paotuan poll failed]',
+            f'poll_error={_truncate(error, 360)}',
+            'handled directly by poll script; next scheduled run will retry.',
         ]
     )
 
@@ -388,7 +455,11 @@ def main() -> int:
         proc = None
         context['deploy_exit_code'] = 1
         context['deploy_output_tail'] = f'poll script exception: {type(e).__name__}: {e}'
-        events.append('deploy_poll_exception')
+        text = build_deploy_poll_exception_notification(context)
+        if send_direct_notification(text, context, 'deploy_poll_exception'):
+            context['deploy_poll_exception_direct_notification'] = text
+        else:
+            events.append('deploy_poll_exception')
 
     deploy_state = load_json(DEPLOY_STATE_PATH, {})
     history = latest_history()
@@ -413,9 +484,17 @@ def main() -> int:
                 else:
                     events.append('deploy_success')
             elif status == 'failed':
-                events.append('deploy_failed')
+                text = build_deploy_failure_notification(context, history)
+                if send_direct_notification(text, context, 'deploy_failed'):
+                    context['deploy_failed_direct_notification'] = text
+                else:
+                    events.append('deploy_failed')
             elif status == 'skipped' and context.get('deploy_exit_code') not in (0, 75):
-                events.append('deploy_poll_nonzero')
+                text = build_deploy_poll_exception_notification(context)
+                if send_direct_notification(text, context, 'deploy_poll_nonzero'):
+                    context['deploy_poll_nonzero_direct_notification'] = text
+                else:
+                    events.append('deploy_poll_nonzero')
             state['last_history_key'] = hist_key
 
     prs, pr_error = fetch_prs()
@@ -435,11 +514,19 @@ def main() -> int:
         open_pr_changes = reportable_pr_changes(pr_changes)
         if open_pr_changes:
             context['pr_changes'] = open_pr_changes
-            events.append('pr_changed')
+            text = build_pr_attention_notification(open_pr_changes, reason='open PR changed')
+            if send_direct_notification(text, context, 'pr_changed'):
+                context['pr_changed_direct_notification'] = text
+            else:
+                events.append('pr_changed')
         pending_unreported = find_unreported_open_prs(prs, pr_changes)
         if pending_unreported:
             context['pending_unreported_prs'] = pending_unreported
-            events.append('pr_unreported_pending')
+            text = build_pr_attention_notification(pending_unreported, reason='open PR was not reported before')
+            if send_direct_notification(text, context, 'pr_unreported_pending'):
+                context['pr_unreported_pending_direct_notification'] = text
+            else:
+                events.append('pr_unreported_pending')
 
     state['last_checked_at'] = context['checked_at']
     save_json(STATE_PATH, state)
