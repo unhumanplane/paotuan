@@ -241,16 +241,15 @@ class ForensicCollector:
             "final_output": self._final_output,
             "metadata": {
                 "envelope_size_bytes": 0,
-                "prompt_hashes": {},
             },
         }
 
         # Compute hashes and size after assembly
         envelope_json = json.dumps(envelope, ensure_ascii=False, separators=(",", ":"), default=str)
         envelope["metadata"]["envelope_size_bytes"] = len(envelope_json.encode("utf-8"))
-        if self._prompts:
-            sp = str(self._prompts.get("system_prompt") or self._prompts.get("system_prompt_chars") or "")
-            up = str(self._prompts.get("user_prompt") or self._prompts.get("user_prompt_chars") or "")
+        if self._prompts and self._prompts.get("included"):
+            sp = str(self._prompts.get("system_prompt") or "")
+            up = str(self._prompts.get("user_prompt") or "")
             envelope["metadata"]["prompt_hashes"] = {
                 "system": _short_hash(sp),
                 "user": _short_hash(up),
