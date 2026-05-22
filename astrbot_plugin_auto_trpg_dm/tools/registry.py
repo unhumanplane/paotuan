@@ -810,7 +810,7 @@ class ToolRegistry:
                 allowed.append(name)
             if visual_map_request and name in {"render_strict_grid_svg", "render_overview_topology_svg"} and name not in allowed:
                 allowed.append(name)
-            if (visual_map_request or legacy_svg_fallback_request) and name == "generate_map_svg" and name not in allowed:
+            if legacy_svg_fallback_request and name == "generate_map_svg" and name not in allowed:
                 allowed.append(name)
             if opening_seed and name in {"create_character", "bind_player_character", "start_game"} and name not in allowed:
                 allowed.append(name)
