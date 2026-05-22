@@ -530,10 +530,11 @@ class IntentRouter:
                 )
 
             if collector:
+                turn_sequence = len(self.repository.list_turn_dumps(session_id))
                 collector.start_turn(
                     session_id=session_id,
                     cycle_id=session.current_cycle_id,
-                    turn_sequence=session.current_cycle_id,
+                    turn_sequence=turn_sequence,
                     actor=actor,
                     player_message=message,
                     security_notes=security_notes,
@@ -5254,6 +5255,8 @@ def _extract_raw_response_safe(response: Any) -> dict[str, Any]:
         val = get_attr(key)
         if val is not None:
             safe[key] = str(val)
+    # Ensure the result is pure JSON-serializable (no provider objects left)
+    safe = json.loads(json.dumps(safe, default=str))
     return safe
 
 
