@@ -220,6 +220,7 @@ def truncate_text(text: str, limit: int) -> str:
     return text[:limit].rstrip() + "\n\n[已截断]"
 
 
+ANSI_ESCAPE_PATTERN = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 SESSION_ID_PATTERN = re.compile(r"\b\d{8}_\d{6}_[0-9a-f]{6,8}\b", re.IGNORECASE)
 
 
@@ -286,6 +287,36 @@ def numbered_delivery_parts(text: str, limit: int) -> list[str]:
 def extract_latest_session_id(text: str) -> str:
     match = SESSION_ID_PATTERN.search(text or "")
     return match.group(0) if match else ""
+
+
+def sanitize_hermes_output_for_reply(text: str) -> str:
+    cleaned = ANSI_ESCAPE_PATTERN.sub("", text or "")
+    lines: list[str] = []
+    skip_worktree_branch = False
+    for raw_line in cleaned.splitlines():
+        stripped = raw_line.strip()
+        lowered = stripped.lower()
+
+        if lowered.startswith("session_id:"):
+            skip_worktree_branch = False
+            continue
+        if SESSION_ID_PATTERN.fullmatch(stripped):
+            skip_worktree_branch = False
+            continue
+        if "Worktree created:" in stripped:
+            skip_worktree_branch = True
+            continue
+        if "Worktree cleaned up:" in stripped:
+            skip_worktree_branch = False
+            continue
+        if skip_worktree_branch and stripped.startswith("Branch:"):
+            skip_worktree_branch = False
+            continue
+
+        skip_worktree_branch = False
+        lines.append(raw_line.rstrip())
+
+    return "\n".join(lines).strip()
 
 
 def compact_excerpt(text: str, limit: int) -> str:
@@ -684,7 +715,7 @@ class CoderBridge:
             print(f"coder_plugin_review_notify_failed group={group_id} message={message_id} error={str(exc)[:200]}", flush=True)
 
     def _format_plugin_review_reply(self, returncode: int, output: str) -> str:
-        text = tail_text((output or "").strip(), self.max_output_chars)
+        text = tail_text(sanitize_hermes_output_for_reply(output), self.max_output_chars)
         if not text:
             text = "Paotuan 插件审阅/自动修复任务完成，但没有返回文本结果。"
         if returncode != 0:
@@ -797,7 +828,7 @@ class CoderBridge:
             print(f"coder_session_state_update_failed group={group_id} error={str(exc)[:200]}", flush=True)
 
     def _format_coder_job_reply(self, returncode: int, output: str) -> str:
-        text = tail_text((output or "").strip(), self.max_output_chars)
+        text = tail_text(sanitize_hermes_output_for_reply(output), self.max_output_chars)
         if not text:
             text = "Hermes /coder 任务完成，但没有返回文本结果。"
         if returncode != 0:

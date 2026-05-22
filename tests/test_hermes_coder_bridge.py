@@ -139,6 +139,54 @@ def test_format_coder_job_reply_prefixes_nonzero_exit(tmp_path):
     assert "failed" in reply
 
 
+def test_format_coder_job_reply_hides_hermes_cli_noise_but_keeps_answer(tmp_path):
+    bridge = _bridge(tmp_path, groups="1101538762")
+    raw_output = (
+        "session_id: 20260522_145511_88a39a\n"
+        "\x1b[32m✓ Worktree created:\x1b[0m /volume1/docker/hermes/paotuan/work/paotuan/.worktrees/hermes-629d2c77\n"
+        "  Branch: hermes/hermes-629d2c77\n"
+        "我已读到 docs/dev_plan.md。\n"
+        "\n"
+        "它是“双 Agent 架构开发计划”，当前状态是“设计已完成，待进入开发”。\n"
+        "\x1b[32m✓ Worktree cleaned up: /volume1/docker/hermes/paotuan/work/paotuan/.worktrees/hermes-629d2c77\x1b[0m\n"
+    )
+
+    reply = bridge._format_coder_job_reply(0, raw_output)
+
+    assert reply.startswith("我已读到 docs/dev_plan.md。")
+    assert "双 Agent 架构开发计划" in reply
+    assert "session_id:" not in reply
+    assert "20260522_145511_88a39a" not in reply
+    assert "Worktree created" not in reply
+    assert "Worktree cleaned up" not in reply
+    assert "Branch:" not in reply
+    assert "\x1b[" not in reply
+
+
+def test_update_session_state_extracts_session_id_from_unsanitized_output(tmp_path):
+    bridge = _bridge(tmp_path, groups="1101538762")
+    raw_output = (
+        "session_id: 20260522_145511_88a39a\n"
+        "\x1b[32m✓ Worktree created:\x1b[0m /tmp/worktree\n"
+        "  Branch: hermes/hermes-629d2c77\n"
+        "我已读到 docs/dev_plan.md。\n"
+    )
+    reply = bridge._format_coder_job_reply(0, raw_output)
+
+    bridge._update_session_state(
+        "1101538762",
+        {"prompt": "读一下 dev_plan"},
+        0,
+        raw_output,
+        reply,
+    )
+
+    state = bridge_mod.load_json_state(bridge.session_state_path)
+    session = state["sessions"]["1101538762"]
+    assert session["hermes_session_id"] == "20260522_145511_88a39a"
+    assert "Worktree created" not in session["last_result"]
+
+
 def test_session_for_group_uses_notify_whitelist(tmp_path):
     bridge = _bridge(tmp_path, groups="1101538762")
 
