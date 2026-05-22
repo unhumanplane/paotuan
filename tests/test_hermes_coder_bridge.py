@@ -325,6 +325,7 @@ def test_coder_starts_plugin_review_script_without_running_generic_hermes(tmp_pa
 
 
 def test_run_plugin_review_script_passes_owner_request_env(tmp_path, monkeypatch):
+    monkeypatch.setattr(bridge_mod, "OPS", tmp_path)
     script = tmp_path / "review_plugin_logs.sh"
     script.write_text("#!/bin/sh\nprintf '%s' \"$PAOTUAN_REVIEW_REQUEST\"\n", encoding="utf-8")
     script.chmod(0o755)
