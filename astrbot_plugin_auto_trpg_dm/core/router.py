@@ -17,6 +17,7 @@ from .continuity_auditor import (
 )
 from .cycle_buffer import append_cycle_action, complete_cycle_without_ra, cycle_end_requested
 from .environment_agent import RecorderAgent, complete_cycle_with_ra, recover_cycle_after_ra_failure
+from .forensic_collector import ForensicCollector
 from .external_memory import (
     HonchoExternalMemory,
     audit_safe_external_memory_result,
@@ -387,6 +388,8 @@ class IntentRouter:
         continuity_auditor_model_provider: str = "default",
         continuity_auditor_max_tokens: int = 1200,
         prompt_snapshot_projection_enabled: bool = True,
+        forensic_max_turns: int = 500,
+        forensic_retain_days: int = 30,
     ):
         self.astr_context = astr_context
         self.repository = repository
@@ -405,6 +408,8 @@ class IntentRouter:
         self.continuity_auditor_model_provider = continuity_auditor_model_provider
         self.continuity_auditor_max_tokens = continuity_auditor_max_tokens
         self.prompt_snapshot_projection_enabled = prompt_snapshot_projection_enabled
+        self.forensic_max_turns = forensic_max_turns
+        self.forensic_retain_days = forensic_retain_days
         self._session_locks: dict[str, asyncio.Lock] = {}
         self._session_turn_locks: dict[str, asyncio.Lock] = {}
 
@@ -413,6 +418,7 @@ class IntentRouter:
         event: Any,
         message_override: str | None = None,
         security_notes: list[str] | None = None,
+        collector: ForensicCollector | None = None,
     ) -> str:
         message = (message_override or getattr(event, "message_str", "") or "").strip()
         if not message:
@@ -440,6 +446,7 @@ class IntentRouter:
                 lock=lock,
                 provider_id=provider_id,
                 security_notes=security_notes,
+                collector=collector,
             )
 
     async def _handle_message_once(
@@ -450,6 +457,7 @@ class IntentRouter:
         lock: asyncio.Lock,
         provider_id: str,
         security_notes: list[str] | None = None,
+        collector: ForensicCollector | None = None,
     ) -> str:
         async with lock:
             session = self.repository.load_session(session_id)
@@ -521,6 +529,23 @@ class IntentRouter:
                     event.get("deadline_at", ""),
                 )
 
+            if collector:
+                turn_sequence = len(self.repository.list_turn_dumps(session_id))
+                collector.start_turn(
+                    session_id=session_id,
+                    cycle_id=session.current_cycle_id,
+                    turn_sequence=turn_sequence,
+                    actor=actor,
+                    player_message=message,
+                    security_notes=security_notes,
+                )
+                collector.record_state_before(session.to_dict())
+                collector.record_routing(
+                    mode=mode.value,
+                    provider_id=provider_id,
+                    cycle_state=session.cycle_state.value,
+                )
+
             reasonableness_guard = _action_reasonableness_guard_reply(session, actor, message)
             if reasonableness_guard:
                 self.repository.append_audit(
@@ -538,6 +563,10 @@ class IntentRouter:
                     actor.get("player_id", ""),
                     message[:120].replace("\n", "\\n"),
                 )
+                if collector:
+                    collector.record_guard("action_reasonableness_guard", "blocked", {"reply": reasonableness_guard})
+                    collector.record_state_after(session.to_dict())
+                    collector.record_final_output(reasonableness_guard, sent_to_player=True)
                 return reasonableness_guard
 
             action_economy_guard = _action_economy_guard_reply(session, actor, message)
@@ -557,6 +586,10 @@ class IntentRouter:
                     actor.get("player_id", ""),
                     message[:120].replace("\n", "\\n"),
                 )
+                if collector:
+                    collector.record_guard("action_economy_guard", "blocked", {"reply": action_economy_guard})
+                    collector.record_state_after(session.to_dict())
+                    collector.record_final_output(action_economy_guard, sent_to_player=True)
                 return action_economy_guard
 
             toolset, tool_names, tool_executor, tool_specs = self.tool_registry.for_mode(
@@ -681,6 +714,15 @@ class IntentRouter:
                 projection_stats_text,
                 _rough_token_count(len(system_prompt) + len(tool_schema_text)),
             )
+            if collector:
+                collector.record_prompts(
+                    system_prompt=system_prompt,
+                    user_prompt=build_user_prompt(message, security_notes=security_notes),
+                    tool_names=list(tool_names),
+                    tool_specs=list(tool_specs),
+                    projection_stats=projection_stats,
+                    component_chars=component_chars,
+                )
 
         loop_result = await self._run_llm_tool_loop(
             chat_provider_id=provider_id,
@@ -693,6 +735,7 @@ class IntentRouter:
             raw_player_message=message,
             available_tool_names=tool_names,
             actor=actor,
+            collector=collector,
         )
         completion = self._sanitize_completion_text(loop_result.completion_text)
         tool_trace = loop_result.tool_results
@@ -742,6 +785,9 @@ class IntentRouter:
                     completeness_guard.get("reason", ""),
                     ",".join(completeness_guard.get("tool_names", [])),
                 )
+                if collector:
+                    collector.record_guard("adjudication_completeness_guard", "applied_suffix", dict(completeness_guard))
+                    collector.record_post_processing(completion_limited={"from_chars": raw_completion_chars, "to_chars": len(completion), "triggered": len(completion) < raw_completion_chars})
             else:
                 fallback_turn = await self._maybe_auto_advance_resolved_turn(
                     session=latest_session,
@@ -774,6 +820,11 @@ class IntentRouter:
                         fallback_turn.get("from_entity_id", ""),
                         fallback_turn.get("to_entity_id", ""),
                     )
+                    if collector:
+                        collector.record_guard("turn_auto_advance_fallback", "applied_suffix", dict(fallback_turn))
+                        collector.record_post_processing(completion_limited={"from_chars": raw_completion_chars, "to_chars": len(completion), "triggered": len(completion) < raw_completion_chars})
+                elif collector:
+                    collector.record_post_processing(completion_limited={"from_chars": raw_completion_chars, "to_chars": len(completion), "triggered": len(completion) < raw_completion_chars})
             if _should_cleanup_outbound_menu_guidance(latest_session, mode):
                 completion_before_cleanup = completion
                 cleanup = cleanup_menu_like_guidance(
@@ -808,6 +859,15 @@ class IntentRouter:
                         cleanup.original_chars,
                         cleanup.cleaned_chars,
                     )
+                    if collector:
+                        collector.record_post_processing(menu_cleanup={
+                            "changed": True,
+                            "reason": cleanup.reason,
+                            "removed_blocks": cleanup.removed_blocks,
+                            "replacement_used": cleanup.replacement_used,
+                            "original_chars": cleanup.original_chars,
+                            "cleaned_chars": cleanup.cleaned_chars,
+                        })
                 elif cleanup.semantic_candidate:
                     semantic_review = await self._judge_outbound_menu_candidate(
                         chat_provider_id=provider_id,
@@ -837,6 +897,15 @@ class IntentRouter:
                         cleanup.semantic_candidate,
                         str(semantic_review.get("action") or "keep"),
                     )
+                    if collector:
+                        collector.record_post_processing(menu_cleanup={
+                            "changed": semantic_cleanup.changed,
+                            "reason": semantic_cleanup.reason if semantic_cleanup.changed else "semantic_review_keep",
+                            "removed_blocks": semantic_cleanup.removed_blocks if semantic_cleanup.changed else 0,
+                            "semantic_classification": semantic_review.get("classification", "uncertain"),
+                            "semantic_action": semantic_review.get("action", "keep"),
+                            "semantic_confidence": semantic_review.get("confidence", 0.0),
+                        })
                     if semantic_cleanup.changed:
                         completion = semantic_cleanup.text
                         self.repository.append_audit(
@@ -874,6 +943,11 @@ class IntentRouter:
                 completion=completion,
                 tool_results=tool_trace,
             )
+            if collector:
+                collector.record_post_processing(deterministic_repair={
+                    "applied": len(deterministic_repair.get("applied", [])),
+                    "rejected": len(deterministic_repair.get("rejected", [])),
+                })
             if deterministic_repair.get("applied") or deterministic_repair.get("rejected"):
                 self.repository.save_session(latest_session)
                 self.repository.append_audit(
@@ -955,6 +1029,12 @@ class IntentRouter:
                         len(payload.get("issues", [])) if isinstance(payload, dict) else 0,
                         len((continuity_apply_result or {}).get("applied", [])),
                     )
+                    if collector:
+                        collector.record_post_processing(continuity_audit={
+                            "ok": True,
+                            "issues": len(payload.get("issues", [])) if isinstance(payload, dict) else 0,
+                            "applied": len((continuity_apply_result or {}).get("applied", [])),
+                        })
                 else:
                     self.repository.append_audit(
                         session_id,
@@ -967,6 +1047,11 @@ class IntentRouter:
                             "output_excerpt": continuity_audit_result.get("output_excerpt", ""),
                         },
                     )
+                    if collector:
+                        collector.record_post_processing(continuity_audit={
+                            "ok": False,
+                            "error": continuity_audit_result.get("error", "continuity_audit_failed"),
+                        })
             trace_record = self._persist_narrative_trace(
                 latest_session,
                 actor=actor,
@@ -1059,6 +1144,18 @@ class IntentRouter:
                                 "output_chars": ra_result.get("output_chars", 0),
                             },
                         )
+                        if collector:
+                            collector.record_ra_resolution({
+                                "triggered": True,
+                                "ra_enabled": True,
+                                "ra_result": {
+                                    "ok": True,
+                                    "summary": ra_result.get("summary"),
+                                    "prompt_chars": ra_result.get("prompt_chars", 0),
+                                    "output_chars": ra_result.get("output_chars", 0),
+                                },
+                                "timeline_result": timeline_result,
+                            })
                     else:
                         recovery_record = recover_cycle_after_ra_failure(latest_session, ra_result)
                         self.repository.save_session(latest_session)
@@ -1073,6 +1170,16 @@ class IntentRouter:
                                 "recovery": recovery_record,
                             },
                         )
+                        if collector:
+                            collector.record_ra_resolution({
+                                "triggered": True,
+                                "ra_enabled": True,
+                                "ra_result": {
+                                    "ok": False,
+                                    "error": ra_result.get("error", "ra_failed"),
+                                    "message": ra_result.get("message", ""),
+                                },
+                            })
                 else:
                     completion_record = complete_cycle_without_ra(latest_session)
                     timeline_result = completion_record.get("timeline_result", {})
@@ -1094,6 +1201,12 @@ class IntentRouter:
                             "reason": "ra_enabled_false",
                         },
                     )
+                    if collector:
+                        collector.record_ra_resolution({
+                            "triggered": True,
+                            "ra_enabled": False,
+                            "timeline_result": timeline_result,
+                        })
             self.repository.append_audit(
                 session_id,
                 {
@@ -1165,6 +1278,18 @@ class IntentRouter:
                 actor.get("player_id", ""),
                 len(completion),
             )
+            if collector:
+                collector.record_state_after(latest_session.to_dict())
+                collector.record_final_output(
+                    completion_text=completion,
+                    sent_to_player=True,
+                )
+        if collector:
+            envelope = collector.build_envelope()
+            asyncio.create_task(
+                self._write_forensic_dump(session_id, envelope),
+                name=f"forensic_dump_{session_id}_{collector._turn_sequence}",
+            )
         return completion
 
     async def _maybe_auto_advance_resolved_turn(
@@ -1224,6 +1349,21 @@ class IntentRouter:
             "turn_control_result": result,
             "reply_suffix": suffix,
         }
+
+    async def _write_forensic_dump(self, session_id: str, envelope: dict[str, Any]) -> None:
+        try:
+            self.repository.write_turn_dump(
+                session_id,
+                envelope,
+                max_turns=self.forensic_max_turns,
+                retain_days=self.forensic_retain_days,
+            )
+        except Exception as exc:
+            get_plugin_logger().warning(
+                "forensic_dump_write_failed session=%s error=%s",
+                session_id,
+                exc,
+            )
 
     def _schedule_ambient_image_generation(
         self,
@@ -1551,6 +1691,7 @@ class IntentRouter:
         raw_player_message: str = "",
         available_tool_names: list[str] | tuple[str, ...] | None = None,
         actor: dict[str, str] | None = None,
+        collector: ForensicCollector | None = None,
     ) -> ToolLoopResult:
         contexts: list[dict[str, str]] = []
         prompt = initial_prompt
@@ -1714,6 +1855,21 @@ class IntentRouter:
             )
             tool_calls = self._extract_tool_calls(response)
             completion_text = _response_completion_text(response)
+            if collector:
+                collector.record_llm_request(
+                    step=step + 1,
+                    prompt=prompt,
+                    contexts=list(contexts),
+                    system_prompt=system_prompt,
+                )
+                collector.record_llm_response(
+                    step=step + 1,
+                    completion_text=completion_text,
+                    tool_calls=[{"name": tc.get("name", ""), "args": tc.get("args", {})} for tc in tool_calls],
+                    raw_response_safe=_extract_raw_response_safe(response),
+                    usage=_extract_usage_from_response(response),
+                    finish_reason=_extract_finish_reason(response),
+                )
             if not tool_calls:
                 tool_calls = self._extract_text_tool_calls(completion_text)
             if not tool_calls:
@@ -1909,6 +2065,15 @@ class IntentRouter:
                     )
                 else:
                     result = await tool_executor.execute(tool_name, args)
+                if collector:
+                    collector.record_tool_execution(
+                        step=step + 1,
+                        tool=tool_name,
+                        args=dict(args) if args else {},
+                        result=dict(result) if result else {},
+                        guard_blocked=bool(guard_block),
+                        guard_reason=guard_block.get("reason", "") if guard_block else "",
+                    )
                 tool_results.append(
                     {
                         "tool": tool_name,
@@ -5127,6 +5292,80 @@ def _tool_result_summary_text(result: Any) -> str:
     if isinstance(result, (str, int, float)) and str(result).strip():
         return _short_inferred_text(str(result), 160)
     return ""
+
+
+def _extract_raw_response_safe(response: Any) -> dict[str, Any]:
+    """Extract a JSON-safe dict from an LLM provider response object."""
+    safe: dict[str, Any] = {}
+    if response is None:
+        return safe
+    # Try object attributes first, then dict keys
+    def get_attr(name: str) -> Any:
+        if hasattr(response, name):
+            try:
+                return getattr(response, name)
+            except Exception:
+                return None
+        if isinstance(response, dict):
+            return response.get(name)
+        return None
+
+    text = get_attr("completion_text") or get_attr("text") or get_attr("content") or ""
+    safe["completion_text"] = str(text) if text is not None else ""
+    role = get_attr("role")
+    if role is not None:
+        safe["role"] = str(role)
+    model = get_attr("model")
+    if model is not None:
+        safe["model"] = str(model)
+    finish_reason = get_attr("finish_reason")
+    if finish_reason is not None:
+        safe["finish_reason"] = str(finish_reason)
+    usage = get_attr("usage")
+    if usage is not None:
+        if isinstance(usage, dict):
+            safe["usage"] = dict(usage)
+        elif hasattr(usage, "__dict__"):
+            safe["usage"] = vars(usage)
+    tool_calls = get_attr("tool_calls")
+    if tool_calls is not None:
+        safe["tool_calls"] = tool_calls
+    # Preserve provider-specific reasoning/thinking fields
+    for key in ("reasoning_content", "thinking", "reasoning", "thought"):
+        val = get_attr(key)
+        if val is not None:
+            safe[key] = str(val)
+    # Ensure the result is pure JSON-serializable (no provider objects left)
+    safe = json.loads(json.dumps(safe, default=str))
+    return safe
+
+
+def _extract_usage_from_response(response: Any) -> dict[str, Any]:
+    usage = None
+    if hasattr(response, "usage"):
+        try:
+            usage = getattr(response, "usage")
+        except Exception:
+            pass
+    if usage is None and isinstance(response, dict):
+        usage = response.get("usage")
+    if isinstance(usage, dict):
+        return dict(usage)
+    if usage is not None and hasattr(usage, "__dict__"):
+        return vars(usage)
+    return {}
+
+
+def _extract_finish_reason(response: Any) -> str:
+    fr = ""
+    if hasattr(response, "finish_reason"):
+        try:
+            fr = getattr(response, "finish_reason")
+        except Exception:
+            pass
+    if not fr and isinstance(response, dict):
+        fr = response.get("finish_reason", "")
+    return str(fr or "")
 
 
 def _audit_safe_tool_results(tool_results: list[dict[str, Any]]) -> list[dict[str, Any]]:

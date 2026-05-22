@@ -3,7 +3,8 @@ from __future__ import annotations
 import json
 import re
 import shutil
-from datetime import datetime, timezone
+import zipfile
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -204,3 +205,130 @@ class JsonGameRepository:
     def _safe_name(value: str) -> str:
         safe = re.sub(r"[^a-zA-Z0-9_.-]+", "_", value)
         return safe.strip("._") or "default"
+
+    # ------------------------------------------------------------------
+    # Forensic dump methods
+    # ------------------------------------------------------------------
+
+    def turn_dumps_dir(self, session_id: str) -> Path:
+        path = self.data_dir / "dumps" / self._safe_name(session_id)
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
+    def write_turn_dump(
+        self,
+        session_id: str,
+        envelope: dict[str, Any],
+        *,
+        max_turns: int = 200,
+        retain_days: int = 30,
+    ) -> Path:
+        dump_dir = self.turn_dumps_dir(session_id)
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+        sequence = envelope.get("turn_sequence", 0)
+        short_hash = self._short_hash(envelope.get("turn_id", ""))
+        filename = f"{timestamp}_{sequence:03d}_{short_hash}.json"
+        dump_path = dump_dir / filename
+        dump_path.write_text(
+            json.dumps(envelope, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        self._rotate_turn_dumps(dump_dir, max_turns=max_turns, retain_days=retain_days)
+        return dump_path
+
+    def list_turn_dumps(self, session_id: str) -> list[dict[str, Any]]:
+        dump_dir = self.turn_dumps_dir(session_id)
+        paths = sorted(dump_dir.glob("*.json"), key=lambda p: p.name)
+        result: list[dict[str, Any]] = []
+        for path in paths:
+            try:
+                stat = path.stat()
+                result.append({
+                    "path": str(path),
+                    "name": path.name,
+                    "size": stat.st_size,
+                    "mtime": datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).isoformat(),
+                })
+            except OSError:
+                continue
+        return result
+
+    def archive_session_forensic(self, session_id: str) -> Path:
+        dump_dir = self.turn_dumps_dir(session_id)
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+        archive_path = self.data_dir / "dumps" / f"{self._safe_name(session_id)}_forensic_{timestamp}.zip"
+        archive_path.parent.mkdir(parents=True, exist_ok=True)
+
+        with zipfile.ZipFile(archive_path, "w", zipfile.ZIP_DEFLATED) as zf:
+            # session save
+            save_path = self._session_path(session_id)
+            if save_path.exists():
+                zf.write(save_path, arcname="session_save.json")
+
+            # audit log
+            audit_path = self.audit_path(session_id)
+            if audit_path.exists():
+                zf.write(audit_path, arcname="audit.jsonl")
+
+            # plugin log tail
+            log_path = self.plugin_log_path()
+            if log_path.exists():
+                tail = self._read_log_tail(log_path, max_lines=5000)
+                zf.writestr("plugin_log_tail.txt", tail)
+
+            # backups manifest
+            backups = self.list_session_backups(session_id, limit=50)
+            zf.writestr(
+                "backups_manifest.json",
+                json.dumps({"session_id": session_id, "backups": backups}, ensure_ascii=False, indent=2),
+            )
+
+            # dumps
+            for dump_file in sorted(dump_dir.glob("*.json")):
+                zf.write(dump_file, arcname=f"dumps/{dump_file.name}")
+
+            # README
+            dumps = self.list_turn_dumps(session_id)
+            zf.writestr(
+                "README.txt",
+                (
+                    f"Session: {session_id}\n"
+                    f"Turn dumps: {len(dumps)}\n"
+                    f"Exported at: {utc_now_iso()}\n"
+                    f"Dump version: 1.0\n"
+                ),
+            )
+
+        return archive_path
+
+    @staticmethod
+    def _rotate_turn_dumps(dump_dir: Path, max_turns: int, retain_days: int) -> None:
+        paths = sorted(dump_dir.glob("*.json"), key=lambda p: p.stat().st_mtime)
+        # rotate by count
+        if max_turns > 0 and len(paths) > max_turns:
+            for stale in paths[: len(paths) - max_turns]:
+                stale.unlink(missing_ok=True)
+        # rotate by age
+        if retain_days > 0:
+            cutoff = datetime.now(timezone.utc) - timedelta(days=retain_days)
+            for path in dump_dir.glob("*.json"):
+                try:
+                    if datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc) < cutoff:
+                        path.unlink(missing_ok=True)
+                except OSError:
+                    continue
+
+    @staticmethod
+    def _read_log_tail(log_path: Path, max_lines: int = 5000) -> str:
+        try:
+            lines = log_path.read_text(encoding="utf-8").splitlines()
+            return "\n".join(lines[-max_lines:])
+        except Exception:
+            return ""
+
+    @staticmethod
+    def _short_hash(value: str) -> str:
+        import hashlib
+
+        text = str(value)
+        return hashlib.sha256(text.encode("utf-8", errors="replace")).hexdigest()[:8]

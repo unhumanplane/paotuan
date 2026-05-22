@@ -27,6 +27,7 @@ from .core.map_delivery_cadence import filter_map_pending_outputs_for_delivery
 from .core.map_tool_routing import looks_visual_map_request
 from .core.plugin_log import configure_plugin_logging
 from .core.router import IntentRouter
+from .core.forensic_collector import ForensicCollector
 from .core.scenario_templates import (
     build_campaign_preference_question,
     build_campaign_preset_patch,
@@ -281,6 +282,11 @@ class AutoTrpgDmPlugin(Star):
         llm_tool_loop_max_steps = max(1, self._config_int("llm_tool_loop_max_steps", 16))
         self.prompt_snapshot_projection_enabled = prompt_snapshot_projection_enabled
         self.heartbeat_idle_log_interval = heartbeat_idle_log_interval
+        self.forensic_dumps_enabled = self._config_bool("forensic_dumps_enabled", False)
+        self.forensic_max_turns = max(1, self._config_int("forensic_max_turns_per_session", 500))
+        self.forensic_retain_days = max(1, self._config_int("forensic_retain_days", 30))
+        self.forensic_include_prompts = self._config_bool("forensic_include_prompts", False)
+        self.forensic_include_raw_response = self._config_bool("forensic_include_raw_response", False)
         ambient_image_provider = AmbientImageProvider(ambient_image_config)
         tool_registry = ToolRegistry(
             repository=self.repository,
@@ -305,6 +311,8 @@ class AutoTrpgDmPlugin(Star):
             continuity_auditor_model_provider=self._config_str("continuity_auditor_model_provider", "default") or "default",
             continuity_auditor_max_tokens=self._config_int("continuity_auditor_max_tokens", 1200),
             prompt_snapshot_projection_enabled=prompt_snapshot_projection_enabled,
+            forensic_max_turns=self.forensic_max_turns,
+            forensic_retain_days=self.forensic_retain_days,
         )
         migrated = self._migrate_legacy_turn_fields()
         if migrated:
@@ -320,7 +328,7 @@ class AutoTrpgDmPlugin(Star):
         self._start_heartbeat_task()
         self.admin_web = AutoTrpgAdminWeb(self.repository)
         self.plugin_logger.info(
-            "plugin_initialized version=%s data_dir=%s honcho_enabled=%s honcho_workspace=%s ambient_image_enabled=%s ambient_image_mode=%s prompt_snapshot_projection_enabled=%s continuity_auditor_enabled=%s heartbeat_idle_log_interval=%s llm_tool_loop_max_steps=%s",
+            "plugin_initialized version=%s data_dir=%s honcho_enabled=%s honcho_workspace=%s ambient_image_enabled=%s ambient_image_mode=%s prompt_snapshot_projection_enabled=%s continuity_auditor_enabled=%s heartbeat_idle_log_interval=%s llm_tool_loop_max_steps=%s forensic_dumps_enabled=%s forensic_max_turns=%s forensic_retain_days=%s",
             PLUGIN_VERSION,
             data_dir,
             honcho_config.enabled,
@@ -331,6 +339,9 @@ class AutoTrpgDmPlugin(Star):
             self._config_bool("continuity_auditor_enabled", True),
             heartbeat_idle_log_interval,
             llm_tool_loop_max_steps,
+            self.forensic_dumps_enabled,
+            self.forensic_max_turns,
+            self.forensic_retain_days,
         )
         logger.info("Auto TRPG DM plugin initialized.")
 
@@ -544,6 +555,12 @@ class AutoTrpgDmPlugin(Star):
                     **security.to_audit_record(),
                 },
             )
+        collector = None
+        if getattr(self, "forensic_dumps_enabled", False):
+            collector = ForensicCollector(
+                include_prompts=self.forensic_include_prompts,
+                include_raw_response=self.forensic_include_raw_response,
+            )
         reassurance_task = None
         try:
             if self._should_send_dm_ack(session_id, sender_id):
@@ -553,6 +570,7 @@ class AutoTrpgDmPlugin(Star):
                 event,
                 message_override=routed_message,
                 security_notes=security.notes,
+                collector=collector,
             )
         except asyncio.CancelledError:
             await self._cancel_long_running_reassurance_task(reassurance_task)
