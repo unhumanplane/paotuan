@@ -253,7 +253,7 @@ class FakeRouter:
             "seen_at": "2026-05-04T00:00:00+00:00",
         }
 
-    async def handle_message(self, event, message_override=None, security_notes=None):
+    async def handle_message(self, event, message_override=None, security_notes=None, collector=None):
         self.called += 1
         self.started.set()
         if self.wait_for_release:
