@@ -8,6 +8,7 @@ import hmac
 import json
 import os
 import re
+import shutil
 import subprocess
 import time
 import urllib.error
@@ -25,6 +26,7 @@ except ImportError:  # pragma: no cover - some test envs do not run the HTTP ser
 ROOT = Path("/volume1/docker/hermes")
 OPS = ROOT / "paotuan"
 HERMES_ENV = OPS / "bin" / "hermes-env.sh"
+MAIN_HERMES_HOME = ROOT / "data"
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8767
 DEFAULT_TIMEOUT_SECONDS = 240
@@ -32,6 +34,10 @@ DEFAULT_JOB_TIMEOUT_SECONDS = 1800
 DEFAULT_MAX_PROMPT_CHARS = 4000
 DEFAULT_WORKDIR = OPS / "work" / "paotuan"
 DEFAULT_SECRET_PATH = OPS / "secrets" / "coder_bridge_secret"
+DEFAULT_CODER_HERMES_HOME = ROOT / "data-coder"
+DEFAULT_CODER_REASONING_EFFORT = "xhigh"
+DEFAULT_CODER_SESSION_STATE_PATH = OPS / "state" / "hermes_coder_sessions.json"
+DEFAULT_CODER_SESSION_SOURCE_PREFIX = "paotuan-coder"
 DEFAULT_ASTRBOT_CODER_CONFIG_PATH = Path("/volume1/docker/astrbot/data/config/astrbot_plugin_hermes_coder_config.json")
 DEFAULT_ASTRBOT_API_KEY_PATH = OPS / "secrets" / "astrbot_openapi_im_key"
 DEFAULT_ASTRBOT_API_URL = "http://127.0.0.1:6185/api/v1/im/message"
@@ -75,27 +81,100 @@ def load_dotenv(path: Path) -> dict[str, str]:
     return data
 
 
-def command_env() -> dict[str, str]:
+def command_env(hermes_home: Path | None = None) -> dict[str, str]:
     env = os.environ.copy()
-    env.update(load_dotenv(ROOT / "data" / ".env"))
+    env.update(load_dotenv(MAIN_HERMES_HOME / ".env"))
+    effective_hermes_home = hermes_home or MAIN_HERMES_HOME
+    node_bin = effective_hermes_home / "node" / "bin"
+    fallback_node_bin = MAIN_HERMES_HOME / "node" / "bin"
     path_entries = [
         "/opt/hermes/.venv/bin",
         str(ROOT / "install" / "hermes-agent" / "venv" / "bin"),
         str(ROOT / "home" / ".local" / "bin"),
-        str(ROOT / "data" / "node" / "bin"),
+        str(node_bin),
+        str(fallback_node_bin),
         env.get("PATH", ""),
         "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
     ]
     env.update(
         {
             "HOME": str(ROOT / "home"),
-            "HERMES_HOME": str(ROOT / "data"),
+            "HERMES_HOME": str(effective_hermes_home),
+            "HERMES_NODE_BIN": str(node_bin),
             "TMPDIR": str(ROOT / "tmp"),
             "HERMES_ACCEPT_HOOKS": "1",
             "PATH": ":".join(item for item in path_entries if item),
         }
     )
     return env
+
+
+def _config_with_agent_reasoning_effort(text: str, effort: str) -> str:
+    lines = text.splitlines()
+    output: list[str] = []
+    in_agent = False
+    saw_agent = False
+    updated = False
+
+    for line in lines:
+        is_top_level = bool(line.strip()) and not line.startswith((" ", "\t"))
+        if is_top_level and in_agent and not line.startswith("agent:") and not updated:
+            output.append(f"  reasoning_effort: {effort}")
+            updated = True
+        if is_top_level:
+            in_agent = line.split(":", 1)[0].strip() == "agent"
+            saw_agent = saw_agent or in_agent
+        if in_agent and re.match(r"^(\s*)reasoning_effort\s*:", line):
+            indent_match = re.match(r"^(\s*)", line)
+            indent = indent_match.group(1) if indent_match else "  "
+            output.append(f"{indent}reasoning_effort: {effort}")
+            updated = True
+            continue
+        output.append(line)
+
+    if saw_agent and in_agent and not updated:
+        output.append(f"  reasoning_effort: {effort}")
+    elif not saw_agent:
+        if output and output[-1].strip():
+            output.append("")
+        output.extend(["agent:", f"  reasoning_effort: {effort}"])
+
+    rendered = "\n".join(output)
+    if text.endswith("\n") or not rendered.endswith("\n"):
+        rendered += "\n"
+    return rendered
+
+
+def _link_or_copy_if_missing(source: Path, target: Path) -> None:
+    if not source.exists() or target.exists() or target.is_symlink():
+        return
+    try:
+        target.symlink_to(source, target_is_directory=source.is_dir())
+        return
+    except OSError:
+        pass
+    if source.is_file():
+        shutil.copy2(source, target)
+    elif source.is_dir():
+        shutil.copytree(source, target, dirs_exist_ok=True)
+
+
+def prepare_coder_hermes_home(hermes_home: Path, reasoning_effort: str) -> None:
+    hermes_home.mkdir(parents=True, exist_ok=True)
+    for subdir in ("sessions", "logs", "cache", "sandboxes"):
+        (hermes_home / subdir).mkdir(parents=True, exist_ok=True)
+
+    source_config = MAIN_HERMES_HOME / "config.yaml"
+    if not source_config.exists():
+        raise RuntimeError(f"Hermes config not found: {source_config}")
+    source_text = source_config.read_text(encoding="utf-8")
+    target_text = _config_with_agent_reasoning_effort(source_text, reasoning_effort)
+    target_config = hermes_home / "config.yaml"
+    if not target_config.exists() or target_config.read_text(encoding="utf-8", errors="ignore") != target_text:
+        target_config.write_text(target_text, encoding="utf-8")
+
+    for name in (".env", "SOUL.md", "auth.json", "memories", "skills", "hooks", "scripts", "bin", "node"):
+        _link_or_copy_if_missing(MAIN_HERMES_HOME / name, hermes_home / name)
 
 
 def read_secret(path: Path) -> str:
@@ -139,6 +218,101 @@ def truncate_text(text: str, limit: int) -> str:
     if len(text) <= limit:
         return text
     return text[:limit].rstrip() + "\n\n[已截断]"
+
+
+SESSION_ID_PATTERN = re.compile(r"\b\d{8}_\d{6}_[0-9a-f]{6,8}\b", re.IGNORECASE)
+
+
+def _safe_session_source(group_id: str) -> str:
+    return f"{DEFAULT_CODER_SESSION_SOURCE_PREFIX}-{_safe_session_name(group_id or 'private')}"
+
+
+def split_delivery_text(text: str, limit: int) -> list[str]:
+    normalized = (text or "").rstrip()
+    if not normalized.strip():
+        return []
+
+    limit = max(100, int(limit))
+    if len(normalized) <= limit:
+        return [normalized]
+
+    chunks: list[str] = []
+    current_parts: list[str] = []
+    current_len = 0
+
+    for line in normalized.splitlines(keepends=True):
+        if len(line) > limit:
+            if current_parts:
+                chunk = "".join(current_parts).rstrip()
+                if chunk:
+                    chunks.append(chunk)
+                current_parts = []
+                current_len = 0
+            start = 0
+            while start < len(line):
+                end = min(len(line), start + limit)
+                piece = line[start:end]
+                if piece:
+                    chunks.append(piece.rstrip())
+                start = end
+            continue
+
+        if current_parts and current_len + len(line) > limit:
+            chunk = "".join(current_parts).rstrip()
+            if chunk:
+                chunks.append(chunk)
+            current_parts = [line]
+            current_len = len(line)
+        else:
+            current_parts.append(line)
+            current_len += len(line)
+
+    if current_parts:
+        chunk = "".join(current_parts).rstrip()
+        if chunk:
+            chunks.append(chunk)
+
+    return chunks
+
+
+def numbered_delivery_parts(text: str, limit: int) -> list[str]:
+    parts = split_delivery_text(text, max(100, limit - 24))
+    if len(parts) <= 1:
+        return parts
+    total = len(parts)
+    return [f"[{index}/{total}]\n{part}" for index, part in enumerate(parts, start=1)]
+
+
+def extract_latest_session_id(text: str) -> str:
+    match = SESSION_ID_PATTERN.search(text or "")
+    return match.group(0) if match else ""
+
+
+def compact_excerpt(text: str, limit: int) -> str:
+    cleaned = (text or "").strip()
+    if len(cleaned) <= limit:
+        return cleaned
+    limit = max(120, int(limit))
+    head = max(60, limit // 2 - 40)
+    tail = max(60, limit - head - 16)
+    return f"{cleaned[:head].rstrip()}\n...[省略]...\n{cleaned[-tail:].lstrip()}"
+
+
+def load_json_state(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def save_json_state(path: Path, data: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_suffix(path.suffix + ".tmp")
+    tmp_path.write_text(json.dumps(data, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
+    tmp_path.replace(path)
 
 
 def is_plugin_review_request(prompt: str) -> bool:
@@ -262,12 +436,18 @@ def _extract_group_ids(text: str) -> list[str]:
     return result
 
 
-def build_prompt(payload: dict[str, Any]) -> str:
+def build_prompt(payload: dict[str, Any], session_context: str = "") -> str:
     prompt = str(payload.get("prompt") or "").strip()
     group_id = str(payload.get("group_id") or "").strip()
     sender_id = str(payload.get("sender_id") or "").strip()
     session_id = str(payload.get("session_id") or "").strip()
-    return (
+    context_block = ""
+    if session_context.strip():
+        context_block = (
+            "最近维护上下文（只作延续线索；若与当前请求或仓库现状冲突，以当前请求和实际检查为准）：\n"
+            f"{session_context.strip()}\n\n"
+        )
+    return context_block + (
         "你是 Paotuan 仓库的 Hermes 维护代理。用户通过 AstrBot /coder 命令向你发起请求。\n"
         "请用中文简洁回复。能安全执行的仓库维护、排障、日志复盘、部署检查任务可以直接处理；"
         "不要打印密钥，不要读取 AstrBot 主日志，除非用户本次明确授权；不要重启 Docker 或容器，除非用户明确要求。\n\n"
@@ -278,11 +458,22 @@ def build_prompt(payload: dict[str, Any]) -> str:
     )
 
 
-def run_plugin_review_script(script_path: Path, user_prompt: str, timeout: int) -> tuple[int, str]:
+def run_plugin_review_script(
+    script_path: Path,
+    user_prompt: str,
+    timeout: int,
+    hermes_home: Path | None = None,
+    reasoning_effort: str = DEFAULT_CODER_REASONING_EFFORT,
+) -> tuple[int, str]:
     if not script_path.exists():
         raise RuntimeError(f"plugin review script not found: {script_path}")
-    env = command_env()
+    if hermes_home is not None:
+        prepare_coder_hermes_home(hermes_home, reasoning_effort)
+    env = command_env(hermes_home)
     env["PAOTUAN_REVIEW_REQUEST"] = user_prompt
+    if hermes_home is not None:
+        env["HERMES_CODER_HERMES_HOME"] = str(hermes_home)
+        env["HERMES_CODER_REASONING_EFFORT"] = reasoning_effort
     proc = subprocess.run(
         [str(script_path)],
         cwd=str(OPS),
@@ -295,12 +486,40 @@ def run_plugin_review_script(script_path: Path, user_prompt: str, timeout: int) 
     return proc.returncode, proc.stdout or ""
 
 
-def run_hermes(prompt: str, timeout: int, workdir: Path) -> tuple[int, str]:
-    cmd = ["hermes", "--accept-hooks", "--worktree", "-z", prompt]
+def run_hermes(
+    prompt: str,
+    timeout: int,
+    workdir: Path,
+    hermes_home: Path | None = None,
+    reasoning_effort: str = DEFAULT_CODER_REASONING_EFFORT,
+    resume_session_id: str = "",
+    session_source: str = "",
+) -> tuple[int, str]:
+    if hermes_home is not None:
+        prepare_coder_hermes_home(hermes_home, reasoning_effort)
+    if resume_session_id:
+        cmd = [
+            "hermes",
+            "chat",
+            "--accept-hooks",
+            "--worktree",
+            "--yolo",
+            "--pass-session-id",
+            "--resume",
+            resume_session_id,
+            "-Q",
+            "-q",
+            prompt,
+        ]
+    else:
+        cmd = ["hermes", "chat", "--accept-hooks", "--worktree", "--yolo", "--pass-session-id", "-Q"]
+        if session_source:
+            cmd.extend(["--source", session_source])
+        cmd.extend(["-q", prompt])
     proc = subprocess.run(
         cmd,
         cwd=str(workdir),
-        env=command_env(),
+        env=command_env(hermes_home),
         text=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
@@ -319,6 +538,9 @@ async def run_blocking(func, *args):
 class CoderBridge:
     def __init__(self, args: argparse.Namespace):
         self.secret_path = Path(args.secret_path)
+        self.coder_hermes_home = Path(args.coder_hermes_home)
+        self.coder_reasoning_effort = str(args.coder_reasoning_effort).strip() or DEFAULT_CODER_REASONING_EFFORT
+        self.session_state_path = Path(args.session_state_path)
         self.timeout_seconds = int(args.timeout_seconds)
         self.job_timeout_seconds = int(args.job_timeout_seconds)
         self.max_prompt_chars = int(args.max_prompt_chars)
@@ -378,7 +600,7 @@ class CoderBridge:
             group_id = str(payload.get("group_id") or "").strip()
             try:
                 self._session_for_group(group_id)
-                hermes_prompt = build_prompt(payload)
+                hermes_prompt = build_prompt(payload, self._session_context_for_group(group_id))
                 asyncio.create_task(self._run_plugin_review_job(payload, hermes_prompt))
             except ValueError as exc:
                 return json_response({"ok": False, "error": str(exc)}, status=400)
@@ -413,7 +635,8 @@ class CoderBridge:
             )
         if not (self.workdir / ".git").exists():
             return json_response({"ok": False, "error": f"workdir is not a git repo: {self.workdir}"}, status=500)
-        hermes_prompt = build_prompt(payload)
+        group_id = str(payload.get("group_id") or "").strip()
+        hermes_prompt = build_prompt(payload, self._session_context_for_group(group_id))
         print(
             f"coder_request_accepted group={payload.get('group_id') or ''} "
             f"message={payload.get('message_id') or ''} prompt_chars={len(prompt)} "
@@ -434,6 +657,8 @@ class CoderBridge:
                 self.plugin_review_script,
                 hermes_prompt,
                 self.job_timeout_seconds,
+                self.coder_hermes_home,
+                self.coder_reasoning_effort,
             )
             text = self._format_plugin_review_reply(returncode, output)
             print(
@@ -447,11 +672,14 @@ class CoderBridge:
             text = f"【Paotuan 插件审阅/自动修复执行失败】{str(exc)[:300]}"
         try:
             api_key = read_secret(self.astrbot_api_key_path)
-            api_result = await run_blocking(self._post_astrbot_message, api_key, session, text)
-            if not api_result.get("ok"):
-                print(f"coder_plugin_review_notify_failed group={group_id} message={message_id} error={api_result.get('error')}", flush=True)
-            else:
-                print(f"coder_plugin_review_notify_sent group={group_id} message={message_id} session={session}", flush=True)
+            notify_parts = numbered_delivery_parts(text, self.max_notify_chars) or [text]
+            total_parts = len(notify_parts)
+            for index, notify_text in enumerate(notify_parts, start=1):
+                api_result = await run_blocking(self._post_astrbot_message, api_key, session, notify_text)
+                if not api_result.get("ok"):
+                    print(f"coder_plugin_review_notify_failed group={group_id} message={message_id} part={index} error={api_result.get('error')}", flush=True)
+                    break
+                print(f"coder_plugin_review_notify_sent group={group_id} message={message_id} session={session} part={index}/{total_parts}", flush=True)
         except Exception as exc:
             print(f"coder_plugin_review_notify_failed group={group_id} message={message_id} error={str(exc)[:200]}", flush=True)
 
@@ -461,16 +689,28 @@ class CoderBridge:
             text = "Paotuan 插件审阅/自动修复任务完成，但没有返回文本结果。"
         if returncode != 0:
             text = f"【Paotuan 插件审阅/自动修复异常退出：{returncode}】\n{text}"
-        return truncate_text(text, self.max_notify_chars)
+        return text
 
     async def _run_coder_job(self, payload: dict[str, Any], hermes_prompt: str) -> None:
         group_id = str(payload.get("group_id") or "").strip()
         message_id = str(payload.get("message_id") or "").strip()
         try:
             session = self._session_for_group(group_id)
+            session_state = self._session_state_for_group(group_id)
+            resume_session_id = str(session_state.get("hermes_session_id") or "")
             print(f"coder_job_started group={group_id} message={message_id}", flush=True)
-            returncode, output = await run_blocking(run_hermes, hermes_prompt, self.job_timeout_seconds, self.workdir)
+            returncode, output = await run_blocking(
+                run_hermes,
+                hermes_prompt,
+                self.job_timeout_seconds,
+                self.workdir,
+                self.coder_hermes_home,
+                self.coder_reasoning_effort,
+                resume_session_id,
+                _safe_session_source(group_id),
+            )
             text = self._format_coder_job_reply(returncode, output)
+            self._update_session_state(group_id, payload, returncode, output, text)
             print(
                 f"coder_job_completed group={group_id} message={message_id} "
                 f"returncode={returncode} output_chars={len(output or '')} notify_chars={len(text)}",
@@ -482,11 +722,14 @@ class CoderBridge:
             text = f"【Hermes /coder 执行失败】{str(exc)[:300]}"
         try:
             api_key = read_secret(self.astrbot_api_key_path)
-            api_result = await run_blocking(self._post_astrbot_message, api_key, session, text)
-            if not api_result.get("ok"):
-                print(f"coder_job_notify_failed group={group_id} message={message_id} error={api_result.get('error')}", flush=True)
-            else:
-                print(f"coder_job_notify_sent group={group_id} message={message_id} session={session}", flush=True)
+            notify_parts = numbered_delivery_parts(text, self.max_notify_chars) or [text]
+            total_parts = len(notify_parts)
+            for index, notify_text in enumerate(notify_parts, start=1):
+                api_result = await run_blocking(self._post_astrbot_message, api_key, session, notify_text)
+                if not api_result.get("ok"):
+                    print(f"coder_job_notify_failed group={group_id} message={message_id} part={index} error={api_result.get('error')}", flush=True)
+                    break
+                print(f"coder_job_notify_sent group={group_id} message={message_id} session={session} part={index}/{total_parts}", flush=True)
         except Exception as exc:
             print(f"coder_job_notify_failed group={group_id} message={message_id} error={str(exc)[:200]}", flush=True)
 
@@ -498,13 +741,68 @@ class CoderBridge:
             raise ValueError("group is not in notify whitelist")
         return self.notify_session_template.format(group_id=group_id)
 
+    def _session_state_key(self, group_id: str) -> str:
+        return _safe_session_name(group_id or "private")
+
+    def _session_state_for_group(self, group_id: str) -> dict[str, Any]:
+        state = load_json_state(self.session_state_path)
+        sessions = state.get("sessions")
+        if not isinstance(sessions, dict):
+            return {}
+        value = sessions.get(self._session_state_key(group_id))
+        return value if isinstance(value, dict) else {}
+
+    def _session_context_for_group(self, group_id: str) -> str:
+        session_state = self._session_state_for_group(group_id)
+        parts: list[str] = []
+        if session_state.get("last_prompt"):
+            parts.append(f"上次请求: {session_state.get('last_prompt')}")
+        if session_state.get("last_result"):
+            parts.append(f"上次结果: {session_state.get('last_result')}")
+        if session_state.get("open_followups"):
+            parts.append(f"待跟进: {session_state.get('open_followups')}")
+        return "\n".join(parts)
+
+    def _update_session_state(
+        self,
+        group_id: str,
+        payload: dict[str, Any],
+        returncode: int,
+        output: str,
+        notify_text: str,
+    ) -> None:
+        try:
+            state = load_json_state(self.session_state_path)
+            sessions = state.get("sessions")
+            if not isinstance(sessions, dict):
+                sessions = {}
+            key = self._session_state_key(group_id)
+            previous = sessions.get(key)
+            if not isinstance(previous, dict):
+                previous = {}
+            hermes_session_id = extract_latest_session_id(output) or str(previous.get("hermes_session_id") or "")
+            prompt = str(payload.get("prompt") or "").strip()
+            sessions[key] = {
+                "group_id": group_id,
+                "updated_at": datetime.now().astimezone().isoformat(),
+                "hermes_session_id": hermes_session_id,
+                "last_returncode": int(returncode),
+                "last_prompt": compact_excerpt(prompt, 700),
+                "last_result": compact_excerpt(notify_text or output, 1600),
+                "open_followups": str(previous.get("open_followups") or ""),
+            }
+            state["sessions"] = sessions
+            save_json_state(self.session_state_path, state)
+        except Exception as exc:
+            print(f"coder_session_state_update_failed group={group_id} error={str(exc)[:200]}", flush=True)
+
     def _format_coder_job_reply(self, returncode: int, output: str) -> str:
         text = tail_text((output or "").strip(), self.max_output_chars)
         if not text:
             text = "Hermes /coder 任务完成，但没有返回文本结果。"
         if returncode != 0:
             text = f"【Hermes /coder 异常退出：{returncode}】\n{text}"
-        return truncate_text(text, self.max_notify_chars)
+        return text
 
     def _build_game_log_result(self, payload: dict[str, Any]) -> dict[str, Any]:
         group_id = str(payload.get("group_id") or "").strip()
@@ -715,6 +1013,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--host", default=os.environ.get("HERMES_CODER_BRIDGE_HOST", DEFAULT_HOST))
     parser.add_argument("--port", type=int, default=int(os.environ.get("HERMES_CODER_BRIDGE_PORT", str(DEFAULT_PORT))))
     parser.add_argument("--secret-path", default=os.environ.get("HERMES_CODER_BRIDGE_SECRET_PATH", str(DEFAULT_SECRET_PATH)))
+    parser.add_argument("--coder-hermes-home", default=os.environ.get("HERMES_CODER_HERMES_HOME", str(DEFAULT_CODER_HERMES_HOME)))
+    parser.add_argument("--coder-reasoning-effort", default=os.environ.get("HERMES_CODER_REASONING_EFFORT", DEFAULT_CODER_REASONING_EFFORT))
+    parser.add_argument("--session-state-path", default=os.environ.get("HERMES_CODER_SESSION_STATE_PATH", str(DEFAULT_CODER_SESSION_STATE_PATH)))
     parser.add_argument("--timeout-seconds", type=int, default=int(os.environ.get("HERMES_CODER_TIMEOUT_SECONDS", str(DEFAULT_TIMEOUT_SECONDS))))
     parser.add_argument("--job-timeout-seconds", type=int, default=int(os.environ.get("HERMES_CODER_JOB_TIMEOUT_SECONDS", str(DEFAULT_JOB_TIMEOUT_SECONDS))))
     parser.add_argument("--max-prompt-chars", type=int, default=int(os.environ.get("HERMES_CODER_MAX_PROMPT_CHARS", str(DEFAULT_MAX_PROMPT_CHARS))))

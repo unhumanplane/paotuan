@@ -30,6 +30,9 @@ def _bridge(tmp_path, *, groups="", config_groups=None):
         )
     args = argparse.Namespace(
         secret_path=str(secret_path),
+        coder_hermes_home=str(tmp_path / "coder_hermes_home"),
+        coder_reasoning_effort="xhigh",
+        session_state_path=str(tmp_path / "coder_sessions.json"),
         timeout_seconds=240,
         job_timeout_seconds=1800,
         max_prompt_chars=4000,
@@ -241,10 +244,14 @@ def test_run_coder_job_posts_result_to_astrbot(tmp_path, monkeypatch):
         bridge = _bridge(tmp_path, groups="1101538762")
         captured = {}
 
-        def fake_run_hermes(prompt, timeout, workdir):
+        def fake_run_hermes(prompt, timeout, workdir, hermes_home=None, reasoning_effort="", resume_session_id="", session_source=""):
             captured["prompt"] = prompt
             captured["timeout"] = timeout
             captured["workdir"] = workdir
+            captured["hermes_home"] = hermes_home
+            captured["reasoning_effort"] = reasoning_effort
+            captured["resume_session_id"] = resume_session_id
+            captured["session_source"] = session_source
             return 0, "审查完成"
 
         def fake_post(api_key, session, text):
@@ -262,8 +269,61 @@ def test_run_coder_job_posts_result_to_astrbot(tmp_path, monkeypatch):
         )
 
         assert captured["timeout"] == 1800
+        assert captured["workdir"] == tmp_path
+        assert captured["hermes_home"] == tmp_path / "coder_hermes_home"
+        assert captured["reasoning_effort"] == "xhigh"
+        assert captured["resume_session_id"] == ""
+        assert captured["session_source"] == "paotuan-coder-1101538762"
         assert captured["session"] == "default:GroupMessage:1101538762"
         assert captured["text"] == "审查完成"
+
+    asyncio.run(run_case())
+
+
+def test_run_coder_job_resumes_saved_session_and_splits_long_notify(tmp_path, monkeypatch):
+    async def run_case():
+        bridge = _bridge(tmp_path, groups="1101538762")
+        bridge.max_notify_chars = 80
+        bridge_mod.save_json_state(
+            bridge.session_state_path,
+            {
+                "sessions": {
+                    "1101538762": {
+                        "hermes_session_id": "20260522_120000_deadbeef",
+                        "last_prompt": "old prompt",
+                        "last_result": "old result",
+                    }
+                }
+            },
+        )
+        captured = {"texts": []}
+
+        def fake_run_hermes(prompt, timeout, workdir, hermes_home=None, reasoning_effort="", resume_session_id="", session_source=""):
+            captured["prompt"] = prompt
+            captured["resume_session_id"] = resume_session_id
+            captured["session_source"] = session_source
+            return 0, "20260522_130000_a1b2c3d4\n" + ("输出行\n" * 40)
+
+        def fake_post(api_key, session, text):
+            captured["texts"].append(text)
+            return {"ok": True}
+
+        monkeypatch.setattr(bridge_mod, "run_hermes", fake_run_hermes)
+        monkeypatch.setattr(bridge, "_post_astrbot_message", fake_post)
+
+        await bridge._run_coder_job(
+            {"group_id": "1101538762", "message_id": "msg1", "prompt": "new prompt"},
+            bridge_mod.build_prompt({"prompt": "new prompt", "group_id": "1101538762"}, bridge._session_context_for_group("1101538762")),
+        )
+
+        assert captured["resume_session_id"] == "20260522_120000_deadbeef"
+        assert captured["session_source"] == "paotuan-coder-1101538762"
+        assert "old prompt" in captured["prompt"]
+        assert len(captured["texts"]) > 1
+        assert captured["texts"][0].startswith("[1/")
+        state = bridge_mod.load_json_state(bridge.session_state_path)
+        assert state["sessions"]["1101538762"]["hermes_session_id"] == "20260522_130000_a1b2c3d4"
+        assert "new prompt" in state["sessions"]["1101538762"]["last_prompt"]
 
     asyncio.run(run_case())
 
@@ -330,10 +390,34 @@ def test_run_plugin_review_script_passes_owner_request_env(tmp_path, monkeypatch
     script.write_text("#!/bin/sh\nprintf '%s' \"$PAOTUAN_REVIEW_REQUEST\"\n", encoding="utf-8")
     script.chmod(0o755)
 
+    captured = {}
+
+    class FakeCompleted:
+        returncode = 0
+        stdout = "owner request"
+
+    def fake_run(cmd, cwd, env, text, stdout, stderr, timeout):
+        captured["cmd"] = cmd
+        captured["cwd"] = cwd
+        captured["env_request"] = env["PAOTUAN_REVIEW_REQUEST"]
+        captured["timeout"] = timeout
+        return FakeCompleted()
+
+    monkeypatch.setattr(bridge_mod.subprocess, "run", fake_run)
+
     returncode, output = bridge_mod.run_plugin_review_script(script, "owner request", 5)
 
     assert returncode == 0
     assert output == "owner request"
+    assert captured["env_request"] == "owner request"
+    assert captured["cwd"] == str(bridge_mod.OPS)
+
+
+def test_build_prompt_includes_session_context():
+    prompt = bridge_mod.build_prompt({"prompt": "new request", "group_id": "1101538762"}, "old context")
+
+    assert "old context" in prompt
+    assert "new request" in prompt
 
 
 def test_run_plugin_review_job_posts_result_to_astrbot(tmp_path, monkeypatch):
@@ -341,10 +425,12 @@ def test_run_plugin_review_job_posts_result_to_astrbot(tmp_path, monkeypatch):
         bridge = _bridge(tmp_path, groups="1101538762")
         captured = {}
 
-        def fake_run_review(script_path, user_prompt, timeout):
+        def fake_run_review(script_path, user_prompt, timeout, hermes_home=None, reasoning_effort=""):
             captured["script_path"] = script_path
             captured["user_prompt"] = user_prompt
             captured["timeout"] = timeout
+            captured["hermes_home"] = hermes_home
+            captured["reasoning_effort"] = reasoning_effort
             return 0, "审阅脚本完成"
 
         def fake_post(api_key, session, text):
@@ -362,8 +448,126 @@ def test_run_plugin_review_job_posts_result_to_astrbot(tmp_path, monkeypatch):
         )
 
         assert captured["timeout"] == 1800
+        assert captured["hermes_home"] == tmp_path / "coder_hermes_home"
+        assert captured["reasoning_effort"] == "xhigh"
         assert captured["user_prompt"] == "review prompt"
         assert captured["session"] == "default:GroupMessage:1101538762"
         assert captured["text"] == "审阅脚本完成"
 
     asyncio.run(run_case())
+
+
+def test_prepare_coder_hermes_home_overrides_reasoning_without_touching_main(tmp_path, monkeypatch):
+    main_home = tmp_path / "data"
+    coder_home = tmp_path / "data-coder"
+    main_home.mkdir()
+    (main_home / "config.yaml").write_text(
+        "model:\n  default: gpt-5.5\nagent:\n  max_turns: 90\n  reasoning_effort: high\ncron:\n  enabled: true\n",
+        encoding="utf-8",
+    )
+    (main_home / ".env").write_text("OPENAI_API_KEY=masked\n", encoding="utf-8")
+    (main_home / "SOUL.md").write_text("persona\n", encoding="utf-8")
+    monkeypatch.setattr(bridge_mod, "MAIN_HERMES_HOME", main_home)
+
+    bridge_mod.prepare_coder_hermes_home(coder_home, "xhigh")
+
+    assert "reasoning_effort: high" in (main_home / "config.yaml").read_text(encoding="utf-8")
+    coder_config = (coder_home / "config.yaml").read_text(encoding="utf-8")
+    assert "reasoning_effort: xhigh" in coder_config
+    assert "cron:" in coder_config
+    assert (coder_home / ".env").exists()
+
+
+def test_run_hermes_uses_coder_home_and_reasoning(tmp_path, monkeypatch):
+    main_home = tmp_path / "data"
+    coder_home = tmp_path / "data-coder"
+    workdir = tmp_path / "repo"
+    main_home.mkdir()
+    workdir.mkdir()
+    (main_home / "config.yaml").write_text("agent:\n  reasoning_effort: high\n", encoding="utf-8")
+    monkeypatch.setattr(bridge_mod, "MAIN_HERMES_HOME", main_home)
+    captured = {}
+
+    class FakeCompleted:
+        returncode = 0
+        stdout = "done"
+
+    def fake_run(cmd, cwd, env, text, stdout, stderr, timeout):
+        captured["cmd"] = cmd
+        captured["cwd"] = cwd
+        captured["env_home"] = env["HERMES_HOME"]
+        captured["timeout"] = timeout
+        return FakeCompleted()
+
+    monkeypatch.setattr(bridge_mod.subprocess, "run", fake_run)
+
+    returncode, output = bridge_mod.run_hermes("hello", 5, workdir, coder_home, "xhigh", "", "paotuan-coder-test")
+
+    assert returncode == 0
+    assert output == "done"
+    assert captured["cmd"] == [
+        "hermes",
+        "chat",
+        "--accept-hooks",
+        "--worktree",
+        "--yolo",
+        "--pass-session-id",
+        "-Q",
+        "--source",
+        "paotuan-coder-test",
+        "-q",
+        "hello",
+    ]
+    assert captured["cwd"] == str(workdir)
+    assert captured["env_home"] == str(coder_home)
+    assert "reasoning_effort: xhigh" in (coder_home / "config.yaml").read_text(encoding="utf-8")
+
+
+def test_run_hermes_resumes_saved_session(tmp_path, monkeypatch):
+    main_home = tmp_path / "data"
+    coder_home = tmp_path / "data-coder"
+    workdir = tmp_path / "repo"
+    main_home.mkdir()
+    workdir.mkdir()
+    (main_home / "config.yaml").write_text("agent:\n  reasoning_effort: high\n", encoding="utf-8")
+    monkeypatch.setattr(bridge_mod, "MAIN_HERMES_HOME", main_home)
+    captured = {}
+
+    class FakeCompleted:
+        returncode = 0
+        stdout = "done"
+
+    def fake_run(cmd, cwd, env, text, stdout, stderr, timeout):
+        captured["cmd"] = cmd
+        return FakeCompleted()
+
+    monkeypatch.setattr(bridge_mod.subprocess, "run", fake_run)
+
+    bridge_mod.run_hermes("hello", 5, workdir, coder_home, "xhigh", "20260522_120000_deadbeef", "ignored-source")
+
+    assert captured["cmd"] == [
+        "hermes",
+        "chat",
+        "--accept-hooks",
+        "--worktree",
+        "--yolo",
+        "--pass-session-id",
+        "--resume",
+        "20260522_120000_deadbeef",
+        "-Q",
+        "-q",
+        "hello",
+    ]
+
+
+def test_command_env_switches_home_without_losing_main_node_bin(tmp_path, monkeypatch):
+    main_home = tmp_path / "data"
+    coder_home = tmp_path / "data-coder"
+    main_home.mkdir()
+    monkeypatch.setattr(bridge_mod, "MAIN_HERMES_HOME", main_home)
+
+    env = bridge_mod.command_env(coder_home)
+
+    assert env["HERMES_HOME"] == str(coder_home)
+    assert env["HERMES_NODE_BIN"] == str(coder_home / "node" / "bin")
+    assert str(coder_home / "node" / "bin") in env["PATH"]
