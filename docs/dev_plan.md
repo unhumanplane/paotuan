@@ -14,7 +14,17 @@
 
 - `main` 已包含 PR 1–PR 5 的主体实现：周期数据模型、状态机、Prompt 基建、DM 周期集成、Recorder Agent 流水线、RA 配置与审计。
 - 待确认事项 D1–D4 已确认；Audit Buffer 单周期上限为 50 条 action，溢出只记录结构化计数，不写入 `environment_summaries`。
-- 当前文档按 `origin/main` 的代码和测试覆盖同步验收状态；实际 NAS 部署进度以部署报告为准。
+- 当前文档按 `origin/main` 的代码和测试覆盖同步验收状态；最近一次 NAS 部署报告显示 `f3b83ff` 已通过 `compileall` 与 `pytest` 并热加载成功。
+
+| 范围 | 当前状态 | 主要证据 |
+|------|----------|----------|
+| PR 1 Foundation | 已完成 | `tests/test_models.py`、`tests/test_cycle_state_machine.py` |
+| PR 2 Prompt 基础设施 | 已完成 | `tests/test_prompts.py` |
+| PR 3 DM 周期集成 | 已完成 | `tests/test_cycle_buffer.py`、`tests/test_cycle_tools.py`、`tests/test_cycle_integration.py` |
+| PR 4 Recorder Agent 流水线 | 已完成 | `tests/test_environment_agent.py`、`tests/test_cycle_integration.py` |
+| PR 5 配置 + Audit + 功能开关 | 已完成 | `_conf_schema.json`、`main.py`、`core/router.py` 与相关回归测试 |
+
+维护备注：本文档记录的是开发计划验收进度；线上可用版本仍以 `/volume1/docker/hermes/paotuan/reports/latest.md` 的最新部署报告为准。
 
 | 里程碑 | 内容 | 预估工期 |
 |--------|------|----------|
