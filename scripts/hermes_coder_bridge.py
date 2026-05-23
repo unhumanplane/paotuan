@@ -36,6 +36,7 @@ DEFAULT_WORKDIR = OPS / "work" / "paotuan"
 DEFAULT_SECRET_PATH = OPS / "secrets" / "coder_bridge_secret"
 DEFAULT_CODER_HERMES_HOME = ROOT / "data-coder"
 DEFAULT_CODER_REASONING_EFFORT = "xhigh"
+DEFAULT_CODER_API_CALL_STALE_TIMEOUT = 900
 DEFAULT_CODER_SESSION_STATE_PATH = OPS / "state" / "hermes_coder_sessions.json"
 DEFAULT_CODER_SESSION_SOURCE_PREFIX = "paotuan-coder"
 DEFAULT_ASTRBOT_CODER_CONFIG_PATH = Path("/volume1/docker/astrbot/data/config/astrbot_plugin_hermes_coder_config.json")
@@ -106,6 +107,8 @@ def command_env(hermes_home: Path | None = None) -> dict[str, str]:
             "PATH": ":".join(item for item in path_entries if item),
         }
     )
+    if hermes_home is not None:
+        env.setdefault("HERMES_API_CALL_STALE_TIMEOUT", str(DEFAULT_CODER_API_CALL_STALE_TIMEOUT))
     return env
 
 
@@ -222,6 +225,10 @@ def truncate_text(text: str, limit: int) -> str:
 
 ANSI_ESCAPE_PATTERN = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 SESSION_ID_PATTERN = re.compile(r"\b\d{8}_\d{6}_[0-9a-f]{6,8}\b", re.IGNORECASE)
+CODER_TIMEOUT_MARKERS = (
+    "Non-streaming API call timed out",
+    "API call failed after 3 retries",
+)
 
 
 def _safe_session_source(group_id: str) -> str:
@@ -300,6 +307,9 @@ def sanitize_hermes_output_for_reply(text: str) -> str:
         if lowered.startswith("session_id:"):
             skip_worktree_branch = False
             continue
+        if stripped.startswith("↻ Resumed session") or stripped.startswith("Resumed session"):
+            skip_worktree_branch = False
+            continue
         if SESSION_ID_PATTERN.fullmatch(stripped):
             skip_worktree_branch = False
             continue
@@ -317,6 +327,11 @@ def sanitize_hermes_output_for_reply(text: str) -> str:
         lines.append(raw_line.rstrip())
 
     return "\n".join(lines).strip()
+
+
+def output_looks_like_coder_timeout(text: str) -> bool:
+    cleaned = (text or "")
+    return any(marker in cleaned for marker in CODER_TIMEOUT_MARKERS)
 
 
 def compact_excerpt(text: str, limit: int) -> str:
@@ -727,8 +742,7 @@ class CoderBridge:
         message_id = str(payload.get("message_id") or "").strip()
         try:
             session = self._session_for_group(group_id)
-            session_state = self._session_state_for_group(group_id)
-            resume_session_id = str(session_state.get("hermes_session_id") or "")
+            resume_session_id = self._resume_session_id_for_group(group_id)
             print(f"coder_job_started group={group_id} message={message_id}", flush=True)
             returncode, output = await run_blocking(
                 run_hermes,
@@ -783,12 +797,23 @@ class CoderBridge:
         value = sessions.get(self._session_state_key(group_id))
         return value if isinstance(value, dict) else {}
 
+    def _resume_session_id_for_group(self, group_id: str) -> str:
+        session_state = self._session_state_for_group(group_id)
+        session_id = str(session_state.get("hermes_session_id") or "").strip()
+        if not session_id:
+            return ""
+        if int(session_state.get("last_returncode") or 0) != 0:
+            return ""
+        if output_looks_like_coder_timeout(str(session_state.get("last_result") or "")):
+            return ""
+        return session_id
+
     def _session_context_for_group(self, group_id: str) -> str:
         session_state = self._session_state_for_group(group_id)
         parts: list[str] = []
         if session_state.get("last_prompt"):
             parts.append(f"上次请求: {session_state.get('last_prompt')}")
-        if session_state.get("last_result"):
+        if int(session_state.get("last_returncode") or 0) == 0 and session_state.get("last_result"):
             parts.append(f"上次结果: {session_state.get('last_result')}")
         if session_state.get("open_followups"):
             parts.append(f"待跟进: {session_state.get('open_followups')}")
@@ -811,7 +836,18 @@ class CoderBridge:
             previous = sessions.get(key)
             if not isinstance(previous, dict):
                 previous = {}
-            hermes_session_id = extract_latest_session_id(output) or str(previous.get("hermes_session_id") or "")
+            if int(returncode) == 0:
+                hermes_session_id = extract_latest_session_id(output) or str(previous.get("hermes_session_id") or "")
+                last_result = compact_excerpt(notify_text or output, 1600)
+            else:
+                hermes_session_id = ""
+                if output_looks_like_coder_timeout(output):
+                    last_result = "[失败] Hermes /coder 超时"
+                else:
+                    failure_excerpt = compact_excerpt(notify_text or output, 240)
+                    last_result = f"[失败] Hermes /coder returncode={int(returncode)}"
+                    if failure_excerpt:
+                        last_result = f"{last_result}: {failure_excerpt}"
             prompt = str(payload.get("prompt") or "").strip()
             sessions[key] = {
                 "group_id": group_id,
@@ -819,7 +855,7 @@ class CoderBridge:
                 "hermes_session_id": hermes_session_id,
                 "last_returncode": int(returncode),
                 "last_prompt": compact_excerpt(prompt, 700),
-                "last_result": compact_excerpt(notify_text or output, 1600),
+                "last_result": last_result,
                 "open_followups": str(previous.get("open_followups") or ""),
             }
             state["sessions"] = sessions

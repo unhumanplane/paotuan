@@ -143,6 +143,7 @@ def test_format_coder_job_reply_hides_hermes_cli_noise_but_keeps_answer(tmp_path
     bridge = _bridge(tmp_path, groups="1101538762")
     raw_output = (
         "session_id: 20260522_145511_88a39a\n"
+        "↻ Resumed session 20260522_145511_88a39a (1 user message, 16 total messages)\n"
         "\x1b[32m✓ Worktree created:\x1b[0m /volume1/docker/hermes/paotuan/work/paotuan/.worktrees/hermes-629d2c77\n"
         "  Branch: hermes/hermes-629d2c77\n"
         "我已读到 docs/dev_plan.md。\n"
@@ -157,6 +158,7 @@ def test_format_coder_job_reply_hides_hermes_cli_noise_but_keeps_answer(tmp_path
     assert "双 Agent 架构开发计划" in reply
     assert "session_id:" not in reply
     assert "20260522_145511_88a39a" not in reply
+    assert "Resumed session" not in reply
     assert "Worktree created" not in reply
     assert "Worktree cleaned up" not in reply
     assert "Branch:" not in reply
@@ -185,6 +187,30 @@ def test_update_session_state_extracts_session_id_from_unsanitized_output(tmp_pa
     session = state["sessions"]["1101538762"]
     assert session["hermes_session_id"] == "20260522_145511_88a39a"
     assert "Worktree created" not in session["last_result"]
+
+
+def test_update_session_state_clears_session_id_on_failure(tmp_path):
+    bridge = _bridge(tmp_path, groups="1101538762")
+    raw_output = (
+        "session_id: 20260522_145511_88a39a\n"
+        "↻ Resumed session 20260522_145511_88a39a (1 user message, 16 total messages)\n"
+        "API call failed after 3 retries: Non-streaming API call timed out after 300s with no response (threshold: 300s)\n"
+    )
+    reply = bridge._format_coder_job_reply(1, raw_output)
+
+    bridge._update_session_state(
+        "1101538762",
+        {"prompt": "timeout case"},
+        1,
+        raw_output,
+        reply,
+    )
+
+    state = bridge_mod.load_json_state(bridge.session_state_path)
+    session = state["sessions"]["1101538762"]
+    assert session["hermes_session_id"] == ""
+    assert session["last_result"] == "[失败] Hermes /coder 超时"
+    assert "Resumed session" not in session["last_result"]
 
 
 def test_session_for_group_uses_notify_whitelist(tmp_path):
@@ -376,6 +402,48 @@ def test_run_coder_job_resumes_saved_session_and_splits_long_notify(tmp_path, mo
     asyncio.run(run_case())
 
 
+def test_run_coder_job_skips_failed_session_and_starts_fresh(tmp_path, monkeypatch):
+    async def run_case():
+        bridge = _bridge(tmp_path, groups="1101538762")
+        bridge_mod.save_json_state(
+            bridge.session_state_path,
+            {
+                "sessions": {
+                    "1101538762": {
+                        "hermes_session_id": "20260522_145511_88a39a",
+                        "last_returncode": 1,
+                        "last_result": "API call failed after 3 retries: Non-streaming API call timed out after 300s with no response (threshold: 300s)",
+                    }
+                }
+            },
+        )
+        captured = {}
+
+        def fake_run_hermes(prompt, timeout, workdir, hermes_home=None, reasoning_effort="", resume_session_id="", session_source=""):
+            captured["resume_session_id"] = resume_session_id
+            captured["prompt"] = prompt
+            return 0, "20260523_010500_a1b2c3d4\nfresh success"
+
+        def fake_post(api_key, session, text):
+            captured["text"] = text
+            return {"ok": True}
+
+        monkeypatch.setattr(bridge_mod, "run_hermes", fake_run_hermes)
+        monkeypatch.setattr(bridge, "_post_astrbot_message", fake_post)
+
+        await bridge._run_coder_job(
+            {"group_id": "1101538762", "message_id": "msg2", "prompt": "fresh please"},
+            bridge_mod.build_prompt({"prompt": "fresh please", "group_id": "1101538762"}, bridge._session_context_for_group("1101538762")),
+        )
+
+        assert captured["resume_session_id"] == ""
+        assert "fresh success" in captured["text"]
+        state = bridge_mod.load_json_state(bridge.session_state_path)
+        assert state["sessions"]["1101538762"]["hermes_session_id"] == "20260523_010500_a1b2c3d4"
+
+    asyncio.run(run_case())
+
+
 def test_background_accepted_reply_constant_is_defined():
     assert bridge_mod.DEFAULT_BACKGROUND_ACCEPTED_REPLY
     assert "后台" in bridge_mod.DEFAULT_BACKGROUND_ACCEPTED_REPLY
@@ -544,6 +612,7 @@ def test_run_hermes_uses_coder_home_and_reasoning(tmp_path, monkeypatch):
         captured["cmd"] = cmd
         captured["cwd"] = cwd
         captured["env_home"] = env["HERMES_HOME"]
+        captured["stale_timeout"] = env["HERMES_API_CALL_STALE_TIMEOUT"]
         captured["timeout"] = timeout
         return FakeCompleted()
 
@@ -568,6 +637,7 @@ def test_run_hermes_uses_coder_home_and_reasoning(tmp_path, monkeypatch):
     ]
     assert captured["cwd"] == str(workdir)
     assert captured["env_home"] == str(coder_home)
+    assert captured["stale_timeout"] == "900"
     assert "reasoning_effort: xhigh" in (coder_home / "config.yaml").read_text(encoding="utf-8")
 
 
@@ -618,4 +688,5 @@ def test_command_env_switches_home_without_losing_main_node_bin(tmp_path, monkey
 
     assert env["HERMES_HOME"] == str(coder_home)
     assert env["HERMES_NODE_BIN"] == str(coder_home / "node" / "bin")
+    assert env["HERMES_API_CALL_STALE_TIMEOUT"] == "900"
     assert str(coder_home / "node" / "bin") in env["PATH"]
