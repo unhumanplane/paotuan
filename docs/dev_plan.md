@@ -4,11 +4,17 @@
 >
 > **目标分支**：`sandbox/hashval/double-agent`
 > **预估工期**：5–7 天
-> **状态**：设计已完成，待进入开发
+> **状态**：主体实现已合入 `main`；验收项已按当前代码与测试同步标记，部署态仍需跟进。
 
 ---
 
 ## 里程碑总览
+
+## 当前完成进度（维护同步）
+
+- `main` 已包含 PR 1–PR 5 的主体实现：周期数据模型、状态机、Prompt 基建、DM 周期集成、Recorder Agent 流水线、RA 配置与审计。
+- 待确认事项 D1–D4 已确认；Audit Buffer 单周期上限为 50 条 action，溢出只记录结构化计数，不写入 `environment_summaries`。
+- 当前文档按 `origin/main` 的代码和测试覆盖同步验收状态；实际 NAS 部署进度以部署报告为准。
 
 | 里程碑 | 内容 | 预估工期 |
 |--------|------|----------|
@@ -50,11 +56,11 @@
 
 ### 验收标准
 
-- [ ] 现有旧存档 JSON 能正常加载，新字段自动填充默认值
-- [ ] 新存档序列化/反序列化无数据丢失
-- [ ] `CycleStateMachine` 三个状态转换全部通过单元测试
-- [ ] `ra_enabled` 默认关闭，新增字段后插件行为不发生变化
-- [ ] `pytest -q` 全绿
+- [x] 现有旧存档 JSON 能正常加载，新字段自动填充默认值
+- [x] 新存档序列化/反序列化无数据丢失
+- [x] `CycleStateMachine` 三个状态转换全部通过单元测试
+- [x] `ra_enabled` 默认关闭，新增字段后插件行为不发生变化
+- [x] `pytest -q` 全绿
 
 ### 风险
 
@@ -83,10 +89,10 @@
 
 ### 验收标准
 
-- [ ] DM 输出的 System Prompt 包含 `BASE_RULES` 全文
-- [ ] `build_ra_system_prompt()` 输出符合设计文档中 RA 角色定义
-- [ ] `build_cycle_start_prompt()` 输出包含周期摘要、角色状态、世界变更
-- [ ] Prompt 长度估算不超限（当前 System Prompt 约 150 条规则，新增 BASE_RULES 需控制增量）
+- [x] DM 输出的 System Prompt 包含 `BASE_RULES` 全文
+- [x] `build_ra_system_prompt()` 输出符合设计文档中 RA 角色定义
+- [x] `build_cycle_start_prompt()` 输出包含周期摘要、角色状态、世界变更
+- [x] Prompt 长度估算不超限（当前 System Prompt 约 150 条规则，新增 BASE_RULES 需控制增量）
 
 ### 风险
 
@@ -120,12 +126,12 @@
 
 ### 验收标准
 
-- [ ] 玩家声明行动后，`session.audit_buffer.actions` 和 `session.ra_cycle_input.actions` 正确追加记录
-- [ ] 玩家查询状态（如 `/dm status`）不写入 cycle buffer
-- [ ] DM 调用 `cycle_control(action="end_cycle")` 后，`cycle_state` 变为 `CYCLE_RESOLVING`
-- [ ] 周期结算期间，read-only local fast paths 可返回结果；新行动或 mutating fast paths 收到等待提示，不进入 LLM
-- [ ] `ra_enabled=false` 时，周期结束后直接切回 `CYCLE_ACTIVE`，不调用 RA
-- [ ] `CYCLE_ACTIVE` 内回合系统（turn_control）正常推进；`CYCLE_RESOLVING` / `CYCLE_TRANSITION` 中不执行新的 mutating turn_control 路径
+- [x] 玩家声明行动后，`session.audit_buffer.actions` 和 `session.ra_cycle_input.actions` 正确追加记录
+- [x] 玩家查询状态（如 `/dm status`）不写入 cycle buffer
+- [x] DM 调用 `cycle_control(action="end_cycle")` 后，`cycle_state` 变为 `CYCLE_RESOLVING`
+- [x] 周期结算期间，read-only local fast paths 可返回结果；新行动或 mutating fast paths 收到等待提示，不进入 LLM
+- [x] `ra_enabled=false` 时，周期结束后直接切回 `CYCLE_ACTIVE`，不调用 RA
+- [x] `CYCLE_ACTIVE` 内回合系统（turn_control）正常推进；`CYCLE_RESOLVING` / `CYCLE_TRANSITION` 中不执行新的 mutating turn_control 路径
 
 ### 风险
 
@@ -167,13 +173,13 @@
 
 ### 验收标准
 
-- [ ] 周期结束后，RA 只运行 **一次** LLM 调用
-- [ ] RA 输出是有效 JSON，包含：`cycle_id`、`summary`、`character_status`、`enemy_status`、`world_changes`、`rules_triggered`、`dm_narrative_aligned`、`discrepancies`；其中状态字段均视为补丁候选
-- [ ] RA 摘要保存到 `session.environment_summaries`，权威字段只通过 allowlisted、tool-backed、validator 通过的补丁改变
-- [ ] 下一周期 DM 的 System Prompt 包含 RA summary + `discrepancies`
-- [ ] DM Agent 在 `discrepancies` 非空时，用合理的场内解释圆回叙事冲突
-- [ ] RA 失败（超时、无效 JSON、异常）时不阻塞游戏：保留未消费 `audit_buffer`、记录 recoverable error；如生成最小状态补丁，也必须来自 tool trace 且通过同一 allowlist/validator；随后直接回到 `CYCLE_ACTIVE`
-- [ ] 战斗回合（turn_control）与周期边界互不干扰
+- [x] 周期结束后，RA 只运行 **一次** LLM 调用
+- [x] RA 输出是有效 JSON，包含：`cycle_id`、`summary`、`character_status`、`enemy_status`、`world_changes`、`rules_triggered`、`dm_narrative_aligned`、`discrepancies`；其中状态字段均视为补丁候选
+- [x] RA 摘要保存到 `session.environment_summaries`，权威字段只通过 allowlisted、tool-backed、validator 通过的补丁改变
+- [x] 下一周期 DM 的 System Prompt 包含 RA summary + `discrepancies`
+- [x] DM Agent 在 `discrepancies` 非空时，用合理的场内解释圆回叙事冲突
+- [x] RA 失败（超时、无效 JSON、异常）时不阻塞游戏：保留未消费 `audit_buffer`、记录 recoverable error；如生成最小状态补丁，也必须来自 tool trace 且通过同一 allowlist/validator；随后直接回到 `CYCLE_ACTIVE`
+- [x] 战斗回合（turn_control）与周期边界互不干扰
 
 ### 风险
 
@@ -208,10 +214,10 @@
 
 ### 验收标准
 
-- [ ] `ra_enabled=false` 时，游戏行为与旧版完全一致
-- [ ] `ra_enabled=true` 时，双 Agent 流水线完整运行
-- [ ] audit log 包含 RA 执行记录
-- [ ] 配置热加载无需重启插件
+- [x] `ra_enabled=false` 时，游戏行为与旧版完全一致
+- [x] `ra_enabled=true` 时，双 Agent 流水线完整运行
+- [x] audit log 包含 RA 执行记录
+- [x] 配置热加载无需重启插件
 
 ### 风险
 
