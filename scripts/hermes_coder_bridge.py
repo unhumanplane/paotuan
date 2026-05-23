@@ -318,6 +318,9 @@ def sanitize_hermes_output_for_reply(text: str) -> str:
         if stripped.startswith("↻ Resumed session") or stripped.startswith("Resumed session"):
             skip_worktree_branch = False
             continue
+        if stripped.startswith("Session ") and " has no messages" in stripped and "Starting fresh" in stripped:
+            skip_worktree_branch = False
+            continue
         if SESSION_ID_PATTERN.fullmatch(stripped):
             skip_worktree_branch = False
             continue
@@ -411,6 +414,20 @@ def latest_assistant_content_from_session(hermes_home: Path | None, session_id: 
         if isinstance(content, str) and content.strip():
             return content.strip()
     return ""
+
+
+def hermes_session_has_messages(hermes_home: Path | None, session_id: str) -> bool:
+    if not hermes_home or not session_id:
+        return False
+    session_path = hermes_home / "sessions" / f"session_{session_id}.json"
+    if not session_path.exists():
+        return False
+    try:
+        data = json.loads(session_path.read_text(encoding="utf-8"))
+    except Exception:
+        return False
+    messages = data.get("messages")
+    return isinstance(messages, list) and len(messages) > 0
 
 
 def compact_excerpt(text: str, limit: int) -> str:
@@ -887,6 +904,8 @@ class CoderBridge:
         if int(session_state.get("last_returncode") or 0) != 0:
             return ""
         if output_looks_like_coder_timeout(str(session_state.get("last_result") or "")):
+            return ""
+        if not hermes_session_has_messages(self.coder_hermes_home, session_id):
             return ""
         return session_id
 

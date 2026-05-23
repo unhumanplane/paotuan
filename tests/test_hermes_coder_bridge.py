@@ -144,6 +144,7 @@ def test_format_coder_job_reply_hides_hermes_cli_noise_but_keeps_answer(tmp_path
     raw_output = (
         "session_id: 20260522_145511_88a39a\n"
         "↻ Resumed session 20260522_145511_88a39a (1 user message, 16 total messages)\n"
+        "Session 20260523_104954_80db38 found but has no messages. Starting fresh.\n"
         "\x1b[32m✓ Worktree created:\x1b[0m /volume1/docker/hermes/paotuan/work/paotuan/.worktrees/hermes-629d2c77\n"
         "  Branch: hermes/hermes-629d2c77\n"
         "我已读到 docs/dev_plan.md。\n"
@@ -159,6 +160,8 @@ def test_format_coder_job_reply_hides_hermes_cli_noise_but_keeps_answer(tmp_path
     assert "session_id:" not in reply
     assert "20260522_145511_88a39a" not in reply
     assert "Resumed session" not in reply
+    assert "has no messages" not in reply
+    assert "Starting fresh" not in reply
     assert "Worktree created" not in reply
     assert "Worktree cleaned up" not in reply
     assert "Branch:" not in reply
@@ -423,6 +426,9 @@ def test_run_coder_job_resumes_saved_session_and_splits_long_notify(tmp_path, mo
     async def run_case():
         bridge = _bridge(tmp_path, groups="1101538762")
         bridge.max_notify_chars = 80
+        session_file = bridge.coder_hermes_home / "sessions" / "session_20260522_120000_deadbeef.json"
+        session_file.parent.mkdir(parents=True)
+        session_file.write_text(json.dumps({"messages": [{"role": "assistant", "content": "old result"}]}), encoding="utf-8")
         bridge_mod.save_json_state(
             bridge.session_state_path,
             {
@@ -463,6 +469,48 @@ def test_run_coder_job_resumes_saved_session_and_splits_long_notify(tmp_path, mo
         state = bridge_mod.load_json_state(bridge.session_state_path)
         assert state["sessions"]["1101538762"]["hermes_session_id"] == "20260522_130000_a1b2c3d4"
         assert "new prompt" in state["sessions"]["1101538762"]["last_prompt"]
+
+    asyncio.run(run_case())
+
+
+def test_run_coder_job_skips_empty_saved_session_and_starts_fresh(tmp_path, monkeypatch):
+    async def run_case():
+        bridge = _bridge(tmp_path, groups="1101538762")
+        session_file = bridge.coder_hermes_home / "sessions" / "session_20260523_104954_80db38.json"
+        session_file.parent.mkdir(parents=True)
+        session_file.write_text(json.dumps({"messages": []}), encoding="utf-8")
+        bridge_mod.save_json_state(
+            bridge.session_state_path,
+            {
+                "sessions": {
+                    "1101538762": {
+                        "hermes_session_id": "20260523_104954_80db38",
+                        "last_returncode": 0,
+                        "last_result": "previous ok",
+                    }
+                }
+            },
+        )
+        captured = {}
+
+        def fake_run_hermes(prompt, timeout, workdir, hermes_home=None, reasoning_effort="", resume_session_id="", session_source=""):
+            captured["resume_session_id"] = resume_session_id
+            return 0, "20260523_120000_a1b2c3d4\nfresh ok"
+
+        def fake_post(api_key, session, text):
+            captured["text"] = text
+            return {"ok": True}
+
+        monkeypatch.setattr(bridge_mod, "run_hermes", fake_run_hermes)
+        monkeypatch.setattr(bridge, "_post_astrbot_message", fake_post)
+
+        await bridge._run_coder_job(
+            {"group_id": "1101538762", "message_id": "msg-empty", "prompt": "continue"},
+            "prompt",
+        )
+
+        assert captured["resume_session_id"] == ""
+        assert captured["text"] == "fresh ok"
 
     asyncio.run(run_case())
 
