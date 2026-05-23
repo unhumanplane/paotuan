@@ -8,6 +8,9 @@ from .models import AuditBuffer, CycleAction, CycleState, RACycleInput, utc_now_
 from .timeline import cycle_timeline_completion, timeline_view
 
 
+MAX_CYCLE_ACTIONS = 50
+
+
 def append_cycle_action(
     session: Any,
     actor: dict[str, str],
@@ -39,12 +42,16 @@ def append_cycle_action(
             "tools_called": sanitized_tools,
         }
     )
-    return {
+    overflow = _trim_cycle_buffers(session)
+    record = {
         "cycle_id": session.current_cycle_id,
         "player_id": player_id,
         "character_id": character_id,
         "tool_names": [item.get("name", "") for item in sanitized_tools],
     }
+    if overflow:
+        record["cycle_action_buffer_overflow"] = overflow
+    return record
 
 
 def cycle_end_requested(tool_results: list[dict[str, Any]]) -> bool:
@@ -92,6 +99,26 @@ def complete_cycle_without_ra(session: Any) -> dict[str, Any]:
 
 def sanitize_ra_payload(value: Any) -> Any:
     return _sanitize_ra_payload(value)
+
+
+def _trim_cycle_buffers(session: Any) -> dict[str, int]:
+    audit_actions = list(getattr(getattr(session, "audit_buffer", None), "actions", []) or [])
+    ra_actions = list(getattr(getattr(session, "ra_cycle_input", None), "actions", []) or [])
+    max_len = MAX_CYCLE_ACTIONS
+    audit_overflow = max(0, len(audit_actions) - max_len)
+    ra_overflow = max(0, len(ra_actions) - max_len)
+    overflow = max(audit_overflow, ra_overflow)
+    if audit_overflow:
+        session.audit_buffer.actions = audit_actions[audit_overflow:]
+    if ra_overflow:
+        session.ra_cycle_input.actions = ra_actions[ra_overflow:]
+    if not overflow:
+        return {}
+    return {
+        "dropped_actions": overflow,
+        "max_actions": max_len,
+        "retained_actions": min(max(len(audit_actions), len(ra_actions)), max_len),
+    }
 
 
 def _normalise_tool_results(tool_results: list[dict[str, Any]]) -> list[dict[str, Any]]:

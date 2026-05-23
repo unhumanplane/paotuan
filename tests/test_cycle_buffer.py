@@ -130,6 +130,44 @@ def test_complete_cycle_without_ra_does_not_advance_timeline_twice_after_cycle_c
     assert session.timeline["last_advanced_cycle_id"] == 2
 
 
+def test_append_cycle_action_keeps_latest_50_actions_without_leaking_overflow_to_ra_summary():
+    session = GameSession.new("group")
+
+    latest_record = {}
+    for index in range(55):
+        latest_record = append_cycle_action(
+            session,
+            actor={"player_id": "player-1"},
+            player_message=f"raw-player-message-{index}",
+            completion=f"DM narrative {index}",
+            tool_results=[
+                {
+                    "tool": "update_scene",
+                    "args": {
+                        "summary": f"visible scene {index}",
+                        "player_message": f"raw-player-message-{index}",
+                    },
+                    "result": {"ok": True, "summary": f"visible scene {index}"},
+                }
+            ],
+        )
+
+    assert len(session.audit_buffer.actions) == 50
+    assert len(session.ra_cycle_input.actions) == 50
+    assert session.audit_buffer.actions[0].player_message == "raw-player-message-5"
+    assert session.audit_buffer.actions[-1].player_message == "raw-player-message-54"
+    rendered_ra_input = json.dumps(session.ra_cycle_input.actions, ensure_ascii=False)
+    assert "raw-player-message" not in rendered_ra_input
+    assert "DM narrative 5" in rendered_ra_input
+    assert "DM narrative 54" in rendered_ra_input
+    assert session.environment_summaries == []
+    assert latest_record["cycle_action_buffer_overflow"] == {
+        "dropped_actions": 1,
+        "max_actions": 50,
+        "retained_actions": 50,
+    }
+
+
 def test_append_cycle_action_sanitizes_raw_grid_from_ra_tool_input():
     session = GameSession.new("group")
     tool_results = [

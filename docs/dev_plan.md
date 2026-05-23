@@ -283,4 +283,4 @@ main (保持稳定，可发布)
 1. [x] **D1: 周期结束信号方式** — 使用 `cycle_control(action="end_cycle")` 工具（显式调用），不使用文本匹配或框架启发式
 2. [x] **D2: RA 模型选择** — MVP 使用同一 provider；预留 `ra_model_provider` / `ra_max_tokens`，但不新建独立 provider 栈
 3. [x] **D3: MemoryCompressor 与 RA 的关系** — MVP 中并存；RA 摘要可作为后续更高保真度压缩输入，不替代 `memory_summary`
-4. [ ] **D4: Audit Buffer 上限** — 单周期最多保留多少条 action？建议 50 条；超限策略不得把 raw audit 直接写入 `environment_summaries`，需另走审计存储或安全摘要
+4. [x] **D4: Audit Buffer 上限** — 单周期最多保留 50 条 action；溢出时会话存档只保留最近 50 条，溢出数量进入普通 audit 事件字段，不把 raw audit 写入 `environment_summaries`
