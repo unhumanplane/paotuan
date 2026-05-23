@@ -515,6 +515,29 @@ def test_run_coder_job_skips_empty_saved_session_and_starts_fresh(tmp_path, monk
     asyncio.run(run_case())
 
 
+def test_bad_empty_session_result_is_not_reused_as_context(tmp_path):
+    bridge = _bridge(tmp_path, groups="1101538762")
+    session_file = bridge.coder_hermes_home / "sessions" / "session_20260523_104954_80db38.json"
+    session_file.parent.mkdir(parents=True)
+    session_file.write_text(json.dumps({"messages": [{"role": "assistant", "content": "unrelated"}]}), encoding="utf-8")
+    bridge_mod.save_json_state(
+        bridge.session_state_path,
+        {
+            "sessions": {
+                "1101538762": {
+                    "hermes_session_id": "20260523_104954_80db38",
+                    "last_returncode": 0,
+                    "last_prompt": "重构计划怎么了",
+                    "last_result": "Session 20260523_104954_80db38 found but has no messages. Starting fresh.",
+                }
+            }
+        },
+    )
+
+    assert bridge._resume_session_id_for_group("1101538762") == ""
+    assert bridge._session_context_for_group("1101538762") == ""
+
+
 def test_run_coder_job_skips_failed_session_and_starts_fresh(tmp_path, monkeypatch):
     async def run_case():
         bridge = _bridge(tmp_path, groups="1101538762")

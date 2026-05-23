@@ -394,6 +394,11 @@ def output_looks_like_coder_timeout(text: str) -> bool:
     return any(marker in cleaned for marker in CODER_TIMEOUT_MARKERS)
 
 
+def output_looks_like_empty_session_resume(text: str) -> bool:
+    cleaned = text or ""
+    return " has no messages" in cleaned and "Starting fresh" in cleaned
+
+
 def latest_assistant_content_from_session(hermes_home: Path | None, session_id: str) -> str:
     if not hermes_home or not session_id:
         return ""
@@ -905,17 +910,26 @@ class CoderBridge:
             return ""
         if output_looks_like_coder_timeout(str(session_state.get("last_result") or "")):
             return ""
+        if output_looks_like_empty_session_resume(str(session_state.get("last_result") or "")):
+            return ""
         if not hermes_session_has_messages(self.coder_hermes_home, session_id):
             return ""
         return session_id
 
     def _session_context_for_group(self, group_id: str) -> str:
         session_state = self._session_state_for_group(group_id)
+        last_result = str(session_state.get("last_result") or "")
+        if (
+            int(session_state.get("last_returncode") or 0) != 0
+            or output_looks_like_coder_timeout(last_result)
+            or output_looks_like_empty_session_resume(last_result)
+        ):
+            return ""
         parts: list[str] = []
         if session_state.get("last_prompt"):
             parts.append(f"上次请求: {session_state.get('last_prompt')}")
-        if int(session_state.get("last_returncode") or 0) == 0 and session_state.get("last_result"):
-            parts.append(f"上次结果: {session_state.get('last_result')}")
+        if last_result:
+            parts.append(f"上次结果: {last_result}")
         if session_state.get("open_followups"):
             parts.append(f"待跟进: {session_state.get('open_followups')}")
         return "\n".join(parts)
