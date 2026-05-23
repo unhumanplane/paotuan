@@ -130,6 +130,30 @@ def test_complete_cycle_without_ra_does_not_advance_timeline_twice_after_cycle_c
     assert session.timeline["last_advanced_cycle_id"] == 2
 
 
+def test_append_cycle_action_keeps_latest_50_actions_without_leaking_overflow_to_ra_summary():
+    session = GameSession.new("group")
+
+    latest_record = {}
+    for index in range(55):
+        latest_record = append_cycle_action(
+            session,
+            actor={"player_id": "player-1"},
+            player_message=f"raw-player-message-{index}",
+            completion=f"narrative-{index}",
+            tool_results=[],
+        )
+
+    assert len(session.audit_buffer.actions) == 50
+    assert len(session.ra_cycle_input.actions) == 50
+    assert session.audit_buffer.actions[0].player_message == "raw-player-message-5"
+    assert session.audit_buffer.actions[-1].player_message == "raw-player-message-54"
+    assert session.ra_cycle_input.actions[0]["dm_narrative"] == "narrative-5"
+    assert session.ra_cycle_input.actions[-1]["dm_narrative"] == "narrative-54"
+    assert latest_record["buffer_limit"] == 50
+    assert latest_record["dropped_actions"] == 1
+    assert "environment_summaries" not in latest_record
+
+
 def test_append_cycle_action_sanitizes_raw_grid_from_ra_tool_input():
     session = GameSession.new("group")
     tool_results = [

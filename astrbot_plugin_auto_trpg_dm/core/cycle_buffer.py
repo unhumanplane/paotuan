@@ -8,6 +8,9 @@ from .models import AuditBuffer, CycleAction, CycleState, RACycleInput, utc_now_
 from .timeline import cycle_timeline_completion, timeline_view
 
 
+CYCLE_BUFFER_ACTION_LIMIT = 50
+
+
 def append_cycle_action(
     session: Any,
     actor: dict[str, str],
@@ -39,12 +42,32 @@ def append_cycle_action(
             "tools_called": sanitized_tools,
         }
     )
+    dropped_actions = _enforce_cycle_buffer_limit(session)
     return {
         "cycle_id": session.current_cycle_id,
         "player_id": player_id,
         "character_id": character_id,
         "tool_names": [item.get("name", "") for item in sanitized_tools],
+        "buffer_limit": CYCLE_BUFFER_ACTION_LIMIT,
+        "dropped_actions": dropped_actions,
     }
+
+
+def _enforce_cycle_buffer_limit(session: Any, limit: int = CYCLE_BUFFER_ACTION_LIMIT) -> int:
+    audit_dropped = _trim_to_latest(session.audit_buffer.actions, limit)
+    ra_dropped = _trim_to_latest(session.ra_cycle_input.actions, limit)
+    return max(audit_dropped, ra_dropped)
+
+
+def _trim_to_latest(items: list[Any], limit: int) -> int:
+    if limit <= 0:
+        dropped = len(items)
+        del items[:]
+        return dropped
+    dropped = max(0, len(items) - limit)
+    if dropped:
+        del items[:dropped]
+    return dropped
 
 
 def cycle_end_requested(tool_results: list[dict[str, Any]]) -> bool:

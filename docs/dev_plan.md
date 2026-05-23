@@ -4,7 +4,7 @@
 >
 > **目标分支**：`sandbox/hashval/double-agent`
 > **预估工期**：5–7 天
-> **状态**：设计已完成，待进入开发
+> **状态**：主干已包含双 Agent 基础实现；本轮补齐 D4 Audit Buffer 50 条上限
 
 ---
 
@@ -273,6 +273,7 @@ main (保持稳定，可发布)
 3. **新字段必须有默认值**。`GameSession` 是核心数据模型，任何字段变更必须向后兼容旧存档。
 4. **工具返回格式不变**。保持 `{"ok": bool, ...}`，RA 不调用工具，但读取工具执行结果。
 5. **Audit Buffer 不清除历史**。只有 RA 成功且补丁验证完成后，才清空当前 buffer；`environment_summaries` 保留周期摘要（用于游戏结束统计和 debug）。失败的 RA 运行不得清空 `audit_buffer`。
+6. **Audit Buffer 有界保留**。单周期内 `audit_buffer` / `ra_cycle_input` 仅在会话存档中保留最近 50 条 action；溢出数量写入普通 audit 事件字段，不把 raw audit 或玩家原文写入 `environment_summaries`。
 
 ---
 
@@ -283,4 +284,4 @@ main (保持稳定，可发布)
 1. [x] **D1: 周期结束信号方式** — 使用 `cycle_control(action="end_cycle")` 工具（显式调用），不使用文本匹配或框架启发式
 2. [x] **D2: RA 模型选择** — MVP 使用同一 provider；预留 `ra_model_provider` / `ra_max_tokens`，但不新建独立 provider 栈
 3. [x] **D3: MemoryCompressor 与 RA 的关系** — MVP 中并存；RA 摘要可作为后续更高保真度压缩输入，不替代 `memory_summary`
-4. [ ] **D4: Audit Buffer 上限** — 单周期最多保留多少条 action？建议 50 条；超限策略不得把 raw audit 直接写入 `environment_summaries`，需另走审计存储或安全摘要
+4. [x] **D4: Audit Buffer 上限** — 单周期最多保留 50 条 action；溢出时会话存档只保留最近 50 条，溢出数量进入普通 audit 事件字段，不把 raw audit 写入 `environment_summaries`
