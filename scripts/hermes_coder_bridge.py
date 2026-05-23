@@ -334,7 +334,7 @@ def sanitize_hermes_output_for_reply(text: str) -> str:
             skip_worktree_branch = False
             skip_diff_block = True
             continue
-        if _looks_like_diff_block_line(stripped):
+        if _looks_like_standalone_diff_noise(stripped):
             skip_worktree_branch = False
             continue
 
@@ -346,7 +346,7 @@ def sanitize_hermes_output_for_reply(text: str) -> str:
 
 def _is_diff_block_start(stripped: str) -> bool:
     lowered = stripped.lower()
-    if lowered.startswith("review diff"):
+    if "review diff" in lowered:
         return True
     return bool(DIFF_PATH_MARKER_PATTERN.search(stripped))
 
@@ -362,7 +362,17 @@ def _looks_like_diff_block_line(stripped: str) -> bool:
         return True
     if stripped.startswith(("+", "-")):
         return True
-    if stripped.startswith("┊ review diff"):
+    return bool(DIFF_PATH_MARKER_PATTERN.search(stripped))
+
+
+def _looks_like_standalone_diff_noise(stripped: str) -> bool:
+    if not stripped:
+        return False
+    if _is_diff_block_start(stripped):
+        return True
+    if stripped.startswith("@@"):
+        return True
+    if stripped.startswith(("--- ", "+++ ", "diff --git ", "index ")):
         return True
     return bool(DIFF_PATH_MARKER_PATTERN.search(stripped))
 
@@ -379,6 +389,28 @@ def _looks_like_final_answer_line(stripped: str) -> bool:
 def output_looks_like_coder_timeout(text: str) -> bool:
     cleaned = (text or "")
     return any(marker in cleaned for marker in CODER_TIMEOUT_MARKERS)
+
+
+def latest_assistant_content_from_session(hermes_home: Path | None, session_id: str) -> str:
+    if not hermes_home or not session_id:
+        return ""
+    session_path = hermes_home / "sessions" / f"session_{session_id}.json"
+    if not session_path.exists():
+        return ""
+    try:
+        data = json.loads(session_path.read_text(encoding="utf-8"))
+    except Exception:
+        return ""
+    messages = data.get("messages")
+    if not isinstance(messages, list):
+        return ""
+    for message in reversed(messages):
+        if not isinstance(message, dict) or message.get("role") != "assistant":
+            continue
+        content = message.get("content")
+        if isinstance(content, str) and content.strip():
+            return content.strip()
+    return ""
 
 
 def compact_excerpt(text: str, limit: int) -> str:
@@ -544,6 +576,7 @@ def build_prompt(payload: dict[str, Any], session_context: str = "") -> str:
         "你是 Paotuan 仓库的 Hermes 维护代理。用户通过 AstrBot /coder 命令向你发起请求。\n"
         "请用中文简洁回复。能安全执行的仓库维护、排障、日志复盘、部署检查任务可以直接处理；"
         "不要打印密钥，不要读取 AstrBot 主日志，除非用户本次明确授权；不要重启 Docker 或容器，除非用户明确要求。\n\n"
+        "最后必须输出一个面向 QQ 群的中文最终结果段落，说明做了什么、验证结果、是否还有阻塞；不要只输出 diff、工具日志或内部过程。\n\n"
         f"来源群号: {group_id or '(private)'}\n"
         f"发送者: {sender_id or '(unknown)'}\n"
         f"会话: {session_id or '(unknown)'}\n\n"
@@ -779,6 +812,8 @@ class CoderBridge:
     def _format_plugin_review_reply(self, returncode: int, output: str) -> str:
         text = tail_text(sanitize_hermes_output_for_reply(output), self.max_output_chars)
         if not text:
+            text = self._fallback_session_reply(output)
+        if not text:
             text = "Paotuan 插件审阅/自动修复任务完成，但没有返回文本结果。"
         if returncode != 0:
             text = f"【Paotuan 插件审阅/自动修复异常退出：{returncode}】\n{text}"
@@ -913,10 +948,17 @@ class CoderBridge:
     def _format_coder_job_reply(self, returncode: int, output: str) -> str:
         text = tail_text(sanitize_hermes_output_for_reply(output), self.max_output_chars)
         if not text:
+            text = self._fallback_session_reply(output)
+        if not text:
             text = "Hermes /coder 任务完成，但没有返回文本结果。"
         if returncode != 0:
             text = f"【Hermes /coder 异常退出：{returncode}】\n{text}"
         return text
+
+    def _fallback_session_reply(self, output: str) -> str:
+        session_id = extract_latest_session_id(output)
+        text = latest_assistant_content_from_session(self.coder_hermes_home, session_id)
+        return tail_text(sanitize_hermes_output_for_reply(text), self.max_output_chars)
 
     def _build_game_log_result(self, payload: dict[str, Any]) -> dict[str, Any]:
         group_id = str(payload.get("group_id") or "").strip()

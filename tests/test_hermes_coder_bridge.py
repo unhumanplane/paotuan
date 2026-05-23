@@ -242,6 +242,42 @@ def test_format_coder_job_reply_hides_review_diff_blocks(tmp_path):
     assert "CYCLE_BUFFER_ACTION_LIMIT" not in reply
 
 
+def test_format_coder_job_reply_falls_back_to_session_answer_when_stdout_is_only_diff(tmp_path):
+    bridge = _bridge(tmp_path, groups="1101538762")
+    session_id = "20260523_093935_a1b2c3d4"
+    session_file = bridge.coder_hermes_home / "sessions" / f"session_{session_id}.json"
+    session_file.parent.mkdir(parents=True)
+    session_file.write_text(
+        json.dumps(
+            {
+                "messages": [
+                    {"role": "assistant", "content": ""},
+                    {
+                        "role": "assistant",
+                        "content": "已根据 docs/dev_plan.md 继续处理 D4。\n\n验证：\n- pytest -q 通过：736 passed",
+                    },
+                ]
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    raw_output = (
+        f"session_id: {session_id}\n"
+        "┊ review diff\n"
+        "a//volume1/docker/hermes/paotuan/work/paotuan/.worktrees/hermes-08f79dea/tests/test_cycle_buffer.py → b//volume1/docker/hermes/paotuan/work/paotuan/.worktrees/hermes-08f79dea/tests/test_cycle_buffer.py\n"
+        "@@ -130,8 +130,32 @@\n"
+        "+CYCLE_BUFFER_ACTION_LIMIT = 50\n"
+    )
+
+    reply = bridge._format_coder_job_reply(0, raw_output)
+
+    assert reply.startswith("已根据 docs/dev_plan.md")
+    assert "736 passed" in reply
+    assert "review diff" not in reply
+    assert ".worktrees" not in reply
+
+
 def test_session_for_group_uses_notify_whitelist(tmp_path):
     bridge = _bridge(tmp_path, groups="1101538762")
 
