@@ -213,6 +213,35 @@ def test_update_session_state_clears_session_id_on_failure(tmp_path):
     assert "Resumed session" not in session["last_result"]
 
 
+def test_format_coder_job_reply_hides_review_diff_blocks(tmp_path):
+    bridge = _bridge(tmp_path, groups="1101538762")
+    raw_output = (
+        "┊ review diff\n"
+        "a//volume1/docker/hermes/paotuan/work/paotuan/.worktrees/hermes-08f79dea/tests/test_cycle_buffer.py → b//volume1/docker/hermes/paotuan/work/paotuan/.worktrees/hermes-08f79dea/tests/test_cycle_buffer.py\n"
+        "@@ -130,8 +130,32 @@\n"
+        "     assert session.timeline[\"last_advanced_cycle_id\"] == 2\n"
+        "\n"
+        "-def test_append_cycle_action_sanitizes_raw_grid_from_ra_tool_input():\n"
+        "-    session = GameSession.new(\"group\")\n"
+        "+def test_append_cycle_action_keeps_latest_50_actions_without_leaking_overflow_to_ra_summary():\n"
+        "+    session = GameSession.new(\"group\")\n"
+        "  ┊ review diff\n"
+        "a//volume1/docker/hermes/paotuan/work/paotuan/.worktrees/hermes-08f79dea/astrbot_plugin_auto_trpg_dm/core/cycle_buffer.py → b//volume1/docker/hermes/paotuan/work/paotuan/.worktrees/hermes-08f79dea/astrbot_plugin_auto_trpg_dm/core/cycle_buffer.py\n"
+        "@@ -6,6 +6,9 @@\n"
+        "+CYCLE_BUFFER_ACTION_LIMIT = 50\n"
+        "\n"
+        "我检查并修复了 cycle buffer 的 RA 输入膨胀问题，测试已通过。\n"
+    )
+
+    reply = bridge._format_coder_job_reply(0, raw_output)
+
+    assert reply == "我检查并修复了 cycle buffer 的 RA 输入膨胀问题，测试已通过。"
+    assert "review diff" not in reply
+    assert ".worktrees" not in reply
+    assert "@@" not in reply
+    assert "CYCLE_BUFFER_ACTION_LIMIT" not in reply
+
+
 def test_session_for_group_uses_notify_whitelist(tmp_path):
     bridge = _bridge(tmp_path, groups="1101538762")
 

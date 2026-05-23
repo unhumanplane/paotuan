@@ -229,6 +229,7 @@ CODER_TIMEOUT_MARKERS = (
     "Non-streaming API call timed out",
     "API call failed after 3 retries",
 )
+DIFF_PATH_MARKER_PATTERN = re.compile(r"\b[ab]//.*/\.worktrees/.*\s+→\s+\b[ab]//.*/\.worktrees/")
 
 
 def _safe_session_source(group_id: str) -> str:
@@ -300,9 +301,16 @@ def sanitize_hermes_output_for_reply(text: str) -> str:
     cleaned = ANSI_ESCAPE_PATTERN.sub("", text or "")
     lines: list[str] = []
     skip_worktree_branch = False
+    skip_diff_block = False
     for raw_line in cleaned.splitlines():
         stripped = raw_line.strip()
         lowered = stripped.lower()
+
+        if skip_diff_block:
+            if _looks_like_final_answer_line(stripped):
+                skip_diff_block = False
+            else:
+                continue
 
         if lowered.startswith("session_id:"):
             skip_worktree_branch = False
@@ -322,11 +330,50 @@ def sanitize_hermes_output_for_reply(text: str) -> str:
         if skip_worktree_branch and stripped.startswith("Branch:"):
             skip_worktree_branch = False
             continue
+        if _is_diff_block_start(stripped):
+            skip_worktree_branch = False
+            skip_diff_block = True
+            continue
+        if _looks_like_diff_block_line(stripped):
+            skip_worktree_branch = False
+            continue
 
         skip_worktree_branch = False
         lines.append(raw_line.rstrip())
 
     return "\n".join(lines).strip()
+
+
+def _is_diff_block_start(stripped: str) -> bool:
+    lowered = stripped.lower()
+    if lowered.startswith("review diff"):
+        return True
+    return bool(DIFF_PATH_MARKER_PATTERN.search(stripped))
+
+
+def _looks_like_diff_block_line(stripped: str) -> bool:
+    if not stripped:
+        return True
+    if _is_diff_block_start(stripped):
+        return True
+    if stripped.startswith("@@"):
+        return True
+    if stripped.startswith(("--- ", "+++ ", "diff --git ", "index ")):
+        return True
+    if stripped.startswith(("+", "-")):
+        return True
+    if stripped.startswith("┊ review diff"):
+        return True
+    return bool(DIFF_PATH_MARKER_PATTERN.search(stripped))
+
+
+def _looks_like_final_answer_line(stripped: str) -> bool:
+    if not stripped:
+        return False
+    lowered = stripped.lower()
+    if lowered.startswith(("summary", "result", "done", "fixed", "finished", "我", "已", "本次", "结论", "结果", "修复", "完成")):
+        return True
+    return any(marker in stripped for marker in ("已通过", "已修复", "测试通过", "部署完成", "检查完成"))
 
 
 def output_looks_like_coder_timeout(text: str) -> bool:
