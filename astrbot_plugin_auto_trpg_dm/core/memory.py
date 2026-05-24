@@ -6,6 +6,9 @@ from typing import Any
 from .models import GameSession, compact_rules, compact_tag_layers
 
 
+MEMORY_SUMMARY_DISCLAIMER = "说明：这是历史压缩摘要，不代表当前事实；当前会话快照和本轮工具结果优先。"
+
+
 class MemoryCompressor:
     def __init__(self, max_snapshot_chars: int = 200_000, max_summary_chars: int = 12_000):
         self.max_snapshot_chars = max_snapshot_chars
@@ -26,7 +29,7 @@ class MemoryCompressor:
         return True
 
     def build_summary(self, session: GameSession) -> str:
-        parts: list[str] = []
+        parts: list[str] = [MEMORY_SUMMARY_DISCLAIMER]
         parts.append(f"团名：{session.title}")
         scene_summary = session.scene.get("summary") or "暂无场景摘要"
         parts.append(f"当前场景：{scene_summary}")

@@ -379,6 +379,27 @@ def test_system_prompt_only_includes_ra_summary_when_enabled():
     assert "上一周期摘要" in enabled_prompt
 
 
+def test_system_prompt_declares_current_state_over_memory_contexts():
+    session = GameSession.new("group")
+    session.memory_summary = "旧摘要：船长已经死亡。"
+    session.environment_summaries.append({"cycle_id": 1, "summary": "旧 RA：船长仍在码头。"})
+
+    prompt = build_system_prompt(
+        session,
+        GameMode.NARRATIVE,
+        [],
+        actor={},
+        external_memory_context="Honcho 回忆：船长可能在港口。",
+        include_ra_context=True,
+    )
+
+    assert "当前会话状态快照是最高优先级" in prompt
+    assert "本轮工具返回结果优先于所有摘要" in prompt
+    assert "`memory_summary` 是历史压缩摘要" in prompt
+    assert "`environment_summaries`/上一周期 RA 摘要是周期回顾" in prompt
+    assert "Honcho 外部记忆只作回忆线索" in prompt
+
+
 def test_system_prompt_ra_snapshot_context_is_projected_not_raw_summary_record():
     session = GameSession.new("group")
     session.environment_summaries.append(
@@ -1437,6 +1458,85 @@ def test_snapshot_projection_shadow_keeps_mixed_query_action_as_tactical():
     )
 
     assert stats["profile"] == "tactical_action"
+
+
+def test_prompt_snapshot_projection_filters_obsolete_scene_tracking_records():
+    session = GameSession.new("group")
+    session.scene.update(
+        {
+            "open_hooks": [
+                {"id": "active-hook", "text": "码头钟声仍在逼近。", "status": "open"},
+                {"id": "resolved-hook", "text": "旧钩子：追查已结束的脚印。", "status": "resolved"},
+                {"id": "archived-hook", "text": "旧钩子：废弃支线。", "status": "archived"},
+            ],
+            "clues": [
+                {"id": "active-clue", "text": "信封上有海盐味。", "status": "discovered"},
+                {"id": "superseded-clue", "text": "旧线索：船长已经死亡。", "status": "superseded"},
+                {"id": "closed-clue", "text": "旧线索：仓库门锁问题已解决。", "status": "closed"},
+            ],
+            "mysteries": [
+                {"id": "active-mystery", "text": "守卫为何离岗？", "status": "open"},
+                {"id": "retired-mystery", "text": "旧问题：谁偷了火把。", "status": "retired"},
+            ],
+            "pressure_clock": {
+                "label": "旧倒计时",
+                "text": "已经解除的旧压力。",
+                "status": "resolved",
+            },
+        }
+    )
+
+    snapshot, _stats = prompt_snapshot_data(
+        session,
+        GameMode.NARRATIVE,
+        "继续当前场景",
+        snapshot_projection_enabled=True,
+    )
+    rendered_scene = json.dumps(snapshot["scene"], ensure_ascii=False)
+
+    assert "码头钟声仍在逼近" in rendered_scene
+    assert "信封上有海盐味" in rendered_scene
+    assert "守卫为何离岗" in rendered_scene
+    assert "旧钩子" not in rendered_scene
+    assert "旧线索" not in rendered_scene
+    assert "旧问题" not in rendered_scene
+    assert "已经解除的旧压力" not in rendered_scene
+
+
+def test_prompt_snapshot_projection_ignores_superseded_active_scene_thread():
+    session = GameSession.new("group")
+    session.scene.update(
+        {
+            "active_scene_thread_id": "old-thread",
+            "scene_threads": {
+                "old-thread": {
+                    "status": "superseded",
+                    "summary": "旧线程：队伍仍在码头入口。",
+                    "current_objective": "追查已作废方向。",
+                    "updated_at": "2026-05-14T01:00:00+00:00",
+                },
+                "new-thread": {
+                    "status": "active",
+                    "summary": "新线程：队伍已经进入灯塔。",
+                    "current_objective": "确认守卫离岗原因。",
+                    "updated_at": "2026-05-14T02:00:00+00:00",
+                },
+            },
+        }
+    )
+
+    snapshot, _stats = prompt_snapshot_data(
+        session,
+        GameMode.NARRATIVE,
+        "继续",
+        snapshot_projection_enabled=True,
+    )
+    rendered_scene = json.dumps(snapshot["scene"], ensure_ascii=False)
+
+    assert snapshot["scene"]["active_scene_thread_id"] == "new-thread"
+    assert "队伍已经进入灯塔" in rendered_scene
+    assert "旧线程" not in rendered_scene
+    assert "追查已作废方向" not in rendered_scene
 
 
 def test_prompt_snapshot_projection_uses_safe_dm_map_view():
