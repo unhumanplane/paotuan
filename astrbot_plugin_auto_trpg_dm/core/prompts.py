@@ -356,9 +356,26 @@ SCENE_PROJECTION_DROP_PREFIXES = (
     "_honcho_",
     "_ra_",
 )
+OBSOLETE_SCENE_STATUSES = {
+    "resolved",
+    "closed",
+    "archived",
+    "superseded",
+    "retired",
+    "inactive",
+    "completed",
+    "complete",
+    "done",
+    "cancelled",
+    "canceled",
+}
 
 
 def _project_scene_value(key: str, value: Any, profile: str, *, message: str = "") -> Any:
+    if key in {"open_hooks", "clues", "mysteries", "pressure_clock"}:
+        value = _filter_obsolete_scene_value(value)
+        if value in (None, "", [], {}):
+            return None
     if _looks_like_relationship_projection_key(key):
         return _project_generic_value(project_public_relation_state(value), depth=3, text_limit=280, item_limit=16)
     if key in {"summary", "current_conflict", "_opening_intro"}:
@@ -384,6 +401,29 @@ def _project_scene_value(key: str, value: Any, profile: str, *, message: str = "
     if isinstance(value, str):
         return _short_text(value, 500)
     return value
+
+
+def _filter_obsolete_scene_value(value: Any) -> Any:
+    if _scene_record_is_obsolete(value):
+        return None
+    if isinstance(value, list):
+        filtered = [_filter_obsolete_scene_value(item) for item in value]
+        return [item for item in filtered if item not in (None, "", [], {})]
+    if isinstance(value, dict):
+        filtered: dict[str, Any] = {}
+        for item_key, item_value in value.items():
+            projected_value = _filter_obsolete_scene_value(item_value)
+            if projected_value not in (None, "", [], {}):
+                filtered[str(item_key)] = projected_value
+        return filtered or None
+    return value
+
+
+def _scene_record_is_obsolete(value: Any) -> bool:
+    if not isinstance(value, dict):
+        return False
+    status = str(value.get("status") or "").strip().lower()
+    return status in OBSOLETE_SCENE_STATUSES
 
 
 def _project_event_timeline_for_prompt(value: Any, profile: str) -> Any:
@@ -595,7 +635,7 @@ def _project_scene_thread(thread: dict[str, Any], profile: str, *, active: bool)
 
 
 def _scene_thread_is_closed(thread: dict[str, Any]) -> bool:
-    return str((thread or {}).get("status") or "").strip().lower() in {"archived", "closed", "resolved", "retired"}
+    return str((thread or {}).get("status") or "").strip().lower() in OBSOLETE_SCENE_STATUSES
 
 
 def _effective_active_scene_thread_id(threads: Any, active_thread_id: str) -> str:
@@ -1313,6 +1353,15 @@ FACT_CHECK_CONTINUITY_PROMPT = """
 - 如果记录冲突或不足，只说明记录仍需核对；不要把未经核实的“从未存在/从未持有/没有这回事”写入 scene 或角色标签。
 """
 
+CURRENT_STATE_AUTHORITY_PROMPT = """
+当前事实优先级：
+- 当前会话状态快照是最高优先级；其中 scene、characters、timeline、battle、control_authority 是本轮裁定的权威上下文。
+- 本轮工具返回结果优先于所有摘要；工具结果、validator 结果和状态迁移能覆盖旧 summary、旧 tag、旧 RA 摘要和模型回忆。
+- `memory_summary` 是历史压缩摘要，不代表当前事实；只能用于回忆历史脉络，不能覆盖当前快照里的位置、状态、线索、时间线、战斗或控制权。
+- `environment_summaries`/上一周期 RA 摘要是周期回顾；只有其中明确标记仍有效、且不与当前快照或本轮工具结果冲突的事项，才能当作当前事实使用。
+- Honcho 外部记忆只作回忆线索；若与本地会话状态、审计、规则或工具结果冲突，必须以本地权威状态和工具结果为准。
+"""
+
 
 def build_system_prompt(
     session: GameSession,
@@ -1362,6 +1411,7 @@ def build_system_prompt(
     return f"""你是 AstrBot 内的全自动 TRPG DM 智能体。你必须以自然语言理解玩家输入，并用工具推进确定性状态。
 
 {BASE_RULES}
+{CURRENT_STATE_AUTHORITY_PROMPT}
 {fact_check_section}
 
 硬性规则：
