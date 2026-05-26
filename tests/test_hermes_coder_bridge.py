@@ -216,6 +216,51 @@ def test_update_session_state_clears_session_id_on_failure(tmp_path):
     assert "Resumed session" not in session["last_result"]
 
 
+def test_run_coder_job_records_timeout_state(tmp_path, monkeypatch):
+    async def run_case():
+        bridge = _bridge(tmp_path, groups="1101538762")
+        bridge_mod.save_json_state(
+            bridge.session_state_path,
+            {
+                "sessions": {
+                    "1101538762": {
+                        "hermes_session_id": "20260522_145511_88a39a",
+                        "last_returncode": 0,
+                        "last_result": "previous ok",
+                    }
+                }
+            },
+        )
+
+        def fake_run_hermes(*args, **kwargs):
+            raise bridge_mod.subprocess.TimeoutExpired(cmd=["hermes"], timeout=1800)
+
+        sent = []
+
+        def fake_post(api_key, session, text):
+            sent.append(text)
+            return {"ok": True}
+
+        monkeypatch.setattr(bridge_mod, "run_hermes", fake_run_hermes)
+        monkeypatch.setattr(bridge, "_post_astrbot_message", fake_post)
+
+        await bridge._run_coder_job(
+            {"group_id": "1101538762", "message_id": "msg-timeout", "prompt": "long task"},
+            "prompt",
+        )
+
+        state = bridge_mod.load_json_state(bridge.session_state_path)
+        session = state["sessions"]["1101538762"]
+        assert session["hermes_session_id"] == ""
+        assert session["last_returncode"] == 124
+        assert session["last_prompt"] == "long task"
+        assert session["last_result"].startswith("[失败] Hermes /coder returncode=124")
+        assert "超时" in session["last_result"]
+        assert sent and sent[0].startswith("【Hermes /coder 超时】")
+
+    asyncio.run(run_case())
+
+
 def test_format_coder_job_reply_hides_review_diff_blocks(tmp_path):
     bridge = _bridge(tmp_path, groups="1101538762")
     raw_output = (
@@ -301,6 +346,17 @@ def test_game_log_request_detection_is_conservative():
     assert not bridge_mod.is_game_log_request("审查两个未合并 PR")
 
 
+def test_feature_count_reply_handles_simple_meta_question():
+    prompt = (
+        "还有这几个特性：P1：玩家可见局势卡 "
+        "P2：把记忆升级为剧情资产 "
+        "P2：战斗反馈更桌面化。你看到了几个特性"
+    )
+
+    assert bridge_mod.feature_count_reply(prompt) == "我看到了 3 个特性条目：P1, P2。"
+    assert bridge_mod.feature_count_reply("还有这几个特性：P1：玩家可见局势卡") == ""
+
+
 def test_build_game_log_reply_uses_requested_group_audit_and_exports(tmp_path):
     bridge = _bridge(tmp_path, groups="1101538762")
     data_dir = bridge.game_data_dir
@@ -377,6 +433,41 @@ def test_coder_serves_game_log_request_without_starting_hermes(tmp_path, monkeyp
         assert response["data"]["accepted"] is False
         assert "plugin-tail" in response["data"]["reply"]
         assert response["data"]["files"][0]["name"].startswith("game_logs_")
+
+    asyncio.run(run_case())
+
+
+def test_coder_answers_feature_count_without_starting_hermes(tmp_path, monkeypatch):
+    async def run_case():
+        bridge = _bridge(tmp_path, groups="1101538762")
+
+        async def fake_read_signed_json(_request):
+            return {
+                "prompt": "还有这几个特性：P1：玩家可见局势卡 P2：剧情资产 P2：桌面化反馈。你看到了几个特性",
+                "group_id": "1101538762",
+                "message_id": "msg-count",
+                "session_id": "default:GroupMessage:1101538762",
+            }, None
+
+        def fake_run_hermes(*_args):
+            raise AssertionError("run_hermes should not be called for feature count questions")
+
+        def fake_json_response(data, *args, **kwargs):
+            del args
+            return {"data": data, "status": kwargs.get("status")}
+
+        monkeypatch.setattr(bridge, "_read_signed_json", fake_read_signed_json)
+        monkeypatch.setattr(bridge_mod, "run_hermes", fake_run_hermes)
+        monkeypatch.setattr(bridge_mod, "json_response", fake_json_response)
+
+        response = await bridge.coder(object())
+
+        assert response["status"] is None
+        assert response["data"] == {
+            "ok": True,
+            "accepted": False,
+            "reply": "我看到了 3 个特性条目：P1, P2。",
+        }
 
     asyncio.run(run_case())
 

@@ -179,7 +179,7 @@ class HermesCoderPlugin(Star):
             event.stop_event()
             return
 
-        prompt = self._prompt_from_command_content(content)
+        prompt = self._prompt_from_event(event, content)
         sender_id = self._safe_call(event, "get_sender_id")
         message_id = str(getattr(getattr(event, "message_obj", None), "message_id", "") or "")
         if not prompt:
@@ -493,6 +493,18 @@ class HermesCoderPlugin(Star):
         if text == "GreedyStr":
             return ""
         return text
+
+    @classmethod
+    def _prompt_from_event(cls, event: AstrMessageEvent, content: Any) -> str:
+        prompt = cls._prompt_from_command_content(content)
+        raw_prompt = cls._prompt_from_raw_message(cls._safe_call(event, "get_message_str"))
+        if not raw_prompt:
+            return prompt
+        if not prompt:
+            return raw_prompt
+        if len(raw_prompt) > len(prompt) and raw_prompt.startswith(prompt):
+            return raw_prompt
+        return prompt
 
     @staticmethod
     def _prompt_from_raw_message(message: Any) -> str:

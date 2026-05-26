@@ -518,6 +518,19 @@ def is_game_log_request(prompt: str) -> bool:
     )
 
 
+def feature_count_reply(prompt: str) -> str:
+    text = (prompt or "").strip()
+    if not text or "几个特性" not in text:
+        return ""
+    if not any(marker in text for marker in ("看到了", "有几个", "多少个")):
+        return ""
+    matches = re.findall(r"(?<![A-Za-z0-9])P\d+\s*[：:]", text, flags=re.IGNORECASE)
+    if not matches:
+        return ""
+    unique_levels = sorted({re.split(r"[：:]", match, 1)[0].upper().strip() for match in matches})
+    return f"我看到了 {len(matches)} 个特性条目：{', '.join(unique_levels)}。"
+
+
 def _safe_session_name(session_id: str) -> str:
     cleaned = re.sub(r"[^A-Za-z0-9_.-]+", "_", session_id.strip())
     return cleaned.strip("_") or "unknown"
@@ -744,6 +757,9 @@ class CoderBridge:
             return json_response({"ok": False, "error": "empty prompt"}, status=400)
         if len(prompt) > self.max_prompt_chars:
             return json_response({"ok": False, "error": "prompt too long"}, status=400)
+        feature_reply = feature_count_reply(prompt)
+        if feature_reply:
+            return json_response({"ok": True, "accepted": False, "reply": feature_reply})
         if is_plugin_review_request(prompt):
             group_id = str(payload.get("group_id") or "").strip()
             try:
@@ -867,8 +883,10 @@ class CoderBridge:
             )
         except subprocess.TimeoutExpired:
             text = f"【Hermes /coder 超时】任务超过 {self.job_timeout_seconds} 秒仍未完成，已停止等待。"
+            self._update_session_state(group_id, payload, 124, "Hermes /coder job timed out", text)
         except Exception as exc:
             text = f"【Hermes /coder 执行失败】{str(exc)[:300]}"
+            self._update_session_state(group_id, payload, 1, str(exc), text)
         try:
             api_key = read_secret(self.astrbot_api_key_path)
             notify_parts = numbered_delivery_parts(text, self.max_notify_chars) or [text]
