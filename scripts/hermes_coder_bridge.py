@@ -518,19 +518,6 @@ def is_game_log_request(prompt: str) -> bool:
     )
 
 
-def feature_count_reply(prompt: str) -> str:
-    text = (prompt or "").strip()
-    if not text or "几个特性" not in text:
-        return ""
-    if not any(marker in text for marker in ("看到了", "有几个", "多少个")):
-        return ""
-    matches = re.findall(r"(?<![A-Za-z0-9])P\d+\s*[：:]", text, flags=re.IGNORECASE)
-    if not matches:
-        return ""
-    unique_levels = sorted({re.split(r"[：:]", match, 1)[0].upper().strip() for match in matches})
-    return f"我看到了 {len(matches)} 个特性条目：{', '.join(unique_levels)}。"
-
-
 def _safe_session_name(session_id: str) -> str:
     cleaned = re.sub(r"[^A-Za-z0-9_.-]+", "_", session_id.strip())
     return cleaned.strip("_") or "unknown"
@@ -757,9 +744,6 @@ class CoderBridge:
             return json_response({"ok": False, "error": "empty prompt"}, status=400)
         if len(prompt) > self.max_prompt_chars:
             return json_response({"ok": False, "error": "prompt too long"}, status=400)
-        feature_reply = feature_count_reply(prompt)
-        if feature_reply:
-            return json_response({"ok": True, "accepted": False, "reply": feature_reply})
         if is_plugin_review_request(prompt):
             group_id = str(payload.get("group_id") or "").strip()
             try:
