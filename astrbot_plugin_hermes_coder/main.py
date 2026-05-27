@@ -496,15 +496,48 @@ class HermesCoderPlugin(Star):
 
     @classmethod
     def _prompt_from_event(cls, event: AstrMessageEvent, content: Any) -> str:
-        prompt = cls._prompt_from_command_content(content)
-        raw_prompt = cls._prompt_from_raw_message(cls._safe_call(event, "get_message_str"))
-        if not raw_prompt:
-            return prompt
-        if not prompt:
-            return raw_prompt
-        if len(raw_prompt) > len(prompt) and raw_prompt.startswith(prompt):
-            return raw_prompt
-        return prompt
+        candidates = [cls._prompt_from_command_content(content)]
+        for text in cls._event_text_candidates(event):
+            raw_prompt = cls._prompt_from_raw_message(text)
+            candidates.append(raw_prompt or text.strip())
+        candidates = [item for item in candidates if item and item != "GreedyStr"]
+        if not candidates:
+            return ""
+        return max(candidates, key=len)
+
+    @classmethod
+    def _event_text_candidates(cls, event: AstrMessageEvent) -> list[str]:
+        candidates: list[str] = []
+        for method in ("get_message_str", "get_messages"):
+            value = cls._safe_call_value(event, method)
+            text = cls._text_from_message_value(value)
+            if text:
+                candidates.append(text)
+        for source in (event, getattr(event, "message_obj", None)):
+            if source is None:
+                continue
+            for attr in ("message_str", "raw_message", "message", "messages", "message_chain", "chain"):
+                text = cls._text_from_message_value(getattr(source, attr, None))
+                if text:
+                    candidates.append(text)
+        return candidates
+
+    @classmethod
+    def _text_from_message_value(cls, value: Any) -> str:
+        if value is None:
+            return ""
+        if isinstance(value, str):
+            return value.strip()
+        chain = getattr(value, "chain", None)
+        if chain is not None and chain is not value:
+            return cls._text_from_message_value(chain)
+        if isinstance(value, (list, tuple)):
+            return "".join(cls._text_from_message_value(item) for item in value).strip()
+        for attr in ("text", "content"):
+            text = getattr(value, attr, None)
+            if isinstance(text, str):
+                return text.strip()
+        return ""
 
     @staticmethod
     def _prompt_from_raw_message(message: Any) -> str:
@@ -522,14 +555,18 @@ class HermesCoderPlugin(Star):
 
     @staticmethod
     def _safe_call(obj: Any, method: str) -> str:
+        value = HermesCoderPlugin._safe_call_value(obj, method)
+        return str(value or "")
+
+    @staticmethod
+    def _safe_call_value(obj: Any, method: str) -> Any:
         fn = getattr(obj, method, None)
         if not callable(fn):
             return ""
         try:
-            value = fn()
+            return fn()
         except Exception:
             return ""
-        return str(value or "")
 
     def _config_str(self, key: str, default: str) -> str:
         try:

@@ -153,15 +153,31 @@ class FakeBot:
         self.actions.append((action, kwargs))
         return {"status": "ok"}
 
+class FakeTextComponent:
+    def __init__(self, text):
+        self.text = text
+
+
 class FakeEvent:
     unified_msg_origin = "aiocqhttp:GroupMessage:676453921"
 
-    def __init__(self, group_id="676453921", sender_id="1903948152", bot=None, message_str=""):
+    def __init__(
+        self,
+        group_id="676453921",
+        sender_id="1903948152",
+        bot=None,
+        message_str="",
+        message_obj_attrs=None,
+        messages=None,
+    ):
         self._group_id = group_id
         self._sender_id = sender_id
         self._message_str = message_str
+        self._messages = messages
         self.bot = bot
-        self.message_obj = type("MessageObj", (), {"message_id": "msg1", "group_id": group_id})()
+        attrs = {"message_id": "msg1", "group_id": group_id}
+        attrs.update(message_obj_attrs or {})
+        self.message_obj = type("MessageObj", (), attrs)()
 
     def get_group_id(self):
         return self._group_id
@@ -171,6 +187,9 @@ class FakeEvent:
 
     def get_message_str(self):
         return self._message_str
+
+    def get_messages(self):
+        return self._messages
 
     def plain_result(self, text):
         return {"kind": "plain", "text": text}
@@ -219,6 +238,42 @@ def test_prompt_from_event_prefers_full_raw_message_when_greedystr_is_truncated(
 
     prompt = HermesCoderPlugin._prompt_from_event(
         FakeEvent(message_str="/coder " + raw_prompt),
+        "还有这几个特性：P1：玩家可见局势卡",
+    )
+
+    assert prompt == raw_prompt
+
+
+def test_prompt_from_event_uses_message_obj_message_str_when_command_text_is_truncated():
+    raw_prompt = (
+        "还有这几个特性：P1：玩家可见局势卡 "
+        "P2：把记忆升级为剧情资产 "
+        "P2：战斗反馈更桌面化。你看到了几个特性"
+    )
+
+    prompt = HermesCoderPlugin._prompt_from_event(
+        FakeEvent(
+            message_str="/coder 还有这几个特性：P1：玩家可见局势卡",
+            message_obj_attrs={"message_str": "/coder " + raw_prompt},
+        ),
+        "还有这几个特性：P1：玩家可见局势卡",
+    )
+
+    assert prompt == raw_prompt
+
+
+def test_prompt_from_event_uses_plain_message_chain_when_string_helpers_are_truncated():
+    raw_prompt = (
+        "还有这几个特性：P1：玩家可见局势卡 "
+        "P2：把记忆升级为剧情资产 "
+        "P2：战斗反馈更桌面化。你看到了几个特性"
+    )
+
+    prompt = HermesCoderPlugin._prompt_from_event(
+        FakeEvent(
+            message_str="/coder 还有这几个特性：P1：玩家可见局势卡",
+            messages=[FakeTextComponent("/coder " + raw_prompt)],
+        ),
         "还有这几个特性：P1：玩家可见局势卡",
     )
 

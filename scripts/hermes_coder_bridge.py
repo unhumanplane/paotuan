@@ -985,7 +985,7 @@ class CoderBridge:
         if not text:
             text = self._fallback_session_reply(output)
         if not text:
-            text = "Hermes /coder 任务完成，但没有返回文本结果。"
+            text = "Hermes /coder CLI 异常退出，且没有生成可回传的文本结果。"
         if returncode != 0:
             text = f"【Hermes /coder 异常退出：{returncode}】\n{text}"
         return text
