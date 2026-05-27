@@ -227,6 +227,8 @@ def test_raw_coder_prefix_extracts_prompt_without_space():
     assert HermesCoderPlugin._prompt_from_raw_message("/coder 审查 PR") == "审查 PR"
     assert HermesCoderPlugin._prompt_from_raw_message("/coder审查 PR") == "审查 PR"
     assert HermesCoderPlugin._prompt_from_raw_message("／coder 审查 PR") == "审查 PR"
+    assert HermesCoderPlugin._prompt_from_raw_message("coder 审查 PR") == "审查 PR"
+    assert HermesCoderPlugin._prompt_from_raw_message("coder审查 PR") == "审查 PR"
 
 
 def test_prompt_from_event_prefers_full_raw_message_when_greedystr_is_truncated():

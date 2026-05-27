@@ -54,6 +54,7 @@ DEFAULT_GAME_AUDIT_TAIL_BYTES = 8_000
 DEFAULT_GAME_REPLY_CHARS = 3_200
 DEFAULT_PLUGIN_REVIEW_SCRIPT = OPS / "bin" / "review_plugin_logs.sh"
 DEFAULT_PLUGIN_REVIEW_REPLY = "插件日志审阅/自动修复已交给 Paotuan 审阅脚本在后台执行，完成后会把结果发回群里。"
+REQUEST_DUMP_PATTERN = re.compile(r"\brequest_dump_[0-9A-Za-z_]+\.json\b")
 
 
 def require_aiohttp_web():
@@ -148,6 +149,42 @@ def _config_with_agent_reasoning_effort(text: str, effort: str) -> str:
     return rendered
 
 
+def _config_with_model_api_mode(text: str, api_mode: str) -> str:
+    lines = text.splitlines()
+    output: list[str] = []
+    in_model = False
+    saw_model = False
+    updated = False
+
+    for line in lines:
+        is_top_level = bool(line.strip()) and not line.startswith((" ", "\t"))
+        if is_top_level and in_model and not updated:
+            output.append(f"  api_mode: {api_mode}")
+            updated = True
+        if is_top_level:
+            in_model = line.split(":", 1)[0].strip() == "model"
+            saw_model = saw_model or in_model
+        if in_model and re.match(r"^(\s*)api_mode\s*:", line):
+            indent_match = re.match(r"^(\s*)", line)
+            indent = indent_match.group(1) if indent_match else "  "
+            output.append(f"{indent}api_mode: {api_mode}")
+            updated = True
+            continue
+        output.append(line)
+
+    if saw_model and in_model and not updated:
+        output.append(f"  api_mode: {api_mode}")
+    elif not saw_model:
+        if output and output[-1].strip():
+            output.append("")
+        output.extend(["model:", f"  api_mode: {api_mode}"])
+
+    rendered = "\n".join(output)
+    if text.endswith("\n") or not rendered.endswith("\n"):
+        rendered += "\n"
+    return rendered
+
+
 def _link_or_copy_if_missing(source: Path, target: Path) -> None:
     if not source.exists() or target.exists() or target.is_symlink():
         return
@@ -172,6 +209,7 @@ def prepare_coder_hermes_home(hermes_home: Path, reasoning_effort: str) -> None:
         raise RuntimeError(f"Hermes config not found: {source_config}")
     source_text = source_config.read_text(encoding="utf-8")
     target_text = _config_with_agent_reasoning_effort(source_text, reasoning_effort)
+    target_text = _config_with_model_api_mode(target_text, "chat_completions")
     target_config = hermes_home / "config.yaml"
     if not target_config.exists() or target_config.read_text(encoding="utf-8", errors="ignore") != target_text:
         target_config.write_text(target_text, encoding="utf-8")
@@ -397,6 +435,86 @@ def output_looks_like_coder_timeout(text: str) -> bool:
 def output_looks_like_empty_session_resume(text: str) -> bool:
     cleaned = text or ""
     return " has no messages" in cleaned and "Starting fresh" in cleaned
+
+
+def latest_request_dump_for_session(hermes_home: Path | None, session_id: str) -> Path | None:
+    if not hermes_home or not session_id:
+        return None
+    sessions_dir = hermes_home / "sessions"
+    if not sessions_dir.exists():
+        return None
+    candidates = [path for path in sessions_dir.glob(f"request_dump_{session_id}_*.json") if path.is_file()]
+    if not candidates:
+        return None
+    return max(candidates, key=lambda path: path.stat().st_mtime)
+
+
+def _request_dump_path_from_output(hermes_home: Path | None, output: str) -> Path | None:
+    if not hermes_home:
+        return None
+    match = REQUEST_DUMP_PATTERN.search(output or "")
+    if not match:
+        return None
+    path = hermes_home / "sessions" / match.group(0)
+    return path if path.exists() else None
+
+
+def _request_dump_error_summary(path: Path) -> str:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        return f"请求诊断文件读取失败：{type(exc).__name__}: {str(exc)[:160]}"
+
+    request = data.get("request") if isinstance(data, dict) else {}
+    request = request if isinstance(request, dict) else {}
+    body = request.get("body")
+    body = body if isinstance(body, dict) else {}
+    response = data.get("response") if isinstance(data, dict) else None
+    if response is None:
+        response = data.get("error") if isinstance(data, dict) else None
+    if response is None:
+        response = data.get("exception") if isinstance(data, dict) else None
+
+    lines = ["Hermes 模型请求失败，未生成 assistant 回复。"]
+    reason = str(data.get("reason") or "").strip() if isinstance(data, dict) else ""
+    if reason:
+        lines.append(f"失败分类：{reason}")
+    model = str(body.get("model") or "").strip()
+    if model:
+        lines.append(f"模型：{model}")
+    reasoning = body.get("reasoning")
+    if isinstance(reasoning, dict):
+        effort = str(reasoning.get("effort") or "").strip()
+        summary = str(reasoning.get("summary") or "").strip()
+        if effort or summary:
+            detail = f"effort={effort or '?'}"
+            if summary:
+                detail += f", summary={summary}"
+            lines.append(f"reasoning：{detail}")
+    if isinstance(response, dict):
+        error_type = str(response.get("type") or response.get("error_type") or "").strip()
+        message = str(response.get("message") or response.get("error") or "").strip()
+        status = response.get("status") or response.get("status_code")
+        if status:
+            lines.append(f"HTTP/状态：{status}")
+        if error_type or message:
+            lines.append(f"错误：{error_type + ': ' if error_type else ''}{message or '(empty)'}")
+    elif response:
+        lines.append(f"错误：{compact_excerpt(str(response), 500)}")
+
+    if not any(line.startswith("错误：") for line in lines):
+        lines.append("错误：请求诊断里没有可读的上游错误正文。")
+    lines.append("这属于 Hermes 到模型网关的请求/兼容性问题，不是 QQ 发送失败。")
+    return "\n".join(lines)
+
+
+def request_failure_diagnostic(hermes_home: Path | None, output: str) -> str:
+    dump_path = _request_dump_path_from_output(hermes_home, output)
+    if dump_path is None:
+        dump_path = latest_request_dump_for_session(hermes_home, extract_latest_session_id(output))
+    if dump_path is None:
+        return ""
+    return _request_dump_error_summary(dump_path)
 
 
 def latest_assistant_content_from_session(hermes_home: Path | None, session_id: str) -> str:
@@ -984,6 +1102,8 @@ class CoderBridge:
         text = tail_text(sanitize_hermes_output_for_reply(output), self.max_output_chars)
         if not text:
             text = self._fallback_session_reply(output)
+        if not text and returncode != 0:
+            text = request_failure_diagnostic(self.coder_hermes_home, output)
         if not text:
             text = "Hermes /coder CLI 异常退出，且没有生成可回传的文本结果。"
         if returncode != 0:

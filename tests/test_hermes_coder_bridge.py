@@ -139,6 +139,30 @@ def test_format_coder_job_reply_prefixes_nonzero_exit(tmp_path):
     assert "failed" in reply
 
 
+def test_prepare_coder_home_uses_chat_completions_with_configured_reasoning(tmp_path, monkeypatch):
+    main_home = tmp_path / "main"
+    coder_home = tmp_path / "coder"
+    main_home.mkdir()
+    (main_home / "config.yaml").write_text(
+        "model:\n"
+        "  provider: custom\n"
+        "  default: gpt-5.5\n"
+        "  base_url: https://gateway.example/v1\n"
+        "  api_mode: codex_responses\n"
+        "agent:\n"
+        "  reasoning_effort: high\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(bridge_mod, "MAIN_HERMES_HOME", main_home)
+
+    bridge_mod.prepare_coder_hermes_home(coder_home, "xhigh")
+
+    text = (coder_home / "config.yaml").read_text(encoding="utf-8")
+    assert "api_mode: chat_completions" in text
+    assert "reasoning_effort: xhigh" in text
+    assert "api_mode: codex_responses" not in text
+
+
 def test_format_coder_job_reply_hides_hermes_cli_noise_but_keeps_answer(tmp_path):
     bridge = _bridge(tmp_path, groups="1101538762")
     raw_output = (
@@ -324,6 +348,50 @@ def test_format_coder_job_reply_falls_back_to_session_answer_when_stdout_is_only
     assert "736 passed" in reply
     assert "review diff" not in reply
     assert ".worktrees" not in reply
+
+
+def test_format_coder_job_reply_uses_request_dump_when_cli_has_only_noise(tmp_path):
+    bridge = _bridge(tmp_path, groups="1101538762")
+    session_id = "20260527_113932_4be944"
+    sessions_dir = bridge.coder_hermes_home / "sessions"
+    sessions_dir.mkdir(parents=True)
+    (sessions_dir / f"request_dump_{session_id}_20260527_114012_615431.json").write_text(
+        json.dumps(
+            {
+                "reason": "non_retryable_client_error",
+                "request": {
+                    "url": "https://gateway.example/v1/responses",
+                    "body": {
+                        "model": "gpt-5.5",
+                        "reasoning": {"effort": "xhigh", "summary": "auto"},
+                    },
+                },
+                "response": {
+                    "type": "TypeError",
+                    "message": "'NoneType' object is not iterable",
+                },
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    raw_output = (
+        f"session_id: {session_id}\n"
+        "\x1b[32m✓ Worktree created:\x1b[0m /tmp/worktree\n"
+        "  Branch: hermes/hermes-629d2c77\n"
+        "\x1b[32m✓ Worktree cleaned up: /tmp/worktree\x1b[0m\n"
+    )
+
+    reply = bridge._format_coder_job_reply(1, raw_output)
+
+    assert reply.startswith("【Hermes /coder 异常退出：1】")
+    assert "模型请求失败" in reply
+    assert "non_retryable_client_error" in reply
+    assert "gpt-5.5" in reply
+    assert "effort=xhigh" in reply
+    assert "'NoneType' object is not iterable" in reply
+    assert "QQ 发送失败" in reply
+    assert "Worktree created" not in reply
 
 
 def test_session_for_group_uses_notify_whitelist(tmp_path):

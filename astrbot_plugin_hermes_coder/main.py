@@ -5,6 +5,7 @@ import hashlib
 import hmac
 import json
 import logging
+import re
 import time
 import urllib.error
 import urllib.request
@@ -545,6 +546,9 @@ class HermesCoderPlugin(Star):
         for prefix in ("/coder", "／coder", "\\coder"):
             if text.lower().startswith(prefix):
                 return text[len(prefix) :].strip()
+        match = re.match(r"(?i)^coder(?:$|\s+|(?=[^\x00-\x7f]))", text)
+        if match:
+            return text[match.end() :].strip()
         return ""
 
     def _event_group_id(self, event: AstrMessageEvent) -> str:
