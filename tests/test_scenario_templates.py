@@ -15,6 +15,13 @@ from astrbot_plugin_auto_trpg_dm.core.scenario_templates import (
 )
 
 
+def test_generic_campaign_request_does_not_auto_select_preset():
+    text = "来一个跑团同好研讨会社团剧本"
+
+    assert looks_like_campaign_generation_request(text) is True
+    assert select_campaign_preset(text) is None
+
+
 def test_warhammer_seed_asks_preferences_without_auto_template_matching():
     text = "开一个战锤40K底巢清剿团，我是极限战士喷火兵，队里还有一个技术军士。"
 

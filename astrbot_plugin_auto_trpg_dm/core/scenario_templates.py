@@ -327,6 +327,32 @@ PRESET_SELECTION_TERMS = (
     "载入",
     "就跑",
 )
+EXPLICIT_PRESET_TERMS = PRESET_SELECTION_TERMS + (
+    "跑这个",
+    "跑那个",
+    "用这个",
+    "用那个",
+    "跑暖炉",
+    "跑雾港",
+    "跑锈蚀",
+    "跑底巢",
+    "跑霓虹",
+    "跑仙门",
+    "跑蒸汽",
+    "跑废土",
+    "跑孤岛",
+    "跑低魔",
+    "跑 ",
+    "跑1",
+    "跑2",
+    "跑3",
+    "跑4",
+    "跑5",
+    "跑6",
+    "跑7",
+    "跑8",
+    "跑9",
+)
 PRESET_START_TERMS = (
     "开始",
     "开始游戏",
@@ -396,6 +422,9 @@ def select_campaign_preset(text: str) -> Optional[CampaignTemplate]:
     if not normalized or looks_like_campaign_preset_list_request(text):
         return None
     if looks_like_custom_campaign_brief(text):
+        return None
+    explicit_preset = _contains_any(normalized, EXPLICIT_PRESET_TERMS)
+    if not explicit_preset:
         return None
     selected_index = _selected_preset_number(normalized)
     if selected_index is not None and 1 <= selected_index <= len(TEMPLATES):
