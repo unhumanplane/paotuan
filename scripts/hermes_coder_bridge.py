@@ -39,6 +39,9 @@ DEFAULT_CODER_REASONING_EFFORT = "xhigh"
 DEFAULT_CODER_API_CALL_STALE_TIMEOUT = 900
 DEFAULT_CODER_SESSION_STATE_PATH = OPS / "state" / "hermes_coder_sessions.json"
 DEFAULT_CODER_SESSION_SOURCE_PREFIX = "paotuan-coder"
+DEFAULT_CODER_RESUME_MAX_MESSAGES = 80
+DEFAULT_CODER_RESUME_MAX_SESSION_BYTES = 250 * 1024
+DEFAULT_CODER_RESUME_MAX_AGE_SECONDS = 6 * 60 * 60
 DEFAULT_ASTRBOT_CODER_CONFIG_PATH = Path("/volume1/docker/astrbot/data/config/astrbot_plugin_hermes_coder_config.json")
 DEFAULT_ASTRBOT_API_KEY_PATH = OPS / "secrets" / "astrbot_openapi_im_key"
 DEFAULT_ASTRBOT_API_URL = "http://127.0.0.1:6185/api/v1/im/message"
@@ -270,6 +273,28 @@ CODER_TIMEOUT_MARKERS = (
 COMPACTION_STATUS_MARKERS = (
     "compacting context",
 )
+FRESH_SESSION_CHINESE_MARKERS = (
+    "审查",
+    "合并",
+    "部署",
+    "修复",
+    "复盘",
+    "检查",
+    "提交",
+    "推送",
+    "更新到github",
+    "更新到 github",
+)
+FRESH_SESSION_ENGLISH_MARKERS = (
+    "pull request",
+    "merge",
+    "deploy",
+    "deployment",
+    "fix",
+    "review",
+    "push",
+    "commit",
+)
 DIFF_PATH_MARKER_PATTERN = re.compile(r"\b[ab]//.*/\.worktrees/.*\s+→\s+\b[ab]//.*/\.worktrees/")
 
 
@@ -445,6 +470,47 @@ def output_looks_like_compaction_status(text: str) -> bool:
     if not cleaned or len(cleaned) > 200:
         return False
     return any(marker in cleaned for marker in COMPACTION_STATUS_MARKERS)
+
+
+def prompt_should_start_fresh_session(prompt: str) -> bool:
+    text = str(prompt or "").strip().lower()
+    if not text:
+        return False
+    if any(marker in text for marker in FRESH_SESSION_CHINESE_MARKERS):
+        return True
+    if any(marker in text for marker in FRESH_SESSION_ENGLISH_MARKERS):
+        return True
+    return bool(re.search(r"\bpr\s*#?\d*\b", text))
+
+
+def hermes_session_resume_limit_reason(
+    hermes_home: Path | None,
+    session_id: str,
+    *,
+    max_messages: int,
+    max_bytes: int,
+) -> str:
+    if not hermes_home or not session_id:
+        return "missing_session_id"
+    session_path = hermes_home / "sessions" / f"session_{session_id}.json"
+    if not session_path.exists():
+        return "session_file_missing"
+    try:
+        stat = session_path.stat()
+    except OSError:
+        return "session_file_unreadable"
+    if max_bytes > 0 and stat.st_size > max_bytes:
+        return f"session_file_too_large:{stat.st_size}>{max_bytes}"
+    try:
+        data = json.loads(session_path.read_text(encoding="utf-8"))
+    except Exception:
+        return "session_json_unreadable"
+    messages = data.get("messages")
+    if not isinstance(messages, list) or not messages:
+        return "session_has_no_messages"
+    if max_messages > 0 and len(messages) > max_messages:
+        return f"session_too_many_messages:{len(messages)}>{max_messages}"
+    return ""
 
 
 def latest_request_dump_for_session(hermes_home: Path | None, session_id: str) -> Path | None:
@@ -817,6 +883,9 @@ class CoderBridge:
         self.coder_hermes_home = Path(args.coder_hermes_home)
         self.coder_reasoning_effort = str(args.coder_reasoning_effort).strip() or DEFAULT_CODER_REASONING_EFFORT
         self.session_state_path = Path(args.session_state_path)
+        self.resume_max_messages = int(args.resume_max_messages)
+        self.resume_max_session_bytes = int(args.resume_max_session_bytes)
+        self.resume_max_age_seconds = int(args.resume_max_age_seconds)
         self.timeout_seconds = int(args.timeout_seconds)
         self.job_timeout_seconds = int(args.job_timeout_seconds)
         self.max_prompt_chars = int(args.max_prompt_chars)
@@ -876,7 +945,7 @@ class CoderBridge:
             group_id = str(payload.get("group_id") or "").strip()
             try:
                 self._session_for_group(group_id)
-                hermes_prompt = build_prompt(payload, self._session_context_for_group(group_id))
+                hermes_prompt = build_prompt(payload, self._session_context_for_group(group_id, prompt))
                 asyncio.create_task(self._run_plugin_review_job(payload, hermes_prompt))
             except ValueError as exc:
                 return json_response({"ok": False, "error": str(exc)}, status=400)
@@ -912,7 +981,7 @@ class CoderBridge:
         if not (self.workdir / ".git").exists():
             return json_response({"ok": False, "error": f"workdir is not a git repo: {self.workdir}"}, status=500)
         group_id = str(payload.get("group_id") or "").strip()
-        hermes_prompt = build_prompt(payload, self._session_context_for_group(group_id))
+        hermes_prompt = build_prompt(payload, self._session_context_for_group(group_id, prompt))
         print(
             f"coder_request_accepted group={payload.get('group_id') or ''} "
             f"message={payload.get('message_id') or ''} prompt_chars={len(prompt)} "
@@ -974,7 +1043,7 @@ class CoderBridge:
         message_id = str(payload.get("message_id") or "").strip()
         try:
             session = self._session_for_group(group_id)
-            resume_session_id = self._resume_session_id_for_group(group_id)
+            resume_session_id = self._resume_session_id_for_group(group_id, str(payload.get("prompt") or ""))
             print(f"coder_job_started group={group_id} message={message_id}", flush=True)
             returncode, output = await run_blocking(
                 run_hermes,
@@ -1031,12 +1100,16 @@ class CoderBridge:
         value = sessions.get(self._session_state_key(group_id))
         return value if isinstance(value, dict) else {}
 
-    def _resume_session_id_for_group(self, group_id: str) -> str:
+    def _resume_session_id_for_group(self, group_id: str, prompt: str = "") -> str:
         session_state = self._session_state_for_group(group_id)
         session_id = str(session_state.get("hermes_session_id") or "").strip()
         if not session_id:
             return ""
+        if prompt_should_start_fresh_session(prompt):
+            return ""
         if int(session_state.get("last_returncode") or 0) != 0:
+            return ""
+        if self._session_state_is_too_old(session_state):
             return ""
         if output_looks_like_coder_timeout(str(session_state.get("last_result") or "")):
             return ""
@@ -1044,15 +1117,39 @@ class CoderBridge:
             return ""
         if output_looks_like_compaction_status(str(session_state.get("last_result") or "")):
             return ""
-        if not hermes_session_has_messages(self.coder_hermes_home, session_id):
+        if hermes_session_resume_limit_reason(
+            self.coder_hermes_home,
+            session_id,
+            max_messages=self.resume_max_messages,
+            max_bytes=self.resume_max_session_bytes,
+        ):
             return ""
+
         return session_id
 
-    def _session_context_for_group(self, group_id: str) -> str:
+    def _session_state_is_too_old(self, session_state: dict[str, Any]) -> bool:
+        if self.resume_max_age_seconds <= 0:
+            return False
+        value = str(session_state.get("updated_at") or "").strip()
+        if not value:
+            return False
+        try:
+            updated_at = datetime.fromisoformat(value)
+        except ValueError:
+            return False
+        if updated_at.tzinfo is None:
+            updated_at = updated_at.astimezone()
+        age = (datetime.now().astimezone() - updated_at.astimezone()).total_seconds()
+        return age > self.resume_max_age_seconds
+
+    def _session_context_for_group(self, group_id: str, prompt: str = "") -> str:
+        if prompt_should_start_fresh_session(prompt):
+            return ""
         session_state = self._session_state_for_group(group_id)
         last_result = str(session_state.get("last_result") or "")
         if (
             int(session_state.get("last_returncode") or 0) != 0
+            or self._session_state_is_too_old(session_state)
             or output_looks_like_coder_timeout(last_result)
             or output_looks_like_empty_session_resume(last_result)
             or output_looks_like_compaction_status(last_result)
@@ -1353,6 +1450,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--coder-hermes-home", default=os.environ.get("HERMES_CODER_HERMES_HOME", str(DEFAULT_CODER_HERMES_HOME)))
     parser.add_argument("--coder-reasoning-effort", default=os.environ.get("HERMES_CODER_REASONING_EFFORT", DEFAULT_CODER_REASONING_EFFORT))
     parser.add_argument("--session-state-path", default=os.environ.get("HERMES_CODER_SESSION_STATE_PATH", str(DEFAULT_CODER_SESSION_STATE_PATH)))
+    parser.add_argument("--resume-max-messages", type=int, default=int(os.environ.get("HERMES_CODER_RESUME_MAX_MESSAGES", str(DEFAULT_CODER_RESUME_MAX_MESSAGES))))
+    parser.add_argument("--resume-max-session-bytes", type=int, default=int(os.environ.get("HERMES_CODER_RESUME_MAX_SESSION_BYTES", str(DEFAULT_CODER_RESUME_MAX_SESSION_BYTES))))
+    parser.add_argument("--resume-max-age-seconds", type=int, default=int(os.environ.get("HERMES_CODER_RESUME_MAX_AGE_SECONDS", str(DEFAULT_CODER_RESUME_MAX_AGE_SECONDS))))
     parser.add_argument("--timeout-seconds", type=int, default=int(os.environ.get("HERMES_CODER_TIMEOUT_SECONDS", str(DEFAULT_TIMEOUT_SECONDS))))
     parser.add_argument("--job-timeout-seconds", type=int, default=int(os.environ.get("HERMES_CODER_JOB_TIMEOUT_SECONDS", str(DEFAULT_JOB_TIMEOUT_SECONDS))))
     parser.add_argument("--max-prompt-chars", type=int, default=int(os.environ.get("HERMES_CODER_MAX_PROMPT_CHARS", str(DEFAULT_MAX_PROMPT_CHARS))))

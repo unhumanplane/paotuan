@@ -33,6 +33,9 @@ def _bridge(tmp_path, *, groups="", config_groups=None):
         coder_hermes_home=str(tmp_path / "coder_hermes_home"),
         coder_reasoning_effort="xhigh",
         session_state_path=str(tmp_path / "coder_sessions.json"),
+        resume_max_messages=80,
+        resume_max_session_bytes=250 * 1024,
+        resume_max_age_seconds=6 * 60 * 60,
         timeout_seconds=240,
         job_timeout_seconds=1800,
         max_prompt_chars=4000,
@@ -612,6 +615,70 @@ def test_run_coder_job_resumes_saved_session_and_splits_long_notify(tmp_path, mo
         assert "new prompt" in state["sessions"]["1101538762"]["last_prompt"]
 
     asyncio.run(run_case())
+
+
+def test_maintenance_prompt_forces_fresh_session_and_drops_context(tmp_path):
+    bridge = _bridge(tmp_path, groups="1101538762")
+    session_file = bridge.coder_hermes_home / "sessions" / "session_20260522_120000_deadbeef.json"
+    session_file.parent.mkdir(parents=True)
+    session_file.write_text(json.dumps({"messages": [{"role": "assistant", "content": "old result"}]}), encoding="utf-8")
+    bridge_mod.save_json_state(
+        bridge.session_state_path,
+        {
+            "sessions": {
+                "1101538762": {
+                    "hermes_session_id": "20260522_120000_deadbeef",
+                    "last_returncode": 0,
+                    "last_prompt": "old prompt",
+                    "last_result": "old result",
+                }
+            }
+        },
+    )
+
+    assert bridge._resume_session_id_for_group("1101538762", "审查两个 PR 然后合并") == ""
+    assert bridge._session_context_for_group("1101538762", "审查两个 PR 然后合并") == ""
+    assert bridge._resume_session_id_for_group("1101538762", "继续刚才的话题") == "20260522_120000_deadbeef"
+
+
+def test_resume_session_limits_by_message_count_size_and_age(tmp_path):
+    bridge = _bridge(tmp_path, groups="1101538762")
+    bridge.resume_max_messages = 2
+    bridge.resume_max_session_bytes = 1_000_000
+    session_id = "20260522_120000_deadbeef"
+    session_file = bridge.coder_hermes_home / "sessions" / f"session_{session_id}.json"
+    session_file.parent.mkdir(parents=True)
+    session_file.write_text(
+        json.dumps({"messages": [{"role": "assistant", "content": "ok"}] * 3}),
+        encoding="utf-8",
+    )
+    bridge_mod.save_json_state(
+        bridge.session_state_path,
+        {"sessions": {"1101538762": {"hermes_session_id": session_id, "last_returncode": 0, "last_result": "ok"}}},
+    )
+
+    assert bridge._resume_session_id_for_group("1101538762", "普通问题") == ""
+
+    bridge.resume_max_messages = 10
+    bridge.resume_max_session_bytes = 10
+    assert bridge._resume_session_id_for_group("1101538762", "普通问题") == ""
+
+    bridge.resume_max_session_bytes = 1_000_000
+    bridge.resume_max_age_seconds = 1
+    bridge_mod.save_json_state(
+        bridge.session_state_path,
+        {
+            "sessions": {
+                "1101538762": {
+                    "hermes_session_id": session_id,
+                    "last_returncode": 0,
+                    "last_result": "ok",
+                    "updated_at": "2020-01-01T00:00:00+00:00",
+                }
+            }
+        },
+    )
+    assert bridge._resume_session_id_for_group("1101538762", "普通问题") == ""
 
 
 def test_run_coder_job_skips_empty_saved_session_and_starts_fresh(tmp_path, monkeypatch):
