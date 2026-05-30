@@ -240,6 +240,34 @@ def test_update_session_state_clears_session_id_on_failure(tmp_path):
     assert "Resumed session" not in session["last_result"]
 
 
+def test_compaction_status_is_not_treated_as_successful_resume_state(tmp_path):
+    bridge = _bridge(tmp_path, groups="1101538762")
+    raw_output = (
+        "session_id: 20260529_120007_f2a038\n"
+        "⟳ compacting context…\n"
+    )
+    reply = bridge._format_coder_job_reply(0, raw_output)
+
+    assert "只返回了上下文压缩状态" in reply
+    assert "compacting context" not in reply
+
+    bridge._update_session_state(
+        "1101538762",
+        {"prompt": "都审查然后合并吧"},
+        0,
+        raw_output,
+        reply,
+    )
+
+    state = bridge_mod.load_json_state(bridge.session_state_path)
+    session = state["sessions"]["1101538762"]
+    assert session["hermes_session_id"] == ""
+    assert session["last_returncode"] == 125
+    assert session["last_result"].startswith("[未完成]")
+    assert bridge._resume_session_id_for_group("1101538762") == ""
+    assert bridge._session_context_for_group("1101538762") == ""
+
+
 def test_run_coder_job_records_timeout_state(tmp_path, monkeypatch):
     async def run_case():
         bridge = _bridge(tmp_path, groups="1101538762")

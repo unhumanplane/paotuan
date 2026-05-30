@@ -267,6 +267,9 @@ CODER_TIMEOUT_MARKERS = (
     "Non-streaming API call timed out",
     "API call failed after 3 retries",
 )
+COMPACTION_STATUS_MARKERS = (
+    "compacting context",
+)
 DIFF_PATH_MARKER_PATTERN = re.compile(r"\b[ab]//.*/\.worktrees/.*\s+→\s+\b[ab]//.*/\.worktrees/")
 
 
@@ -435,6 +438,13 @@ def output_looks_like_coder_timeout(text: str) -> bool:
 def output_looks_like_empty_session_resume(text: str) -> bool:
     cleaned = text or ""
     return " has no messages" in cleaned and "Starting fresh" in cleaned
+
+
+def output_looks_like_compaction_status(text: str) -> bool:
+    cleaned = ANSI_ESCAPE_PATTERN.sub("", text or "").strip().lower()
+    if not cleaned or len(cleaned) > 200:
+        return False
+    return any(marker in cleaned for marker in COMPACTION_STATUS_MARKERS)
 
 
 def latest_request_dump_for_session(hermes_home: Path | None, session_id: str) -> Path | None:
@@ -1032,6 +1042,8 @@ class CoderBridge:
             return ""
         if output_looks_like_empty_session_resume(str(session_state.get("last_result") or "")):
             return ""
+        if output_looks_like_compaction_status(str(session_state.get("last_result") or "")):
+            return ""
         if not hermes_session_has_messages(self.coder_hermes_home, session_id):
             return ""
         return session_id
@@ -1043,6 +1055,7 @@ class CoderBridge:
             int(session_state.get("last_returncode") or 0) != 0
             or output_looks_like_coder_timeout(last_result)
             or output_looks_like_empty_session_resume(last_result)
+            or output_looks_like_compaction_status(last_result)
         ):
             return ""
         parts: list[str] = []
@@ -1071,16 +1084,23 @@ class CoderBridge:
             previous = sessions.get(key)
             if not isinstance(previous, dict):
                 previous = {}
-            if int(returncode) == 0:
+            compaction_only = int(returncode) == 0 and (
+                output_looks_like_compaction_status(output)
+                or output_looks_like_compaction_status(notify_text)
+            )
+            stored_returncode = 125 if compaction_only else int(returncode)
+            if stored_returncode == 0:
                 hermes_session_id = extract_latest_session_id(output) or str(previous.get("hermes_session_id") or "")
                 last_result = compact_excerpt(notify_text or output, 1600)
             else:
                 hermes_session_id = ""
-                if output_looks_like_coder_timeout(output):
+                if compaction_only:
+                    last_result = "[未完成] Hermes 只返回上下文压缩状态，没有产出最终回复"
+                elif output_looks_like_coder_timeout(output):
                     last_result = "[失败] Hermes /coder 超时"
                 else:
                     failure_excerpt = compact_excerpt(notify_text or output, 240)
-                    last_result = f"[失败] Hermes /coder returncode={int(returncode)}"
+                    last_result = f"[失败] Hermes /coder returncode={stored_returncode}"
                     if failure_excerpt:
                         last_result = f"{last_result}: {failure_excerpt}"
             prompt = str(payload.get("prompt") or "").strip()
@@ -1088,7 +1108,7 @@ class CoderBridge:
                 "group_id": group_id,
                 "updated_at": datetime.now().astimezone().isoformat(),
                 "hermes_session_id": hermes_session_id,
-                "last_returncode": int(returncode),
+                "last_returncode": stored_returncode,
                 "last_prompt": compact_excerpt(prompt, 700),
                 "last_result": last_result,
                 "open_followups": str(previous.get("open_followups") or ""),
@@ -1102,6 +1122,12 @@ class CoderBridge:
         text = tail_text(sanitize_hermes_output_for_reply(output), self.max_output_chars)
         if not text:
             text = self._fallback_session_reply(output)
+        if output_looks_like_compaction_status(text):
+            fallback = self._fallback_session_reply(output)
+            if fallback and not output_looks_like_compaction_status(fallback):
+                text = fallback
+            else:
+                text = "Hermes 只返回了上下文压缩状态，没有产出最终回复；本轮会被标记为未完成，下一次 /coder 将从新会话开始。"
         if not text and returncode != 0:
             text = request_failure_diagnostic(self.coder_hermes_home, output)
         if not text:
