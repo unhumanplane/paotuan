@@ -11,9 +11,10 @@ from .map_tool_routing import (
     looks_strict_grid_map_request,
     looks_visual_map_request,
 )
-from .models import GameMode, GameSession, infer_tag_layer, project_public_relation_state
+from .models import CycleState, GameMode, GameSession, infer_tag_layer, project_public_relation_state
 from .prompt_projection import project_ra_summary_for_dm_prompt
 from .scene_hooks import project_visible_scene_value
+from .timeline import active_player_ids, timeline_advance_requires_sync
 
 
 DEFAULT_ADJUDICATION_PROFILE = {
@@ -1363,6 +1364,47 @@ CURRENT_STATE_AUTHORITY_PROMPT = """
 """
 
 
+def _cycle_closure_reminder(session: GameSession, tool_names: list[str], message: str) -> str:
+    if "cycle_control" not in set(tool_names or []):
+        return ""
+    if session.cycle_state != CycleState.CYCLE_ACTIVE:
+        return ""
+    active_ids = active_player_ids(session)
+    if not active_ids:
+        participants = getattr(session, "participants", {}) or {}
+        if isinstance(participants, dict):
+            active_ids = {str(player_id) for player_id in participants if str(player_id)}
+    current_cycle_id = getattr(session, "current_cycle_id", 0)
+    audit_buffer = getattr(session, "audit_buffer", None)
+    acted_ids = {
+        str(getattr(action, "player_id", "") or "")
+        for action in getattr(audit_buffer, "actions", []) or []
+        if str(getattr(action, "player_id", "") or "")
+    }
+    if getattr(audit_buffer, "cycle_id", current_cycle_id) != current_cycle_id:
+        acted_ids = set()
+
+    reasons: list[str] = []
+    if active_ids and active_ids <= acted_ids:
+        reasons.append("本周期所有活跃玩家已有行动记录")
+    if timeline_advance_requires_sync(message):
+        reasons.append("潜在周期收束/时间推进请求")
+    if not reasons:
+        return ""
+    active_count = len(active_ids)
+    acted_count = len(active_ids & acted_ids) if active_ids else len(acted_ids)
+    missing_ids = sorted(active_ids - acted_ids)
+    missing_text = f"；仍缺少行动/确认：{', '.join(missing_ids)}" if missing_ids else ""
+    return (
+        "\n周期收束提醒：\n"
+        f"- 触发原因：{'；'.join(reasons)}。当前周期 {current_cycle_id}，活跃玩家 {active_count} 人，已行动/确认 {acted_count} 人{missing_text}。\n"
+        "- 如果本轮要收束公共后果、进入下一拍或推进到天亮/第二天/入夜/长休，必须调用 "
+        'cycle_control(action="end_cycle", timeline_patch={...}, sync_policy="strict|timeout|quorum")；'
+        "不要只靠 final_response 或 update_scene 叙事推进到下一周期。\n"
+        "- 若只是状态查询、闲聊或同步条件不足，明确说明当前周期尚未收束，并保持全团 timeline 不变。\n"
+    )
+
+
 def build_system_prompt(
     session: GameSession,
     mode: GameMode,
@@ -1408,11 +1450,12 @@ def build_system_prompt(
         else ""
     )
     fact_check_section = FACT_CHECK_CONTINUITY_PROMPT if _looks_like_fact_check_request(message) else ""
+    cycle_closure_section = _cycle_closure_reminder(session, tool_names, message)
     return f"""你是 AstrBot 内的全自动 TRPG DM 智能体。你必须以自然语言理解玩家输入，并用工具推进确定性状态。
 
 {BASE_RULES}
 {CURRENT_STATE_AUTHORITY_PROMPT}
-{fact_check_section}
+{fact_check_section}{cycle_closure_section}
 
 硬性规则：
 0. DM 行为准则：

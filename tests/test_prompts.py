@@ -1,6 +1,6 @@
 import json
 
-from astrbot_plugin_auto_trpg_dm.core.models import Character, GameMode, GameSession, TagValue
+from astrbot_plugin_auto_trpg_dm.core.models import Character, CycleAction, GameMode, GameSession, TagValue
 from astrbot_plugin_auto_trpg_dm.core.map_core import (
     MAP_TYPE_STRICT_LOCAL,
     MAP_VISIBILITY_DM,
@@ -45,6 +45,47 @@ def test_system_prompt_includes_shared_cycle_contract():
     assert "不能为了圆场临时新增未记录的设备能力" in prompt
     assert "完整 `GameSession`" in prompt
     assert "结束当前叙事周期" not in prompt
+
+
+def test_system_prompt_reminds_cycle_closure_when_all_active_players_acted():
+    session = GameSession.new("group")
+    session.participants = {"p1": {"display_name": "甲"}, "p2": {"display_name": "乙"}}
+    session.audit_buffer.cycle_id = session.current_cycle_id
+    session.audit_buffer.actions.append(CycleAction(player_id="p1", player_message="我侦查走廊"))
+    session.audit_buffer.actions.append(CycleAction(player_id="p2", player_message="我检查门锁"))
+
+    prompt = build_system_prompt(
+        session,
+        GameMode.NARRATIVE,
+        ["cycle_control"],
+        actor={"player_id": "p1"},
+        message="我等大家确认下一步",
+    )
+
+    assert "周期收束提醒" in prompt
+    assert "本周期所有活跃玩家已有行动记录" in prompt
+    assert 'cycle_control(action="end_cycle")' in prompt
+    assert "不要只靠 final_response 或 update_scene 叙事推进到下一周期" in prompt
+
+
+def test_system_prompt_reminds_cycle_closure_for_time_skip_request():
+    session = GameSession.new("group")
+    session.participants = {"p1": {"display_name": "甲"}, "p2": {"display_name": "乙"}}
+    session.audit_buffer.cycle_id = session.current_cycle_id
+    session.audit_buffer.actions.append(CycleAction(player_id="p1", player_message="我回营地"))
+
+    prompt = build_system_prompt(
+        session,
+        GameMode.NARRATIVE,
+        ["cycle_control"],
+        actor={"player_id": "p1"},
+        message="我们扎营休息到第二天清晨",
+    )
+
+    assert "周期收束提醒" in prompt
+    assert "潜在周期收束/时间推进请求" in prompt
+    assert "timeline_patch" in prompt
+    assert "sync_policy" in prompt
 
 
 def test_system_prompt_includes_event_timeline_contract():
