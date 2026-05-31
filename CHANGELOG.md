@@ -2,6 +2,19 @@
 
 所有已经合入 `main` 的用户可见变更都记录在这里。日期使用香港时区对应的开发日期。
 
+## [0.1.135] - 2026-05-31
+
+### Fixed
+
+- 重置/清空存档确认链路改回本地确定性流程：`确定重置`、`结束归档当前游戏`、`RESET-...` 确认码和“来一个新跑团/JRPG/TRPG”都会先由本地 fast path 处理，不再落入普通剧情 LLM 续写。
+- 兼容历史上由模型伪造出的长格式确认码 `RESET-DEFAULT-GROUPMESSAGE-...`，只要它匹配当前 pending reset，就会直接执行本地二次确认；不匹配时也只返回确认失败，不会被当成角色行动。
+- 增加输出侧熔断：若 LLM 回复里出现 `RESET-...` 但本轮没有真实 `session_control(reset)` 工具结果，确认码会被拦截并替换为安全提示，避免模型再次伪造清档确认码。
+
+### Verified
+
+- `python -m pytest tests/test_dm_ack_and_outputs.py tests/test_router_usage.py -q`
+- `python -m py_compile astrbot_plugin_auto_trpg_dm/main.py astrbot_plugin_auto_trpg_dm/core/router.py`
+
 ## [0.1.128] - 2026-05-18
 
 ### Fixed

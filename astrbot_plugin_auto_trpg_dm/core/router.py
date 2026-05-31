@@ -1774,6 +1774,25 @@ class IntentRouter:
                 ",".join(str(item) for item in guard_result.get("equipment_terms", [])),
             )
 
+        async def append_reset_confirmation_guard_audit(completion_text: str) -> None:
+            audit_record = {
+                "type": "reset_confirmation_output_guard",
+                "reason": "reset_token_without_session_control_result",
+                "completion_hash": _short_hash(completion_text),
+                "completion_chars": len(str(completion_text or "")),
+            }
+            if audit_lock is None:
+                self.repository.append_audit(session_id, audit_record)
+            else:
+                async with audit_lock:
+                    self.repository.append_audit(session_id, audit_record)
+            get_plugin_logger().warning(
+                "reset_confirmation_output_guard session=%s actor=%s reason=%s",
+                session_id,
+                (actor or {}).get("player_id", ""),
+                audit_record["reason"],
+            )
+
         def adjudication_completion_guard_for(completion_text: str) -> dict[str, Any]:
             try:
                 guard_session = self.repository.load_session(session_id)
@@ -1794,6 +1813,14 @@ class IntentRouter:
                 guard_session = self.repository.load_session(session_id)
             except Exception:
                 guard_session = None
+            reset_confirmation_guard = _reset_confirmation_output_guard(
+                raw_player_message,
+                completion_text,
+                all_tool_results,
+            )
+            if reset_confirmation_guard:
+                await append_reset_confirmation_guard_audit(completion_text)
+                completion_text = reset_confirmation_guard
             character_card_guard = _character_card_final_reply_guard(
                 raw_player_message,
                 completion_text,
@@ -5214,6 +5241,48 @@ def _final_response_reply(tool_results: list[dict[str, Any]]) -> str | None:
             if text:
                 return text
     return None
+
+
+RESET_CONFIRMATION_TOKEN_RE = re.compile(
+    r"(?<![A-Z0-9])RESET-[A-Z0-9][A-Z0-9_-]{5,96}(?![A-Z0-9_-])",
+    flags=re.IGNORECASE,
+)
+
+
+def _reset_confirmation_output_guard(
+    player_message: str,
+    completion: str,
+    tool_results: list[dict[str, Any]],
+) -> str:
+    text = str(completion or "")
+    if not RESET_CONFIRMATION_TOKEN_RE.search(text):
+        return ""
+    if _session_control_reset_confirmation_supported(tool_results):
+        return ""
+    lowered_message = str(player_message or "").strip().lower()
+    if any(term in lowered_message for term in ("重置", "重开", "清空", "归档", "reset", "new campaign")):
+        return (
+            "重置/清空存档必须走本地确认流程，不能由叙事回复生成确认码。"
+            "请重新发送 `/dm 重开当前团` 或 `/dm 清空存档`，我会生成系统确认码；"
+            "拿到确认码后再原样发送它完成二次确认。"
+        )
+    return "这条回复包含未经过本地工具生成的重置确认码，已被拦截；存档没有改动。"
+
+
+def _session_control_reset_confirmation_supported(tool_results: list[dict[str, Any]]) -> bool:
+    for item in tool_results or []:
+        if not isinstance(item, dict) or item.get("tool") != "session_control":
+            continue
+        result = item.get("result")
+        if not isinstance(result, dict):
+            continue
+        action = str(result.get("action") or "").strip().lower()
+        if action not in {"reset_confirmation_required", "reset", "confirm_reset"}:
+            continue
+        if action == "reset_confirmation_required" and not str(result.get("confirm_token") or "").strip():
+            continue
+        return True
+    return False
 
 
 def _response_completion_text(response: Any) -> str:

@@ -60,6 +60,7 @@ from astrbot_plugin_auto_trpg_dm.core.router import (
     _extract_llm_usage_summary,
     _is_diagnostic_request,
     _maybe_close_concluded_turn,
+    _reset_confirmation_output_guard,
     _should_record_narrative_trace,
 )
 
@@ -484,6 +485,36 @@ def test_router_accepts_final_response_tool_as_loop_completion():
     assert [name for name, _args in executor.calls] == ["session_control", "final_response"]
     assert result.tool_results[-1]["tool"] == "final_response"
     assert records[-1]["tool_results"][0]["tool"] == "final_response"
+
+
+def test_reset_confirmation_output_guard_blocks_fabricated_llm_token():
+    reply = _reset_confirmation_output_guard(
+        "确定重置",
+        "确认码：RESET-DEFAULT-GROUPMESSAGE-676453921-171709\n发送这条确认码我会清空当前存档。",
+        [],
+    )
+
+    assert "不能由叙事回复生成确认码" in reply
+    assert "重开当前团" in reply
+
+
+def test_reset_confirmation_output_guard_allows_tool_generated_token():
+    reply = _reset_confirmation_output_guard(
+        "确定重置",
+        "确认码：RESET-ABC123",
+        [
+            {
+                "tool": "session_control",
+                "result": {
+                    "ok": False,
+                    "action": "reset_confirmation_required",
+                    "confirm_token": "RESET-ABC123",
+                },
+            }
+        ],
+    )
+
+    assert reply == ""
 
 
 def test_router_retries_tool_role_response_instead_of_returning_repr():

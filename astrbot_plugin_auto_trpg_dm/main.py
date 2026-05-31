@@ -61,7 +61,7 @@ from .tools.registry import ToolRegistry
 from .tools.turn_tools import TurnTools
 
 
-PLUGIN_VERSION = "0.1.134"
+PLUGIN_VERSION = "0.1.135"
 
 DEFAULT_REASSURANCE_PHRASES = (
     "正在翻找合适的骰子。",
@@ -5018,19 +5018,25 @@ def _compact_background_factions(value: object) -> str:
 
 
 def _extract_reset_confirmation_token(text: str) -> str:
-    lowered = str(text or "").strip().lower()
+    raw_text = str(text or "")
+    lowered = raw_text.strip().lower()
     if not lowered:
         return ""
     confirm_terms = ("确认重开", "确认清空", "确认重置", "确认新团", "confirm reset", "confirm-reset")
+    prefixed_match = re.search(
+        r"(?<![A-Z0-9])RESET-[A-Z0-9][A-Z0-9_-]{5,96}(?![A-Z0-9_-])",
+        raw_text,
+        flags=re.IGNORECASE,
+    )
+    if prefixed_match:
+        return prefixed_match.group(0).upper()
     if not any(term in lowered for term in confirm_terms):
         return ""
-    match = re.search(r"\b(?:RESET-)?[A-Z0-9]{6,12}\b", str(text or ""), flags=re.IGNORECASE)
+    match = re.search(r"\b[A-Z0-9]{6,12}\b", raw_text, flags=re.IGNORECASE)
     if not match:
         return ""
     token = match.group(0).upper()
-    if not token.startswith("RESET-"):
-        token = f"RESET-{token}"
-    return token
+    return f"RESET-{token}"
 
 
 def _looks_like_reset_confirmation_request(text: str) -> bool:
@@ -5090,6 +5096,22 @@ def _looks_like_reset_request(text: str) -> bool:
         "重新开团",
         "开新团",
         "新开一团",
+        "确认重开",
+        "确认清空",
+        "确认重置",
+        "确认新团",
+        "确定重开",
+        "确定清空",
+        "确定重置",
+        "确定新团",
+        "结束归档当前游戏",
+        "结束归档当前跑团",
+        "结束并归档当前游戏",
+        "结束并归档当前跑团",
+        "归档当前游戏",
+        "归档当前跑团",
+        "结束当前游戏",
+        "结束当前跑团",
         "reset save",
         "reset campaign",
         "new campaign",
@@ -5413,6 +5435,10 @@ def _looks_like_new_campaign_seed_request(text: str) -> bool:
         return False
     if _looks_like_reset_request(text):
         return True
+    starter_terms = ("开一个", "来一个", "来一盘", "新团", "新游戏", "new campaign")
+    campaign_terms = ("跑团", "剧本", "trpg", "jrpg", "dnd", "coc")
+    if any(token in lowered for token in starter_terms) and any(token in lowered for token in campaign_terms):
+        return True
     start_or_delegate = any(
         token in lowered
         for token in (
@@ -5428,6 +5454,7 @@ def _looks_like_new_campaign_seed_request(text: str) -> bool:
             "故事",
             "剧本",
             "副本",
+            "跑团",
         )
     )
     return start_or_delegate and _looks_like_enough_background_seed(text)

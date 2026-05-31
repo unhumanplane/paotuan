@@ -134,9 +134,11 @@ from astrbot_plugin_auto_trpg_dm.core.models import Character, CycleState, GameS
 from astrbot_plugin_auto_trpg_dm.main import (
     AutoTrpgDmPlugin,
     _guided_background_patch_from_text,
+    _extract_reset_confirmation_token,
     _looks_like_in_campaign_content_expansion_request,
     _looks_like_new_campaign_seed_request,
     _looks_like_backup_preview_request,
+    _looks_like_reset_request,
     _looks_like_restore_latest_backup_request,
     _looks_like_restart_latest_backup_story_request,
 )
@@ -636,6 +638,90 @@ def test_backup_story_commands_are_classified_before_background_fallback():
     assert _looks_like_backup_preview_request("查看上一个存档的故事") is True
     assert _looks_like_restart_latest_backup_story_request("查看上一个存档的故事") is False
     assert _looks_like_backup_preview_request("查看备份") is False
+
+
+def test_reset_confirmation_token_accepts_llm_legacy_long_token_without_confirm_words():
+    text = "RESET-DEFAULT-GROUPMESSAGE-676453921-171709\n/dm RESET-DEFAULT-GROUPMESSAGE-676453921-171709"
+
+    assert _extract_reset_confirmation_token(text) == "RESET-DEFAULT-GROUPMESSAGE-676453921-171709"
+
+
+def test_reset_intents_are_classified_before_llm_router():
+    assert _looks_like_reset_request("确定重置") is True
+    assert _looks_like_reset_request("结束归档当前游戏") is True
+    assert _looks_like_new_campaign_seed_request("来一个日式jrpg风格的跑团，要严格回合制") is True
+
+
+def test_reset_request_fast_path_creates_real_pending_confirmation():
+    session = GameSession.new("group")
+    session.world_tags["_background_ready"] = True
+    session.scene["_game_started"] = True
+    repo = FakeRepository(session)
+    plugin = AutoTrpgDmPlugin.__new__(AutoTrpgDmPlugin)
+    plugin.repository = repo
+    plugin.ambient_image_config = AmbientImageConfig(enabled=False)
+    plugin.plugin_logger = FakeLogger()
+    plugin.honcho_config = types.SimpleNamespace(
+        enabled=False,
+        read_enabled=False,
+        max_context_chars=0,
+    )
+
+    reply = asyncio.run(
+        plugin._local_fast_path(
+            FakeEvent(),
+            "group",
+            {"player_id": "player-a", "display_name": "gali"},
+            "确定重置",
+        )
+    )
+
+    pending = repo.session.scene["_pending_reset_confirmation"]
+    assert pending["token"].startswith("RESET-")
+    assert pending["requester_player_id"] == "player-a"
+    assert pending["token"] in reply
+    assert any(
+        record.get("tool") == "session_control"
+        and (record.get("input") or {}).get("action") == "reset"
+        for record in repo.audits
+    )
+
+
+def test_legacy_long_reset_confirmation_is_handled_locally_and_does_not_reach_llm():
+    session = GameSession.new("group")
+    session.world_tags["_background_ready"] = True
+    session.scene["_game_started"] = True
+    session.scene["_pending_reset_confirmation"] = {
+        "token": "RESET-DEFAULT-GROUPMESSAGE-676453921-171709",
+        "requester_player_id": "player-a",
+        "requester_display_name": "gali",
+        "reason": "确定重置",
+        "created_at": "2026-05-31T10:52:41+00:00",
+        "expires_at": "2999-01-01T00:00:00+00:00",
+    }
+    repo = FakeRepository(session)
+    plugin = AutoTrpgDmPlugin.__new__(AutoTrpgDmPlugin)
+    plugin.repository = repo
+    plugin.ambient_image_config = AmbientImageConfig(enabled=False)
+    plugin.plugin_logger = FakeLogger()
+    plugin.honcho_config = types.SimpleNamespace(
+        enabled=False,
+        read_enabled=False,
+        max_context_chars=0,
+    )
+
+    reply = asyncio.run(
+        plugin._local_fast_path(
+            FakeEvent(),
+            "group",
+            {"player_id": "player-a", "display_name": "gali"},
+            "RESET-DEFAULT-GROUPMESSAGE-676453921-171709\n/dm RESET-DEFAULT-GROUPMESSAGE-676453921-171709",
+        )
+    )
+
+    assert "当前跑团存档已重置" in reply
+    assert repo.session.characters == {}
+    assert repo.session.scene.get("_pending_reset_confirmation") is None
 
 
 def test_visual_map_requests_without_background_reach_tool_chain():
@@ -1231,6 +1317,7 @@ class FakeRepository:
     def __init__(self, session):
         self.session = session
         self.audits = []
+        self.backups = []
 
     def load_session(self, session_id):
         assert session_id == self.session.session_id
@@ -1242,3 +1329,9 @@ class FakeRepository:
     def append_audit(self, session_id, record):
         assert session_id == self.session.session_id
         self.audits.append(record)
+
+    def backup_session(self, session_id, reason=""):
+        assert session_id == self.session.session_id
+        path = f"/tmp/{session_id}.backup.json"
+        self.backups.append({"path": path, "reason": reason})
+        return path
