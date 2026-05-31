@@ -15,6 +15,9 @@ from ..storage.json_repository import JsonGameRepository
 
 TURN_TIMEOUT_SECONDS = 120
 DEFAULT_TURN_OUTPUT_LIMIT_CHARS = 1440
+TURN_SEQUENCE_FLEXIBLE = "flexible"
+TURN_SEQUENCE_STRICT = "strict"
+TURN_SEQUENCE_MODES = {TURN_SEQUENCE_FLEXIBLE, TURN_SEQUENCE_STRICT}
 
 
 class TurnControlArgs(BaseModel):
@@ -23,7 +26,7 @@ class TurnControlArgs(BaseModel):
         description=(
             "回合状态动作：status,start_round,set_order,start_scene_resolution,"
             "finish_scene_resolution,start_character_turn,record_action,advance_turn,"
-            "auto_act_current,skip_current,end_encounter"
+            "auto_act_current,skip_current,set_sequence_mode,end_encounter"
         ),
     )
     turn_order: List[str] = Field(default_factory=list, description="行动顺序里的实体/角色 ID")
@@ -33,6 +36,10 @@ class TurnControlArgs(BaseModel):
     output_limit_chars: int = Field(default=DEFAULT_TURN_OUTPUT_LIMIT_CHARS, ge=80, le=2000, description="本阶段建议单次回复长度上限")
     auto_policy: str = Field(default="defend_or_follow", description="无人响应时的自动行为策略")
     advance_after: bool = Field(default=True, description="record_action/auto_act_current 后是否自动推进到下一阶段")
+    sequence_mode: str = Field(
+        default="",
+        description="回合顺序策略：strict=像标准 DND/CoC 先攻表一样只能 current_entity_id 行动；flexible=默认弹性锚点，允许当前发言人的未行动角色乱序行动",
+    )
 
 
 class TurnTools:
@@ -56,10 +63,12 @@ class TurnTools:
         output_limit_chars: int = DEFAULT_TURN_OUTPUT_LIMIT_CHARS,
         auto_policy: str = "defend_or_follow",
         advance_after: bool = True,
+        sequence_mode: str = "",
     ) -> Dict[str, Any]:
         session = self.repository.load_session(self.session_id)
         turn = self._ensure_turn_state(session)
         normalized = action.strip().lower()
+        requested_sequence_mode = _normalize_sequence_mode(sequence_mode)
         output_limit_chars = max(
             DEFAULT_TURN_OUTPUT_LIMIT_CHARS,
             min(2000, int(output_limit_chars or DEFAULT_TURN_OUTPUT_LIMIT_CHARS)),
@@ -67,6 +76,25 @@ class TurnTools:
 
         if normalized in {"status", "状态"}:
             result = self._status(session)
+        elif normalized in {"set_sequence_mode", "sequence_mode", "turn_sequence_mode", "strict_turns", "严格回合制", "严格回合", "弹性回合"}:
+            if not requested_sequence_mode:
+                if normalized in {"strict_turns", "严格回合制", "严格回合"}:
+                    requested_sequence_mode = TURN_SEQUENCE_STRICT
+                elif normalized == "弹性回合":
+                    requested_sequence_mode = TURN_SEQUENCE_FLEXIBLE
+            if not requested_sequence_mode:
+                result = {
+                    "ok": False,
+                    "error": "invalid_sequence_mode",
+                    "message": "sequence_mode 只能是 strict 或 flexible。",
+                    "allowed_sequence_modes": sorted(TURN_SEQUENCE_MODES),
+                }
+            else:
+                turn["sequence_mode"] = requested_sequence_mode
+                if summary:
+                    self._append_turn_log(session, "sequence_mode_changed", summary, reason)
+                self.repository.save_session(session)
+                result = self._status(session)
         elif normalized in {"start_round", "start", "开始轮次", "开始回合"}:
             order = self._clean_order(turn_order or []) or self._derive_turn_order(
                 session,
@@ -91,6 +119,7 @@ class TurnTools:
                         "current_entity_id": "",
                         "output_limit_chars": output_limit_chars,
                         "auto_policy": auto_policy,
+                        "sequence_mode": requested_sequence_mode or self._sequence_mode(turn),
                         "actions_this_round": {},
                         "scene_resolution_done": False,
                     }
@@ -108,6 +137,8 @@ class TurnTools:
                 turn["active"] = True
                 session.battle["active"] = True
                 turn["output_limit_chars"] = output_limit_chars
+                if requested_sequence_mode:
+                    turn["sequence_mode"] = requested_sequence_mode
                 if turn.get("current_entity_id") not in order:
                     turn["current_index"] = -1
                     turn["current_entity_id"] = ""
@@ -136,6 +167,8 @@ class TurnTools:
                 turn["current_entity_id"] = ""
                 turn["current_index"] = -1
                 turn["output_limit_chars"] = output_limit_chars
+                if requested_sequence_mode:
+                    turn["sequence_mode"] = requested_sequence_mode
                 turn["scene_resolution_done"] = False
                 session.mode = GameMode.TACTICAL
                 session.battle["turn_entity_id"] = ""
@@ -225,6 +258,7 @@ class TurnTools:
                     "advance_turn",
                     "auto_act_current",
                     "skip_current",
+                    "set_sequence_mode",
                     "end_encounter",
                 ],
             }
@@ -240,6 +274,7 @@ class TurnTools:
                 "output_limit_chars": output_limit_chars,
                 "auto_policy": auto_policy,
                 "advance_after": advance_after,
+                "sequence_mode": sequence_mode,
             },
             result,
         )
@@ -262,6 +297,7 @@ class TurnTools:
         if int(turn.get("output_limit_chars") or 0) < DEFAULT_TURN_OUTPUT_LIMIT_CHARS:
             turn["output_limit_chars"] = DEFAULT_TURN_OUTPUT_LIMIT_CHARS
         turn.setdefault("auto_policy", "defend_or_follow")
+        turn["sequence_mode"] = _normalize_sequence_mode(turn.get("sequence_mode")) or TURN_SEQUENCE_FLEXIBLE
         turn.setdefault("timeout_seconds", TURN_TIMEOUT_SECONDS)
         turn.setdefault("actions_this_round", {})
         turn.setdefault("turn_log", [])
@@ -282,8 +318,28 @@ class TurnTools:
             return []
 
         turn["timeout_seconds"] = TURN_TIMEOUT_SECONDS
-        actor_pending_id = self._pending_entity_for_actor(session, turn, actor_id)
+        actor_pending_id = self._pending_entity_for_actor(
+            session,
+            turn,
+            actor_id,
+            respect_sequence_mode=False,
+        )
         if actor_pending_id and actor_pending_id != current_id and _looks_like_own_round_action(message):
+            if self._strict_sequence(turn):
+                self._ensure_turn_timer(turn, "strict_sequence_out_of_order_blocked")
+                return [
+                    {
+                        "type": "turn_strict_order_waiting",
+                        "current_entity_id": current_id,
+                        "current_label": self._entity_label(session, current_id),
+                        "owner_player_id": owner_id,
+                        "actor_player_id": actor_id,
+                        "actor_entity_id": actor_pending_id,
+                        "actor_entity_label": self._entity_label(session, actor_pending_id),
+                        "deadline_at": turn.get("deadline_at", ""),
+                        "reason": "strict_sequence_mode_requires_current_entity",
+                    }
+                ]
             return [
                 {
                     "type": "turn_out_of_order_actor_allowed",
@@ -549,6 +605,8 @@ class TurnTools:
         current_id = str(turn.get("current_entity_id", "") or session.battle.get("turn_entity_id", "")).strip()
         requester_id = str(self.actor.get("player_id", "") or "").strip()
         actions = dict(turn.get("actions_this_round") or {})
+        if self._strict_sequence(turn):
+            return current_id
         if current_id and current_id not in actions and self._owner_player_id(session, current_id) == requester_id:
             return current_id
         actor_entity = self._pending_entity_for_actor(session, turn, requester_id)
@@ -556,7 +614,14 @@ class TurnTools:
             return actor_entity
         return current_id
 
-    def _pending_entity_for_actor(self, session: GameSession, turn: Dict[str, Any], actor_id: str) -> str:
+    def _pending_entity_for_actor(
+        self,
+        session: GameSession,
+        turn: Dict[str, Any],
+        actor_id: str,
+        *,
+        respect_sequence_mode: bool = True,
+    ) -> str:
         actor_id = str(actor_id or "").strip()
         if not actor_id:
             return ""
@@ -565,6 +630,11 @@ class TurnTools:
             include_bound_characters=False,
         )
         actions = dict(turn.get("actions_this_round") or {})
+        current_id = str(turn.get("current_entity_id", "") or session.battle.get("turn_entity_id", "")).strip()
+        if respect_sequence_mode and self._strict_sequence(turn):
+            if current_id and current_id not in actions and self._owner_player_id(session, current_id) == actor_id:
+                return current_id
+            return ""
         for entity_id in order:
             if entity_id in actions:
                 continue
@@ -745,6 +815,16 @@ class TurnTools:
                 "requested_entity_id": entity_id,
                 "phase": str(turn.get("phase", "")),
             }
+        if self._strict_sequence(turn) and current_id and entity_id != current_id:
+            return {
+                "ok": False,
+                "error": "wrong_turn_actor",
+                "message": "严格回合制已启用：必须按当前指针行动，不能抢先结算后续角色的主要动作。",
+                "current_entity_id": current_id,
+                "requested_entity_id": entity_id,
+                "sequence_mode": TURN_SEQUENCE_STRICT,
+                "phase": str(turn.get("phase", "")),
+            }
         authority = resolve_control_authority(session, entity_id, self.actor)
         owner_id = str(authority.get("owner_player_id") or "")
         requester_id = str(self.actor.get("player_id", "") or "")
@@ -909,6 +989,8 @@ class TurnTools:
                 "current_owner_player_id": self._owner_player_id(session, current_id) if current_id else "",
                 "output_limit_chars": int(turn.get("output_limit_chars", DEFAULT_TURN_OUTPUT_LIMIT_CHARS) or DEFAULT_TURN_OUTPUT_LIMIT_CHARS),
                 "auto_policy": str(turn.get("auto_policy", "defend_or_follow")),
+                "sequence_mode": self._sequence_mode(turn),
+                "strict_sequence": self._strict_sequence(turn),
                 "timeout_seconds": int(turn.get("timeout_seconds") or TURN_TIMEOUT_SECONDS),
                 "waiting_since_at": str(turn.get("waiting_since_at", "")),
                 "deadline_at": str(turn.get("deadline_at", "")),
@@ -933,8 +1015,18 @@ class TurnTools:
                 f"不要结算玩家个人行动。回复不超过 {limit} 字，然后推进到角色回合。"
             )
         if phase == "character_turn":
-            return f"当前是角色回合：current_entity_id 是建议/超时锚点；本轮未行动且归当前发言人所有的角色可以乱序行动。记录主要动作时用该角色 ID 调用 record_action，advance_after=true。120 秒从上一位完成行动后开始计算；若没有未行动玩家响应且锚点超时，调用 auto_act_current。回复不超过 {limit} 字。"
+            if self._strict_sequence(turn):
+                return f"当前是严格角色回合：current_entity_id 是硬性行动指针；只能结算该实体的移动、攻击、检定和主要动作。其他玩家或后续角色必须等待，除非当前锚点 120 秒超时后调用 auto_act_current。记录主要动作时用 current_entity_id 调用 record_action，advance_after=true。回复不超过 {limit} 字。"
+            return f"当前是弹性角色回合：current_entity_id 是建议/超时锚点；本轮未行动且归当前发言人所有的角色可以乱序行动。记录主要动作时用该角色 ID 调用 record_action，advance_after=true。120 秒从上一位完成行动后开始计算；若没有未行动玩家响应且锚点超时，调用 auto_act_current。回复不超过 {limit} 字。"
         return f"按当前阶段裁定；回复不超过 {limit} 字。"
+
+    @staticmethod
+    def _sequence_mode(turn: Dict[str, Any]) -> str:
+        return _normalize_sequence_mode(turn.get("sequence_mode")) or TURN_SEQUENCE_FLEXIBLE
+
+    @classmethod
+    def _strict_sequence(cls, turn: Dict[str, Any]) -> bool:
+        return cls._sequence_mode(turn) == TURN_SEQUENCE_STRICT
 
     def _grid_entity(self, session: GameSession, entity_id: str) -> Dict[str, Any]:
         return dict(load_active_strict_grid_entities(session.maps, session.battle).get(entity_id, {}))
@@ -991,6 +1083,49 @@ def _int_or_default(value: Any, default: int) -> int:
         return int(value)
     except (TypeError, ValueError):
         return default
+
+
+def _normalize_sequence_mode(value: Any) -> str:
+    text = str(value or "").strip().lower()
+    if not text:
+        return ""
+    if text in {
+        TURN_SEQUENCE_STRICT,
+        "fixed",
+        "initiative",
+        "initiative_order",
+        "standard",
+        "dnd",
+        "d&d",
+        "coc",
+        "call_of_cthulhu",
+        "严格",
+        "严格回合",
+        "严格回合制",
+        "标准",
+        "标准回合",
+        "标准回合制",
+        "固定顺序",
+        "先攻顺序",
+    }:
+        return TURN_SEQUENCE_STRICT
+    if text in {
+        TURN_SEQUENCE_FLEXIBLE,
+        "loose",
+        "soft",
+        "anchor",
+        "cinematic",
+        "default",
+        "弹性",
+        "弹性回合",
+        "弹性回合制",
+        "默认",
+        "默认回合",
+        "乱序",
+        "锚点",
+    }:
+        return TURN_SEQUENCE_FLEXIBLE
+    return ""
 
 
 def _looks_like_auto_request(text: str) -> bool:

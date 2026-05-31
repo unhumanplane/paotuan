@@ -30,6 +30,14 @@ def _hosted_session(risk_ceiling: str = "low") -> GameSession:
     return session
 
 
+def _hosted_session_with_standing_order(risk_ceiling: str = "low") -> GameSession:
+    session = _hosted_session(risk_ceiling)
+    session.control_authority["records"]["pc_owner"]["standing_order"] = (
+        "跟随 pc_next，攻击 pc_next 正在攻击的目标；不消耗稀缺资源。"
+    )
+    return session
+
+
 def test_hosted_action_policy_requires_explicit_system_host_record():
     session = GameSession.new("group")
     session.characters["pc_owner"] = Character(id="pc_owner", name="Owner PC", player_id="owner")
@@ -61,6 +69,48 @@ def test_hosted_action_policy_allows_low_risk_system_host_action():
     assert result["risk_ceiling"] == "low"
     assert result["audit_ref"] == "host-auth-1"
     assert result["reason"] == "hosted_action_within_risk_ceiling"
+
+
+def test_hosted_action_policy_includes_owner_confirmed_standing_order():
+    session = _hosted_session_with_standing_order("medium")
+
+    result = evaluate_hosted_action_policy(
+        session,
+        "pc_owner",
+        actor={"player_id": "__system__"},
+        summary="按常设策略行动",
+        timeout=True,
+    )
+
+    assert result["ok"] is True
+    assert result["risk"] == "medium"
+    assert result["standing_order"] == "跟随 pc_next，攻击 pc_next 正在攻击的目标；不消耗稀缺资源。"
+
+
+def test_hosted_action_policy_downgrades_standing_order_above_risk_ceiling():
+    session = _hosted_session_with_standing_order("low")
+
+    result = evaluate_hosted_action_policy(
+        session,
+        "pc_owner",
+        actor={"player_id": "__system__"},
+        summary="按常设策略行动",
+        timeout=True,
+    )
+
+    assert result["ok"] is False
+    assert result["risk"] == "medium"
+    assert result["risk_ceiling"] == "low"
+    assert result["fallback_policy"] == "defend_or_follow"
+
+
+def test_conservative_hosted_action_summary_uses_standing_order():
+    from astrbot_plugin_auto_trpg_dm.core.hosted_action_policy import conservative_hosted_action_summary
+
+    summary = conservative_hosted_action_summary(_hosted_session_with_standing_order("low"), "pc_owner")
+
+    assert "跟随 pc_next" in summary
+    assert "不消耗稀缺资源" in summary
 
 
 def test_hosted_action_policy_downgrades_high_risk_action_above_ceiling():

@@ -439,7 +439,7 @@ class ToolRegistry:
             ),
             "turn_control": make_tool(
                 name="turn_control",
-                description="控制战斗轮动状态：场面结算、角色回合、行动顺序、本轮乱序行动记录、推进下一建议行动者、120 秒超时、无人响应自动保守行动。",
+                description="控制战斗轮动状态：场面结算、角色回合、行动顺序、strict/flexible 回合顺序模式、推进下一行动者、120 秒超时、无人响应自动保守行动。玩家要求像标准 DND/CoC 一样严格先攻/硬回合制时，调用 set_sequence_mode 或 start_round 并传 sequence_mode='strict'；默认 flexible 允许当前发言人的未行动角色乱序行动。",
                 model=TurnControlArgs,
                 handler=turn_tools.turn_control,
             ),
@@ -458,8 +458,8 @@ class ToolRegistry:
                 name="control_authority",
                 description=(
                     "临时控制权工具：仅在角色持有人明确确认后，用于 delegate_to_player、"
-                    "relinquish_to_system、reclaim 或 status。不能从沉默、离线、模糊离开、"
-                    "其他玩家转述或普通叙事中推断授权。"
+                    "relinquish_to_system、reclaim 或 status。若持有人明确说“托管/跟随某人打/按某策略行动”，"
+                    "可在 standing_order 写入简短常设策略；不能从沉默、离线、模糊离开、其他玩家转述或普通叙事中推断授权。"
                 ),
                 model=ControlAuthorityArgs,
                 handler=control_tools.control_authority,
@@ -984,7 +984,15 @@ BATTLE_JOIN_TERMS = (
     "排入战斗",
 )
 TURN_FLOW_TERMS = (
+    "严格回合",
+    "严格回合制",
+    "标准回合",
+    "标准回合制",
+    "硬顺序",
+    "固定顺序",
+    "先攻顺序",
     "轮动",
+    "回合",
     "行动顺序",
     "战斗顺序",
     "开始回合",

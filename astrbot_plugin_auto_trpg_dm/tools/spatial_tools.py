@@ -23,6 +23,10 @@ from ..storage.json_repository import JsonGameRepository
 from .memory_tools import background_required_result
 
 
+TURN_SEQUENCE_FLEXIBLE = "flexible"
+TURN_SEQUENCE_STRICT = "strict"
+
+
 class MoveEntityArgs(BaseModel):
     entity_id: str = Field(..., description="要移动的战棋实体 ID")
     target_x: int = Field(..., description="目标 X 坐标，从 0 开始")
@@ -105,6 +109,7 @@ class SpatialTools:
                 "current_entity_id": "",
                 "output_limit_chars": 720,
                 "auto_policy": "defend_or_follow",
+                "sequence_mode": TURN_SEQUENCE_FLEXIBLE,
                 "timeout_seconds": 120,
                 "actions_this_round": {},
                 "turn_log": [],
@@ -264,6 +269,16 @@ class SpatialTools:
                     "requested_entity_id": entity_id,
                     "phase": phase,
                 }
+            if _strict_sequence(turn) and current and entity_id != current:
+                return {
+                    "ok": False,
+                    "error_code": "wrong_turn_actor",
+                    "message": "严格回合制已启用：必须按当前指针行动，不能抢先移动、攻击或选择后续角色的目标。",
+                    "current_entity_id": current,
+                    "requested_entity_id": entity_id,
+                    "sequence_mode": TURN_SEQUENCE_STRICT,
+                    "phase": phase,
+                }
             authority = resolve_control_authority(session, entity_id, self.actor)
             owner_id = str(authority.get("owner_player_id") or "")
             requester_id = str(self.actor.get("player_id", "") or "")
@@ -337,6 +352,7 @@ def _safe_battle_status(battle: Dict[str, Any]) -> Dict[str, Any]:
             "phase": str(turn.get("phase", "") or ""),
             "current_entity_id": str(turn.get("current_entity_id", "") or ""),
             "turn_order": [str(item) for item in list(turn.get("turn_order") or [])[:24]],
+            "sequence_mode": _turn_sequence_mode(turn),
         }
     return status
 
@@ -395,3 +411,11 @@ def _safe_int(value: Any) -> int:
         return int(value)
     except (TypeError, ValueError):
         return 0
+
+
+def _turn_sequence_mode(turn: Dict[str, Any]) -> str:
+    return TURN_SEQUENCE_STRICT if str(turn.get("sequence_mode") or "").strip().lower() == TURN_SEQUENCE_STRICT else TURN_SEQUENCE_FLEXIBLE
+
+
+def _strict_sequence(turn: Dict[str, Any]) -> bool:
+    return _turn_sequence_mode(turn) == TURN_SEQUENCE_STRICT

@@ -397,6 +397,22 @@ def test_tool_registry_exposes_end_combat_for_battle_resolution():
     assert any(spec["name"] == "end_combat" for spec in specs)
 
 
+def test_turn_control_schema_exposes_sequence_mode_for_strict_turns():
+    registry = _registry_with_ready_session()
+    _toolset, names, _executor, specs = registry.for_mode(
+        GameMode.TACTICAL,
+        "group",
+        message="以后像标准 DND/COC 一样严格回合制，按先攻顺序来",
+    )
+
+    turn_spec = next(spec for spec in specs if spec["name"] == "turn_control")
+
+    assert "turn_control" in names
+    assert "sequence_mode" in turn_spec["parameters"]["properties"]
+    assert "strict/flexible" in turn_spec["description"]
+    assert "DND/CoC" in turn_spec["description"]
+
+
 def test_tool_registry_exposes_control_authority_for_transfer_reclaim_and_hosting_intents():
     cases = [
         (GameMode.CHARACTER_CREATION, "我把角色临时交给小李控制"),
@@ -417,6 +433,21 @@ def test_tool_registry_exposes_control_authority_for_transfer_reclaim_and_hostin
         assert "control_authority" in names
         assert "明确确认" in control_spec["description"]
         assert "沉默" in control_spec["description"]
+
+
+def test_control_authority_schema_exposes_standing_order_for_explicit_hosting_strategy():
+    registry = _registry_with_ready_session()
+    _toolset, names, _executor, specs = registry.for_mode(
+        GameMode.TACTICAL,
+        "group",
+        message="我的角色先托管，跟着凯德打，攻击他正在打的目标",
+    )
+
+    control_spec = next(spec for spec in specs if spec["name"] == "control_authority")
+
+    assert "control_authority" in names
+    assert "standing_order" in control_spec["parameters"]["properties"]
+    assert "跟随某人打" in control_spec["description"]
 
 
 def test_tool_registry_keeps_control_authority_available_before_background_when_intent_is_explicit():

@@ -315,6 +315,8 @@ class GameSession:
                 "current_label": self._battle_entity_label(current_entity_id, entities),
                 "current_owner_player_id": self._battle_entity_owner(current_entity_id, entities),
                 "output_limit_chars": turn.get("output_limit_chars", 720),
+                "sequence_mode": _turn_sequence_mode(turn),
+                "strict_sequence": _turn_sequence_mode(turn) == "strict",
                 "timeout_seconds": turn.get("timeout_seconds", 120),
                 "waiting_since_at": turn.get("waiting_since_at", ""),
                 "deadline_at": turn.get("deadline_at", ""),
@@ -356,6 +358,10 @@ def _safe_int(value: Any, default: int = 0) -> int:
         return int(value)
     except (TypeError, ValueError):
         return default
+
+
+def _turn_sequence_mode(turn: dict[str, Any]) -> str:
+    return "strict" if str(turn.get("sequence_mode") or "").strip().lower() == "strict" else "flexible"
 
 
 def _dict_or_empty(value: Any) -> dict[str, Any]:

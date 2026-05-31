@@ -86,6 +86,7 @@ def evaluate_hosted_action_policy(
     controller_type = str(record.get("controller_type") or "")
     status = str(record.get("status") or "")
     audit_ref = str(record.get("audit_ref") or "")
+    standing_order = str(record.get("standing_order") or "")
 
     if status != CONTROL_STATUS_HOSTED_BY_SYSTEM or controller_type != CONTROLLER_TYPE_SYSTEM_HOST:
         return {
@@ -113,7 +114,7 @@ def evaluate_hosted_action_policy(
             "audit_ref": audit_ref,
         }
 
-    risk = classify_hosted_action_risk(f"{summary}\n{reason}")
+    risk = classify_hosted_action_risk(f"{standing_order}\n{summary}\n{reason}")
     ceiling = _safe_risk(record.get("risk_ceiling"))
     allowed = HOSTED_ACTION_RISK_ORDER[risk] <= HOSTED_ACTION_RISK_ORDER[ceiling]
     result = {
@@ -128,6 +129,7 @@ def evaluate_hosted_action_policy(
         "risk_ceiling": ceiling,
         "duration_type": str(record.get("duration_type") or "until_revoked"),
         "expires_at": str(record.get("expires_at") or ""),
+        "standing_order": standing_order,
         "audit_ref": audit_ref,
         "hosted_policy": "system_host_v1",
         "timeout": bool(timeout),
@@ -153,9 +155,13 @@ def classify_hosted_action_risk(text: str) -> str:
 
 def conservative_hosted_action_summary(session: Any, character_id: str) -> str:
     label = str(character_id or "").strip()
+    record = control_record_for_character(session, label)
+    standing_order = str(record.get("standing_order") or "").strip()
     character = getattr(session, "characters", {}).get(label)
     if character and getattr(character, "name", ""):
         label = str(character.name)
+    if standing_order:
+        return f"{label} 托管中按已授权策略行动：{standing_order}；保持保守边界，不消耗稀缺资源。"
     return f"{label} 托管中只采取保守行动：防御、保持掩护、跟随队伍，不消耗稀缺资源。"
 
 

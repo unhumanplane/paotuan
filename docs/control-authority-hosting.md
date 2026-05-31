@@ -48,7 +48,11 @@ temporary delegation, usually `until_revoked`.
 The model may understand a player's intent, but it must ask for explicit
 confirmation before calling a mutating control tool. A safe confirmation should
 name the character, target controller, duration, risk ceiling, and whether the
-player is authorizing system hosting or player delegation.
+player is authorizing system hosting or player delegation. When the owner gives
+an explicit hosting strategy, such as "follow Kade and attack whatever Kade is
+fighting", store a short `standing_order` summary with the control record.
+Strict turn order still applies: the standing order is executed only when that
+character becomes the current turn actor.
 
 If no duration is provided, the default is `until_revoked`.
 
@@ -95,7 +99,7 @@ mutation.
 Control changes are stored in `GameSession.control_authority`:
 
 - `records[character_id]` stores the current owner/controller/status/risk and
-  duration fields.
+  duration fields, plus an optional bounded `standing_order`.
 - `events` stores bounded forward-only audit events.
 
 Ordinary DM/player prompt snapshots may see safe projected control status, such

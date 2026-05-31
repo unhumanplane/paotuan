@@ -47,6 +47,7 @@ _CONTROL_EVENT_SAFE_FIELDS = (
     "risk_ceiling",
     "duration_type",
     "expires_at",
+    "standing_order",
     "effective_at",
     "audit_ref",
 )
@@ -156,6 +157,7 @@ def control_record_for_character(
         "scope": "character",
         "duration_type": "until_revoked",
         "expires_at": "",
+        "standing_order": "",
         "effective_at": "",
         "revoked_at": "",
         "audit_ref": "",
@@ -265,7 +267,17 @@ def _normalize_record(record: dict[str, Any], character_id: str, owner_player_id
     normalized["status"] = _safe_status(status)
     normalized["risk_ceiling"] = _safe_risk(normalized.get("risk_ceiling"))
     normalized["duration_type"] = str(normalized.get("duration_type") or "until_revoked")
-    for key in ("authorized_by", "consent_reference", "scope", "expires_at", "effective_at", "revoked_at", "audit_ref"):
+    for key in (
+        "authorized_by",
+        "consent_reference",
+        "scope",
+        "duration_type",
+        "expires_at",
+        "standing_order",
+        "effective_at",
+        "revoked_at",
+        "audit_ref",
+    ):
         normalized[key] = str(normalized.get(key) or "")
     return normalized
 
@@ -352,6 +364,7 @@ def _project_record(record: dict[str, Any], view: str) -> dict[str, Any]:
         "risk_ceiling": str(record.get("risk_ceiling") or CONTROL_RISK_LOW),
         "duration_type": str(record.get("duration_type") or "until_revoked"),
         "expires_at": str(record.get("expires_at") or ""),
+        "standing_order": str(record.get("standing_order") or ""),
     }
     if view in {"ra_authority_view", "diagnostic_view"}:
         projected["authorized_by"] = str(record.get("authorized_by") or "")

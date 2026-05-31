@@ -68,6 +68,7 @@ def apply_control_change(
     duration_type: str = CONTROL_DURATION_UNTIL_REVOKED,
     expires_at: str = "",
     consent_reference: str = "",
+    standing_order: str = "",
     audit_ref: str = "",
     effective_at: str = "",
 ) -> dict[str, Any]:
@@ -165,6 +166,7 @@ def apply_control_change(
             effective_at=now,
             revoked_at="",
             consent_reference=consent_reference,
+            standing_order=standing_order,
         )
     elif safe_action == CONTROL_ACTION_RELINQUISH_TO_SYSTEM:
         new_record = _changed_record(
@@ -180,6 +182,7 @@ def apply_control_change(
             effective_at=now,
             revoked_at="",
             consent_reference=consent_reference,
+            standing_order=standing_order,
         )
     else:
         new_record = _changed_record(
@@ -195,6 +198,7 @@ def apply_control_change(
             effective_at=now,
             revoked_at=now,
             consent_reference=consent_reference,
+            standing_order="",
         )
 
     store, records, events = _ensure_control_store(session)
@@ -258,6 +262,7 @@ def _changed_record(
     effective_at: str,
     revoked_at: str,
     consent_reference: str,
+    standing_order: str,
 ) -> dict[str, Any]:
     changed = deepcopy(record)
     changed.update(
@@ -273,6 +278,7 @@ def _changed_record(
             "scope": _clean(record.get("scope")) or "character",
             "duration_type": duration_type,
             "expires_at": expires_at,
+            "standing_order": _bounded_text(standing_order),
             "effective_at": effective_at,
             "revoked_at": revoked_at,
         }
@@ -332,6 +338,7 @@ def _event_record(
         "risk_ceiling": _clean(record.get("risk_ceiling")),
         "duration_type": _clean(record.get("duration_type")),
         "expires_at": _clean(record.get("expires_at")),
+        "standing_order": _bounded_text(record.get("standing_order")),
         "effective_at": _clean(effective_at),
         "audit_ref": _bounded_text(audit_ref),
     }
@@ -378,6 +385,7 @@ def _safe_record_fields(record: dict[str, Any]) -> dict[str, Any]:
         "risk_ceiling": _clean(record.get("risk_ceiling")) or CONTROL_RISK_LOW,
         "duration_type": _clean(record.get("duration_type")) or CONTROL_DURATION_UNTIL_REVOKED,
         "expires_at": _clean(record.get("expires_at")),
+        "standing_order": _clean(record.get("standing_order")),
         "audit_ref": _clean(record.get("audit_ref")),
     }
 

@@ -49,6 +49,10 @@ class ControlAuthorityArgs(BaseModel):
         default="",
         description="可选确认引用 ID 或摘要标签；不要传入原始私聊、长文本或敏感同意内容。",
     )
+    standing_order: str = Field(
+        default="",
+        description="可选常设托管/代控策略摘要，例如“跟随某人、攻击同一目标、防御且不消耗稀缺资源”；只在持有人明确说明时填写。",
+    )
     audit_ref: str = Field(default="", description="可选审计引用 ID；为空时由代码生成。")
 
 
@@ -72,6 +76,7 @@ class ControlTools:
         duration_type: str = CONTROL_DURATION_UNTIL_REVOKED,
         expires_at: str = "",
         consent_reference: str = "",
+        standing_order: str = "",
         audit_ref: str = "",
     ) -> dict[str, Any]:
         normalized_action = _normalize_action(action)
@@ -86,6 +91,7 @@ class ControlTools:
             duration_type=duration_type,
             expires_at=expires_at,
             consent_reference=consent_reference,
+            standing_order=standing_order,
             audit_ref=audit_ref,
         )
         if result.get("ok") and normalized_action in CONTROL_MUTATING_ACTIONS:
@@ -104,6 +110,7 @@ class ControlTools:
                     "duration_type": duration_type,
                     "expires_at": expires_at,
                     "consent_reference_provided": bool(str(consent_reference or "").strip()),
+                    "standing_order_provided": bool(str(standing_order or "").strip()),
                     "audit_ref": audit_ref,
                 },
                 "result": result,

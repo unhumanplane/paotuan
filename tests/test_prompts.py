@@ -125,6 +125,37 @@ def test_system_prompt_mentions_explicit_system_hosting_risk_bounds():
     assert "owner reclaim 只影响之后的行动" in prompt
 
 
+def test_system_prompt_mentions_strict_turn_sequence_mode():
+    session = GameSession.new("group")
+
+    prompt = build_system_prompt(
+        session,
+        GameMode.TACTICAL,
+        ["turn_control", "move_entity", "check_attack_vector"],
+        actor={"player_id": "player-1"},
+    )
+
+    assert 'sequence_mode="strict"' in prompt
+    assert "标准 DND/CoC" in prompt
+    assert "硬性行动指针" in prompt
+    assert "只能针对 current_entity_id" in prompt
+
+
+def test_system_prompt_allows_owner_confirmed_hosting_standing_order():
+    session = GameSession.new("group")
+
+    prompt = build_system_prompt(
+        session,
+        GameMode.TACTICAL,
+        ["control_authority", "turn_control"],
+        actor={"player_id": "player-1"},
+    )
+
+    assert "跟着某人打" in prompt
+    assert "standing_order" in prompt
+    assert "严格回合制仍只在该角色轮到 current_entity_id 时执行" in prompt
+
+
 def test_prompt_projection_includes_compact_event_timeline_and_entity_facts():
     session = GameSession.new("group")
     session.scene["event_timeline"] = [

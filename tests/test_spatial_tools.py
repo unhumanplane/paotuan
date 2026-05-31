@@ -324,3 +324,40 @@ def test_delegated_controller_can_move_turn_actor_without_becoming_owner():
     assert denied_owner["owner_player_id"] == "owner"
     assert denied_owner["active_controller_id"] == "delegate"
     assert allowed_delegate["ok"] is True
+
+
+def test_strict_sequence_blocks_spatial_action_for_later_owned_actor():
+    repo = _repo("spatial_strict_sequence")
+    session = _ready_session()
+    session.characters["pc_owner"] = Character(id="pc_owner", name="Owner PC", player_id="owner")
+    session.characters["pc_next"] = Character(id="pc_next", name="Next PC", player_id="next")
+    session.player_character_map["owner"] = "pc_owner"
+    session.player_character_map["next"] = "pc_next"
+    repo.save_session(session)
+    tools = SpatialTools(repo, "group", actor={"player_id": "owner"})
+    asyncio.run(tools.create_grid(width=5, height=5))
+    asyncio.run(tools.place_entity("pc_owner", "Owner PC", 1, 1, faction="party"))
+    asyncio.run(tools.place_entity("pc_next", "Next PC", 2, 1, faction="party"))
+    session = repo.load_session("group")
+    session.battle["turn"] = {
+        "active": True,
+        "round": 1,
+        "phase": "character_turn",
+        "turn_order": ["pc_owner", "pc_next"],
+        "current_index": 0,
+        "current_entity_id": "pc_owner",
+        "sequence_mode": "strict",
+        "actions_this_round": {},
+    }
+    session.battle["turn_entity_id"] = "pc_owner"
+    repo.save_session(session)
+
+    result = asyncio.run(
+        SpatialTools(repo, "group", actor={"player_id": "next"}).move_entity("pc_next", 3, 1)
+    )
+
+    assert result["ok"] is False
+    assert result["error_code"] == "wrong_turn_actor"
+    assert result["sequence_mode"] == "strict"
+    saved = repo.load_session("group")
+    assert saved.battle["grid"]["entities"]["pc_next"]["x"] == 2

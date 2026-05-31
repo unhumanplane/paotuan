@@ -154,6 +154,30 @@ def test_control_authority_tool_relinquish_feeds_hosted_action_policy():
     assert policy["audit_ref"] == "host-auth-tool"
 
 
+def test_control_authority_tool_stores_owner_confirmed_standing_order():
+    repo = _repo_with_player_turn("control_tool_host_standing_order")
+
+    result = asyncio.run(
+        ControlTools(repo, "group", actor={"player_id": "owner"}).control_authority(
+            action=CONTROL_ACTION_RELINQUISH_TO_SYSTEM,
+            character_id="pc_owner",
+            risk_ceiling="low",
+            standing_order="跟随 pc_next，攻击 pc_next 正在攻击的目标；不消耗稀缺资源。",
+            consent_reference="raw owner confirmation should stay out of audit",
+            audit_ref="host-follow-auth",
+        )
+    )
+
+    saved = repo.load_session("group")
+    rendered_audit = json.dumps(repo.last_audit_records("group", 8), ensure_ascii=False)
+    record = saved.control_authority["records"]["pc_owner"]
+
+    assert result["ok"] is True
+    assert result["standing_order"] == "跟随 pc_next，攻击 pc_next 正在攻击的目标；不消耗稀缺资源。"
+    assert record["standing_order"] == result["standing_order"]
+    assert "raw owner confirmation should stay out of audit" not in rendered_audit
+
+
 def test_control_authority_status_is_audited_but_does_not_save_session():
     session = GameSession.new("group")
     session.characters["pc_owner"] = Character(id="pc_owner", name="Owner PC", player_id="owner")

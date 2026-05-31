@@ -5450,6 +5450,10 @@ def _turn_pending_entity_for_actor(session: Any, turn: dict, actor_id: str) -> s
     order = _clean_turn_order(list(turn.get("turn_order") or []))
     actions = dict(turn.get("actions_this_round") or {})
     current_id = str(turn.get("current_entity_id") or (session.battle or {}).get("turn_entity_id", "") or "").strip()
+    if _strict_turn_sequence(turn):
+        if current_id and current_id not in actions and _turn_owner_player_id(session, current_id) == actor_id:
+            return current_id
+        return ""
     if current_id and current_id not in actions and _turn_owner_player_id(session, current_id) == actor_id:
         return current_id
     for entity_id in order:
@@ -5469,6 +5473,10 @@ def _clean_turn_order(order: list[str]) -> list[str]:
             cleaned.append(value)
             seen.add(value)
     return cleaned
+
+
+def _strict_turn_sequence(turn: dict) -> bool:
+    return str((turn or {}).get("sequence_mode") or "").strip().lower() == "strict"
 
 
 def _compact_text(value: object, limit: int) -> str:

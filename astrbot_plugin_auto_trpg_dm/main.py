@@ -61,7 +61,7 @@ from .tools.registry import ToolRegistry
 from .tools.turn_tools import TurnTools
 
 
-PLUGIN_VERSION = "0.1.133"
+PLUGIN_VERSION = "0.1.134"
 
 DEFAULT_REASSURANCE_PHRASES = (
     "正在翻找合适的骰子。",
@@ -1514,10 +1514,15 @@ class AutoTrpgDmPlugin(Star):
         current_label = _entity_label(session, current_id, entities)
         owner_id = _entity_owner(session, current_id, entities)
         actor_id = str(actor.get("player_id") or "").strip()
+        strict_sequence = _strict_turn_sequence(turn)
         actor_pending_id = _pending_entity_for_actor(session, turn, actor_id, entities)
 
         if _looks_like_local_turn_end(text):
-            acting_id = actor_pending_id or (current_id if (not owner_id or actor_id == owner_id) else "")
+            acting_id = (
+                current_id
+                if strict_sequence and (not owner_id or actor_id == owner_id)
+                else actor_pending_id or (current_id if (not owner_id or actor_id == owner_id) else "")
+            )
             if not acting_id:
                 self.repository.append_audit(
                     session_id,
@@ -1527,6 +1532,7 @@ class AutoTrpgDmPlugin(Star):
                         "actor": actor,
                         "current_entity_id": current_id,
                         "owner_player_id": owner_id,
+                        "sequence_mode": "strict" if strict_sequence else "flexible",
                         "text": text[:160],
                     },
                 )
@@ -1693,9 +1699,12 @@ class AutoTrpgDmPlugin(Star):
             wait_text = f"等待剩余约 {remaining} 秒。"
         else:
             wait_text = "等待计时会在下一次相关 /dm 时补齐为 120 秒。"
+        sequence_mode = "strict" if _strict_turn_sequence(turn) else "flexible"
+        sequence_label = "严格先攻/硬顺序" if sequence_mode == "strict" else "弹性锚点"
         base = (
             f"第 {int(turn.get('round') or 0)} 轮，阶段：{turn.get('phase', 'idle')}。\n"
-            f"建议行动/超时锚点：{label}（{current_id or '无'}），持有人：{owner_name}。\n"
+            f"回合顺序：{sequence_label}（{sequence_mode}）。\n"
+            f"{'当前行动者' if sequence_mode == 'strict' else '建议行动/超时锚点'}：{label}（{current_id or '无'}），持有人：{owner_name}。\n"
             f"{wait_text}"
         )
         if not include_order:
@@ -3916,6 +3925,10 @@ def _pending_entity_for_actor(session, turn: dict, actor_id: str, entities: dict
     order = _clean_turn_order(list(turn.get("turn_order") or []))
     actions = dict(turn.get("actions_this_round") or {})
     current_id = str(turn.get("current_entity_id") or (session.battle or {}).get("turn_entity_id", "") or "").strip()
+    if _strict_turn_sequence(turn):
+        if current_id and current_id not in actions and _entity_owner(session, current_id, entities) == actor_id:
+            return current_id
+        return ""
     if current_id and current_id not in actions and _entity_owner(session, current_id, entities) == actor_id:
         return current_id
     for entity_id in order:
@@ -3935,6 +3948,10 @@ def _clean_turn_order(order: list[str]) -> list[str]:
             cleaned.append(value)
             seen.add(value)
     return cleaned
+
+
+def _strict_turn_sequence(turn: dict) -> bool:
+    return str((turn or {}).get("sequence_mode") or "").strip().lower() == "strict"
 
 
 def _game_started_text(session) -> str:

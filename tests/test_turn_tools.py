@@ -123,6 +123,84 @@ def test_non_owner_push_after_timeout_auto_acts_conservatively():
     assert saved.battle["turn"]["deadline_at"]
 
 
+def test_set_sequence_mode_enables_strict_turn_order():
+    repo = _repo_with_player_turn()
+    result = asyncio.run(
+        TurnTools(repo, "group").turn_control(
+            action="set_sequence_mode",
+            sequence_mode="strict",
+            summary="Use standard initiative order.",
+        )
+    )
+
+    assert result["ok"] is True
+    assert result["turn"]["sequence_mode"] == "strict"
+    assert result["turn"]["strict_sequence"] is True
+    assert "硬性行动指针" in result["llm_instruction"]
+    assert repo.load_session("group").battle["turn"]["sequence_mode"] == "strict"
+
+
+def test_strict_sequence_blocks_actor_from_resolving_later_owned_turn():
+    repo = _repo_with_player_turn()
+    session = repo.load_session("group")
+    session.battle["turn"]["sequence_mode"] = "strict"
+    repo.save_session(session)
+
+    result = asyncio.run(
+        TurnTools(repo, "group", actor={"player_id": "next"}).turn_control(
+            action="record_action",
+            current_entity_id="pc_next",
+            summary="I act before the current actor.",
+            advance_after=False,
+        )
+    )
+
+    assert result["ok"] is False
+    assert result["error"] == "wrong_turn_actor"
+    assert result["sequence_mode"] == "strict"
+    saved = repo.load_session("group")
+    assert saved.battle["turn"]["actions_this_round"] == {}
+    assert saved.battle["turn"]["current_entity_id"] == "pc_owner"
+
+
+def test_flexible_sequence_still_allows_actor_owned_later_turn():
+    repo = _repo_with_player_turn()
+
+    result = asyncio.run(
+        TurnTools(repo, "group", actor={"player_id": "next"}).turn_control(
+            action="record_action",
+            current_entity_id="pc_next",
+            summary="I take my turn before the suggested anchor.",
+            advance_after=False,
+        )
+    )
+
+    assert result["ok"] is True
+    saved = repo.load_session("group")
+    assert saved.battle["turn"]["sequence_mode"] == "flexible"
+    assert "pc_next" in saved.battle["turn"]["actions_this_round"]
+    assert saved.battle["turn"]["current_entity_id"] == "pc_owner"
+
+
+def test_strict_sequence_timeout_policy_does_not_allow_out_of_order_actor_action():
+    repo = _repo_with_player_turn()
+    session = repo.load_session("group")
+    session.battle["turn"]["sequence_mode"] = "strict"
+    repo.save_session(session)
+
+    events = TurnTools(repo, "group", actor={"player_id": "next"}).apply_turn_timeout_policy(
+        repo.load_session("group"),
+        "我攻击最近的敌人",
+    )
+
+    assert events[0]["type"] == "turn_strict_order_waiting"
+    assert events[0]["actor_entity_id"] == "pc_next"
+    assert events[0]["current_entity_id"] == "pc_owner"
+    saved = repo.load_session("group")
+    assert saved.battle["turn"]["current_entity_id"] == "pc_owner"
+    assert saved.battle["turn"]["actions_this_round"] == {}
+
+
 def test_system_host_timeout_action_records_hosted_policy_metadata():
     repo = _repo_with_player_turn()
     session = repo.load_session("group")
