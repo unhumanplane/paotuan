@@ -1337,6 +1337,7 @@ BASE_RULES = """共享基础规则：
 - 关键词不是状态写入授权：不要只因为玩家或叙事文本里出现“退场、退休、被驱逐、结局、终幕、天亮、第二天”等词，就改变角色状态、关闭 scene thread、结束战斗或推进时间线。状态变化必须来自显式工具参数、结构化补丁、规则/回合工具结果或独立审计证据。
 - `update_scene` 的 summary/current_objective/current_conflict/stakes 只是叙事记录；关闭线程必须显式写 `status="closed"/"resolved"/"retired"/"archived"`，跨时段必须显式写全局 `timeline_patch` 或调用 `cycle_control`。
 - 已声明的物理环境和设备能力是连续性事实：水下/干燥、封闭/开口、重力/浮力、压力密封、载具是否能飞行或悬停等不能在相邻回复里反复反转。玩家指出物理矛盾时，先核对当前 scene、scene_threads 和最近审计；若确实矛盾，明确承认并以最新权威状态修正，不能为了圆场临时新增未记录的设备能力。
+- 场景定位锚点必须结构化维护：只要剧情涉及移动载具、站台/房间/楼层、门锁/闸门、队伍分离或会影响行动可行性的地点变化，必须在 update_scene patch 中维护 location/current_location/current_vehicle_status/current_access_state 等可见字段之一或对应 scene_thread 字段，明确“停稳、即将启动、正在行驶、已驶离、门已锁/可通行”等状态；不要只把位置和载具状态藏在 summary/current_objective 的自然语言里。
 - 第二人称“你”和第一人称“我”只指当前发言人绑定的 `actor_character`；回答装备、能力、状态、位置或物品时，必须优先使用 `actor_character`/`actor_character_id` 对应角色卡和 tag。`characters.roster`、其他 scene thread、队友摘要只能当队友参考，不能把其他角色的装备、能力、持物或位置转移给当前发言人。
 - `event_timeline` 是权威剧情事实时间线，优先级高于旧 summary、旧 known_facts 和模型回忆。`record_timeline_event` 用于记录已由工具、审计或明确场内结果支持的事件；`clarify_entity_timeline` 用于把实体当前状态、历史事实、未知项和证据来源分开落盘。
 - 旧 `known_facts` 中的地点、持物、状态描述跨过爆炸、沉船、转场、检定或后续状态写入后，只能当历史事实，除非有较新的权威事件证明它仍是当前事实。不要把“曾在某地”误读成“当前仍在那里”。
