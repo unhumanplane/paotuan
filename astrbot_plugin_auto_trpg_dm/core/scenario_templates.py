@@ -495,6 +495,19 @@ def build_campaign_preset_patch(template: CampaignTemplate, request_text: str = 
         }
     )
     patch["campaign_generation"] = generation
+    contract = dict(patch.get("campaign_contract") or {})
+    contract.update(
+        {
+            "genre": template.genre,
+            "premise": _short(seed, 800),
+            "tone": _short(_template_quickstart_preferences(template), 800),
+            "template_key": template.key,
+            "template_title": template.title,
+            "source": "preset_library",
+            "reset_previous_contract": True,
+        }
+    )
+    patch["campaign_contract"] = contract
     patch["campaign_preset"] = {
         "key": template.key,
         "title": template.title,

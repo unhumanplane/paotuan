@@ -280,6 +280,9 @@ def _project_snapshot_for_profile(
         if actor_character:
             projected["actor_character"] = actor_character
     projected["scene"] = _project_scene(snapshot.get("scene", {}), profile, actor_character_id=actor_character_id, message=message)
+    party_context = _project_party_context(session, actor_character_id=actor_character_id)
+    if party_context and isinstance(projected.get("scene"), dict):
+        projected["scene"]["party_context"] = party_context
     projected["world_tags"] = _project_world_tags(snapshot.get("world_tags", {}), profile)
     projected["characters"] = _project_characters(
         snapshot.get("characters", []),
@@ -294,6 +297,29 @@ def _project_snapshot_for_profile(
     if map_view.get("records"):
         projected["maps"] = map_view
     return projected
+
+
+def _project_party_context(session: GameSession, *, actor_character_id: str = "") -> dict[str, Any]:
+    bound_character_ids = {str(character_id) for character_id in (session.player_character_map or {}).values() if str(character_id)}
+    if not bound_character_ids:
+        return {}
+    characters_present: list[dict[str, Any]] = []
+    for character_id in sorted(bound_character_ids):
+        character = session.characters.get(character_id)
+        item: dict[str, Any] = {"character_id": character_id}
+        if character is not None:
+            item["name"] = _short_text(character.name, 80)
+            if character.player_id:
+                item["player_id"] = str(character.player_id)
+        if character_id == actor_character_id:
+            item["is_actor"] = True
+        characters_present.append(item)
+    return {
+        "total_bound_characters": len(characters_present),
+        "actor_character_id": actor_character_id,
+        "characters_present": characters_present[:8],
+        "continuity_note": "回复公共场景时必须纳入这些已绑定且仍在本团的玩家角色；不要把他们从人数、车厢/房间描述或行动可见性中遗漏。",
+    }
 
 
 def _project_scene(scene: Any, profile: str, *, actor_character_id: str = "", message: str = "") -> Any:

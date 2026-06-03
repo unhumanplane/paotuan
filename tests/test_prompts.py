@@ -1015,6 +1015,42 @@ def test_prompt_snapshot_projection_does_not_project_closed_active_thread_as_act
     assert "老肥在酒馆等天亮" in rendered
 
 
+def test_prompt_snapshot_projection_lists_party_context_for_active_scene():
+    session = GameSession.new("group")
+    session.characters["pc_bailin"] = Character(id="pc_bailin", name="白霖", player_id="p1")
+    session.characters["pc_kamen"] = Character(id="pc_kamen", name="假面骑士", player_id="p2")
+    session.characters["pc_moyu"] = Character(id="pc_moyu", name="摸鱼", player_id="p3")
+    session.player_character_map = {"p1": "pc_bailin", "p2": "pc_kamen", "p3": "pc_moyu"}
+    session.participants = {
+        "p1": {"display_name": "白霖玩家"},
+        "p2": {"display_name": "假面骑士玩家"},
+        "p3": {"display_name": "摸鱼玩家"},
+    }
+    session.scene["active_scene_thread_id"] = "character:pc_moyu"
+    session.scene["scene_threads"] = {
+        "character:pc_moyu": {
+            "summary": "午夜车厢内，摸鱼正在检查路线图。",
+            "location": "午夜车厢",
+            "participants": ["pc_moyu"],
+            "active_character_id": "pc_moyu",
+            "updated_at": "2026-06-03T06:23:07+00:00",
+        }
+    }
+
+    projected_snapshot, _stats = prompt_snapshot_data(
+        session,
+        GameMode.NARRATIVE,
+        "这是什么样的车厢",
+        actor={"player_id": "p1"},
+        snapshot_projection_enabled=True,
+    )
+
+    party = projected_snapshot["scene"]["party_context"]
+    assert party["total_bound_characters"] == 3
+    assert party["actor_character_id"] == "pc_bailin"
+    assert {item["character_id"] for item in party["characters_present"]} == {"pc_bailin", "pc_kamen", "pc_moyu"}
+
+
 def test_prompt_snapshot_projection_keeps_actor_thread_when_other_thread_is_active():
     session = GameSession.new("group")
     session.characters["pc_yaka"] = Character(id="pc_yaka", name="雅卡", player_id="p1")

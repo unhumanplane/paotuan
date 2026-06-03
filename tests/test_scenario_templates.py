@@ -128,6 +128,9 @@ def test_preset_patch_marks_quickstart_scaffold():
     assert patch["campaign_generation"]["source"] == "preset_library"
     assert patch["campaign_generation"]["quickstart"] is True
     assert patch["campaign_preset"]["key"] == "cozy_tavern_mystery"
+    assert patch["campaign_contract"]["template_key"] == "cozy_tavern_mystery"
+    assert patch["campaign_contract"]["source"] == "preset_library"
+    assert patch["campaign_contract"]["reset_previous_contract"] is True
     assert "预设剧本" in format_campaign_preset_loaded_reply(template)
     assert campaign_preset_start_requested("跑 8 号开始") is True
 
