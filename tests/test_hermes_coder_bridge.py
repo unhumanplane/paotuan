@@ -985,6 +985,48 @@ def test_run_hermes_uses_coder_home_and_reasoning(tmp_path, monkeypatch):
     assert "reasoning_effort: xhigh" in (coder_home / "config.yaml").read_text(encoding="utf-8")
 
 
+def test_run_hermes_recovers_session_id_when_cli_stdout_is_empty(tmp_path, monkeypatch):
+    main_home = tmp_path / "data"
+    coder_home = tmp_path / "data-coder"
+    workdir = tmp_path / "repo"
+    main_home.mkdir()
+    workdir.mkdir()
+    (main_home / "config.yaml").write_text("agent:\n  reasoning_effort: high\n", encoding="utf-8")
+    monkeypatch.setattr(bridge_mod, "MAIN_HERMES_HOME", main_home)
+    session_id = "20260603_104027_419d08"
+
+    class FakeCompleted:
+        returncode = 0
+        stdout = ""
+
+    def fake_run(cmd, cwd, env, text, stdout, stderr, timeout):
+        sessions_dir = coder_home / "sessions"
+        sessions_dir.mkdir(parents=True, exist_ok=True)
+        (sessions_dir / f"session_{session_id}.json").write_text(
+            json.dumps(
+                {
+                    "messages": [
+                        {"role": "user", "content": "hello"},
+                        {"role": "assistant", "content": "final answer from session"},
+                    ]
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        return FakeCompleted()
+
+    monkeypatch.setattr(bridge_mod.subprocess, "run", fake_run)
+
+    returncode, output = bridge_mod.run_hermes("hello", 5, workdir, coder_home, "xhigh", "", "paotuan-coder-test")
+    bridge = _bridge(tmp_path, groups="1101538762")
+    bridge.coder_hermes_home = coder_home
+
+    assert returncode == 0
+    assert bridge_mod.extract_latest_session_id(output) == session_id
+    assert bridge._format_coder_job_reply(returncode, output) == "final answer from session"
+
+
 def test_run_hermes_resumes_saved_session(tmp_path, monkeypatch):
     main_home = tmp_path / "data"
     coder_home = tmp_path / "data-coder"
@@ -1005,7 +1047,7 @@ def test_run_hermes_resumes_saved_session(tmp_path, monkeypatch):
 
     monkeypatch.setattr(bridge_mod.subprocess, "run", fake_run)
 
-    bridge_mod.run_hermes("hello", 5, workdir, coder_home, "xhigh", "20260522_120000_deadbeef", "ignored-source")
+    returncode, output = bridge_mod.run_hermes("hello", 5, workdir, coder_home, "xhigh", "20260522_120000_deadbeef", "ignored-source")
 
     assert captured["cmd"] == [
         "hermes",
@@ -1020,6 +1062,8 @@ def test_run_hermes_resumes_saved_session(tmp_path, monkeypatch):
         "-q",
         "hello",
     ]
+    assert returncode == 0
+    assert bridge_mod.extract_latest_session_id(output) == "20260522_120000_deadbeef"
 
 
 def test_command_env_switches_home_without_losing_main_node_bin(tmp_path, monkeypatch):

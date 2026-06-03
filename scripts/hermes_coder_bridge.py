@@ -359,8 +359,8 @@ def numbered_delivery_parts(text: str, limit: int) -> list[str]:
 
 
 def extract_latest_session_id(text: str) -> str:
-    match = SESSION_ID_PATTERN.search(text or "")
-    return match.group(0) if match else ""
+    matches = SESSION_ID_PATTERN.findall(text or "")
+    return matches[-1] if matches else ""
 
 
 def sanitize_hermes_output_for_reply(text: str) -> str:
@@ -615,6 +615,98 @@ def latest_assistant_content_from_session(hermes_home: Path | None, session_id: 
     return ""
 
 
+def _session_id_from_path(path: Path) -> str:
+    name = path.name
+    if name.startswith("session_") and name.endswith(".json"):
+        return name[len("session_") : -len(".json")]
+    return ""
+
+
+def _message_text(message: dict[str, Any]) -> str:
+    content = message.get("content")
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for item in content:
+            if isinstance(item, dict):
+                value = item.get("text") or item.get("content")
+                if value:
+                    parts.append(str(value))
+            elif item:
+                parts.append(str(item))
+        return "\n".join(parts)
+    return ""
+
+
+def _session_contains_prompt(path: Path, prompt: str) -> bool:
+    needle = (prompt or "").strip()
+    if not needle:
+        return False
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return False
+    messages = data.get("messages")
+    if not isinstance(messages, list):
+        return False
+    probe = needle if len(needle) <= 1000 else needle[:1000]
+    for message in messages:
+        if not isinstance(message, dict):
+            continue
+        if probe in _message_text(message):
+            return True
+    return False
+
+
+def latest_session_id_created_by_prompt(
+    hermes_home: Path | None,
+    prompt: str,
+    *,
+    started_at: float,
+    known_session_files: set[str],
+) -> str:
+    if not hermes_home:
+        return ""
+    sessions_dir = hermes_home / "sessions"
+    if not sessions_dir.exists():
+        return ""
+    candidates: list[Path] = []
+    for path in sessions_dir.glob("session_*.json"):
+        if not path.is_file() or path.name in known_session_files:
+            continue
+        try:
+            stat = path.stat()
+        except OSError:
+            continue
+        if stat.st_mtime + 1 < started_at:
+            continue
+        candidates.append(path)
+    if not candidates:
+        return ""
+    prompt_matches = [path for path in candidates if _session_contains_prompt(path, prompt)]
+    selected = max(prompt_matches or candidates, key=lambda path: path.stat().st_mtime)
+    return _session_id_from_path(selected)
+
+
+def known_session_files(hermes_home: Path | None) -> set[str]:
+    if not hermes_home:
+        return set()
+    sessions_dir = hermes_home / "sessions"
+    if not sessions_dir.exists():
+        return set()
+    return {path.name for path in sessions_dir.glob("session_*.json") if path.is_file()}
+
+
+def append_session_id_marker(output: str, session_id: str) -> str:
+    if not session_id or extract_latest_session_id(output):
+        return output
+    prefix = output
+    if prefix and not prefix.endswith("\n"):
+        prefix += "\n"
+    return f"{prefix}session_id: {session_id}\n"
+
+
 def hermes_session_has_messages(hermes_home: Path | None, session_id: str) -> bool:
     if not hermes_home or not session_id:
         return False
@@ -839,6 +931,8 @@ def run_hermes(
 ) -> tuple[int, str]:
     if hermes_home is not None:
         prepare_coder_hermes_home(hermes_home, reasoning_effort)
+    started_at = time.time()
+    before_session_files = known_session_files(hermes_home)
     if resume_session_id:
         cmd = [
             "hermes",
@@ -867,7 +961,16 @@ def run_hermes(
         stderr=subprocess.STDOUT,
         timeout=timeout,
     )
-    return proc.returncode, proc.stdout or ""
+    output = proc.stdout or ""
+    if not extract_latest_session_id(output):
+        fallback_session_id = resume_session_id or latest_session_id_created_by_prompt(
+            hermes_home,
+            prompt,
+            started_at=started_at,
+            known_session_files=before_session_files,
+        )
+        output = append_session_id_marker(output, fallback_session_id)
+    return proc.returncode, output
 
 
 async def run_blocking(func, *args):
