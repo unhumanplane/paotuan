@@ -73,8 +73,10 @@ class UpdateSceneArgs(BaseModel):
     patch: Dict[str, Any] = Field(
         default_factory=dict,
         description=(
-            "场景状态补丁，例如 summary,current_conflict,location,npcs,current_objective,"
-            "open_hooks,clues,mysteries,stakes,pressure_clock。clues/open_hooks/mysteries "
+            "场景状态补丁，例如 summary,current_conflict,location,current_location,current_vehicle_status,"
+            "current_access_state,npcs,current_objective,open_hooks,clues,mysteries,stakes,"
+            "pressure_clock。涉及移动载具/站台/门锁/队伍分离时，必须用结构化字段明确"
+            "停稳、即将启动、正在行驶、已驶离、门已锁/可通行等当前事实。clues/open_hooks/mysteries "
             "建议使用可见小对象：{id,text,status,visibility}; status 可为 open, discovered, "
             "suspected, resolved, false_lead, blocked。不要写入未被角色确认的幕后真相。"
         ),
