@@ -1855,6 +1855,14 @@ class IntentRouter:
                 return completion_text
             text_map_signals = detect_text_map_signals(completion_text)
             if renderer_summary.missing_data and not renderer_summary.legacy_attempted:
+                if _has_successful_non_map_tool_result(all_tool_results) and str(completion_text or "").strip():
+                    await append_map_guard_audit(
+                        "missing_data_narrative_preserved",
+                        "renderer_missing_data_with_prior_tool_facts",
+                        completion=completion_text,
+                        text_map_signals=text_map_signals,
+                    )
+                    return completion_text
                 await append_map_guard_audit(
                     "missing_data_response",
                     "renderer_missing_data",
@@ -5223,6 +5231,18 @@ def _tool_result_ok(result: Any) -> bool:
     if isinstance(result, dict):
         return bool(result.get("ok", True))
     return result is not None
+
+
+def _has_successful_non_map_tool_result(tool_results: list[dict[str, Any]]) -> bool:
+    for item in tool_results or []:
+        if not isinstance(item, dict):
+            continue
+        tool_name = str(item.get("tool") or "")
+        if tool_name in {"render_strict_grid_svg", "render_overview_topology_svg", "generate_map_svg", "final_response"}:
+            continue
+        if _tool_result_ok(item.get("result")):
+            return True
+    return False
 
 
 def _final_response_reply(tool_results: list[dict[str, Any]]) -> str | None:
