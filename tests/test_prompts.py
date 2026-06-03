@@ -43,6 +43,9 @@ def test_system_prompt_includes_shared_cycle_contract():
     assert "不能用 summary/current_conflict 把单个角色私自推进到第二天" in prompt
     assert "已声明的物理环境和设备能力是连续性事实" in prompt
     assert "不能为了圆场临时新增未记录的设备能力" in prompt
+    assert "场景定位锚点" in prompt
+    assert "location/current_location/current_vehicle_status" in prompt
+    assert "停稳、即将启动、正在行驶、已驶离" in prompt
     assert "完整 `GameSession`" in prompt
     assert "结束当前叙事周期" not in prompt
 
