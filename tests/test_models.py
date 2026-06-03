@@ -86,6 +86,41 @@ def test_invalid_cycle_state_falls_back_to_active():
     assert session.cycle_state == CycleState.CYCLE_ACTIVE
 
 
+def test_legacy_scene_backfills_visible_location_vehicle_and_access_anchors():
+    session = GameSession.from_dict(
+        {
+            "session_id": "group",
+            "scene": {
+                "summary": "假面骑士跟随穗跨过锈安站终点站的铁门门槛，进入清晨的天光中。电车已在废弃旧线路站台停稳。驾驶室铁门已落锁，推不开。",
+                "current_objective": "穗已经跨出了铁门，站在清晨的旧铁路路基上。",
+            },
+        }
+    )
+
+    assert "锈安站终点站" in session.scene["current_location"]
+    assert session.scene["location"] == session.scene["current_location"]
+    assert session.scene["current_vehicle_status"].startswith("已停稳")
+    assert "停稳" in session.scene["current_vehicle_status"]
+    assert session.scene["current_access_state"].startswith("门已锁/不可通行")
+    assert session.scene["scene_anchor_note"].startswith("legacy_backfill")
+
+
+def test_legacy_scene_backfill_preserves_existing_structured_anchor():
+    session = GameSession.from_dict(
+        {
+            "session_id": "group",
+            "scene": {
+                "location": "酒馆后院",
+                "summary": "列车正在行驶，驾驶室门已落锁。",
+            },
+        }
+    )
+
+    assert session.scene["location"] == "酒馆后院"
+    assert "current_vehicle_status" not in session.scene
+    assert "scene_anchor_note" not in session.scene
+
+
 def test_config_schema_defines_ra_enabled_default_off():
     schema_path = Path(__file__).parents[1] / "astrbot_plugin_auto_trpg_dm" / "_conf_schema.json"
     schema = json.loads(schema_path.read_text(encoding="utf-8"))

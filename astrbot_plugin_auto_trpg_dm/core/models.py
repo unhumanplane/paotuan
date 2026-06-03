@@ -4,6 +4,7 @@ from collections.abc import Mapping
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
+import re
 from typing import Any
 
 from .control_authority import normalize_control_authority_store
@@ -226,7 +227,7 @@ class GameSession:
             participants=dict(data.get("participants", {})),
             player_character_map=dict(data.get("player_character_map", {})),
             world_tags=dict(data.get("world_tags", {})),
-            scene=dict(data.get("scene", {})),
+            scene=normalize_scene_anchors(data.get("scene", {})),
             memory_summary=str(data.get("memory_summary", "")),
             characters={
                 key: Character.from_dict(value)
@@ -362,6 +363,171 @@ def _safe_int(value: Any, default: int = 0) -> int:
 
 def _turn_sequence_mode(turn: dict[str, Any]) -> str:
     return "strict" if str(turn.get("sequence_mode") or "").strip().lower() == "strict" else "flexible"
+
+
+SCENE_LOCATION_ANCHOR_KEYS = (
+    "location",
+    "current_location",
+    "current_vehicle_status",
+    "current_access_state",
+)
+
+_LOCATION_MARKERS = (
+    "站",
+    "台",
+    "车厢",
+    "驾驶室",
+    "走廊",
+    "门",
+    "路基",
+    "废墟",
+    "桥",
+    "房间",
+    "楼层",
+    "入口",
+    "出口",
+    "大厅",
+    "街",
+    "酒馆",
+    "山",
+    "森林",
+    "船",
+    "港",
+    "基地",
+    "营地",
+    "城市",
+)
+_LOCATION_PREFIX_RE = re.compile(r"(?:位于|身处|当前位置[：:为是]?|地点[：:为是]?|在)([^。！？；;，,]{2,80})")
+
+
+def normalize_scene_anchors(value: Any) -> dict[str, Any]:
+    """Backfill conservative structured scene anchors from legacy natural-language saves.
+
+    This does not invent hidden facts.  It only copies visible, already-written scene text into
+    explicit anchor fields when all anchor fields are missing, so prompts can see that location /
+    vehicle / access state must be verified and maintained in structured form.
+    """
+    scene = dict(value) if isinstance(value, dict) else {}
+    if not scene or _has_scene_anchor(scene):
+        return scene
+    source_text = _scene_anchor_source_text(scene)
+    if not source_text.strip():
+        return scene
+    location = _infer_current_location_anchor(scene, source_text)
+    vehicle_status = _infer_vehicle_status_anchor(source_text)
+    access_state = _infer_access_state_anchor(source_text)
+    inferred: dict[str, Any] = {}
+    if location:
+        inferred["current_location"] = location
+        inferred["location"] = location
+    if vehicle_status:
+        inferred["current_vehicle_status"] = vehicle_status
+    if access_state:
+        inferred["current_access_state"] = access_state
+    if not inferred:
+        return scene
+    scene.update(inferred)
+    scene.setdefault(
+        "scene_anchor_note",
+        "legacy_backfill_from_visible_scene_text; verify/update with update_scene on next location, vehicle, or access change",
+    )
+    return scene
+
+
+def _has_scene_anchor(scene: dict[str, Any]) -> bool:
+    return any(_anchor_present(scene.get(key)) for key in SCENE_LOCATION_ANCHOR_KEYS)
+
+
+def _anchor_present(value: Any) -> bool:
+    if value is None:
+        return False
+    if isinstance(value, str):
+        return bool(value.strip())
+    if isinstance(value, (dict, list, tuple, set)):
+        return bool(value)
+    return True
+
+
+def _scene_anchor_source_text(scene: dict[str, Any]) -> str:
+    parts: list[str] = []
+    for key in ("summary", "current_objective", "current_conflict", "stakes", "active_thread_summary", "active_thread_current_objective"):
+        value = scene.get(key)
+        if isinstance(value, str) and value.strip():
+            parts.append(value.strip())
+    pressure_clock = scene.get("pressure_clock")
+    if isinstance(pressure_clock, dict):
+        for key in ("description", "status", "name"):
+            value = pressure_clock.get(key)
+            if isinstance(value, str) and value.strip():
+                parts.append(value.strip())
+    return "。".join(parts)
+
+
+def _infer_current_location_anchor(scene: dict[str, Any], text: str) -> str:
+    title = str(scene.get("title") or "").strip()
+    first_sentence = _first_relevant_sentence(text, _LOCATION_MARKERS)
+    if first_sentence:
+        return _clean_anchor_text(first_sentence, limit=120)
+    match = _LOCATION_PREFIX_RE.search(text)
+    if match:
+        return _clean_anchor_text(match.group(1), limit=96)
+    if title:
+        return _clean_anchor_text(title, limit=96)
+    return ""
+
+
+def _infer_vehicle_status_anchor(text: str) -> str:
+    patterns = [
+        ("已驶离", ("已驶离", "离站", "开走")),
+        ("正在行驶", ("正在行驶", "行驶中", "驶向", "移动中", "飞行中", "航行中")),
+        ("即将启动", ("即将启动", "即将发车", "准备启动", "准备发车")),
+        ("已停稳", ("已停稳", "停稳", "抵达", "终点站", "站台")),
+        ("受损/无法高机动", ("应力严重", "无法高机动", "瘫痪", "失控", "受损")),
+    ]
+    return _first_status_match(text, patterns)
+
+
+def _infer_access_state_anchor(text: str) -> str:
+    patterns = [
+        ("门已锁/不可通行", ("已落锁", "落锁", "锁死", "锁住", "推不开", "不可通行", "切断沟通")),
+        ("门可通行/已打开", ("可通行", "已打开", "打开", "跨出", "跨过", "入口", "出口")),
+        ("需要钥匙/检修入口", ("钥匙", "检修层入口", "手动解锁", "门闩")),
+    ]
+    return _first_status_match(text, patterns)
+
+
+def _first_status_match(text: str, patterns: list[tuple[str, tuple[str, ...]]]) -> str:
+    for label, markers in patterns:
+        for marker in markers:
+            index = text.find(marker)
+            if index >= 0:
+                sentence = _sentence_around(text, index)
+                detail = _clean_anchor_text(sentence, limit=120)
+                return f"{label}：{detail}" if detail else label
+    return ""
+
+
+def _first_relevant_sentence(text: str, markers: tuple[str, ...]) -> str:
+    for sentence in re.split(r"[。！？；;\n]+", text):
+        cleaned = sentence.strip()
+        if len(cleaned) < 2:
+            continue
+        if any(marker in cleaned for marker in markers):
+            return cleaned
+    return ""
+
+
+def _sentence_around(text: str, index: int) -> str:
+    start = max(text.rfind(sep, 0, index) for sep in "。！？；;\n") + 1
+    end_candidates = [pos for sep in "。！？；;\n" if (pos := text.find(sep, index)) >= 0]
+    end = min(end_candidates) if end_candidates else len(text)
+    return text[start:end]
+
+
+def _clean_anchor_text(value: str, limit: int) -> str:
+    cleaned = " ".join(str(value).strip().split())
+    cleaned = cleaned.strip("：:，,。！？；; ")
+    return _short_snapshot(cleaned, limit) if cleaned else ""
 
 
 def _dict_or_empty(value: Any) -> dict[str, Any]:
