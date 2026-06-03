@@ -95,11 +95,41 @@ def test_preset_list_is_player_visible_and_contains_multiple_styles():
     reply = format_campaign_preset_list()
 
     assert looks_like_campaign_preset_list_request("有什么预设剧本") is True
+    assert looks_like_campaign_preset_list_request("推荐几个剧本") is True
+    assert looks_like_campaign_preset_list_request("预设列表") is True
     assert "《底巢清剿：锈蚀圣堂》" in reply
     assert "《霓虹债务夜奔》" in reply
     assert "《仙门试炼山海变》" in reply
     assert "《暖炉酒馆小镇奇案》" in reply
     assert "回“跑 2 号”" in reply
+
+
+def test_preset_keywords_in_opening_seed_do_not_trigger_preset_fast_path():
+    text = "开局部分不要搞关键词触发预设，按我刚才给的新剧本原创开场。"
+
+    assert looks_like_campaign_preset_list_request(text) is False
+    assert select_campaign_preset(text) is None
+    assert looks_like_campaign_generation_request(text) is True
+
+
+def test_long_opening_seed_mentions_preset_attack_defense_without_list_request():
+    text = (
+        "来一盘新游戏，剧情按照这个来搞:新剧本\n"
+        "时代背景：架空近未来城邦。\n"
+        "基本概括：玩家要在开局部分处理预设攻防演练留下的误报，"
+        "但这只是世界内事件，不要触发任何内置预设。\n"
+        "玩家组成：本地调查员和技术员。\n"
+        "友方NPC组成：档案管理员、巡逻队长。\n"
+        "敌对NPC组成：走私商、伪装成安保的内鬼。\n"
+        "模组限定：没有超自然能力，所有冲突按现代调查处理。"
+    )
+
+    assert looks_like_custom_campaign_brief(text) is True
+    assert looks_like_campaign_preset_list_request(text) is False
+    assert select_campaign_preset(text) is None
+    patch = build_campaign_seed_patch(text, preference_text="克制调查")
+    assert patch["campaign_generation"]["source"] == "player_custom_brief"
+    assert "预设攻防演练" in patch["campaign_background"]
 
 
 def test_preset_selection_by_number_and_title():

@@ -298,7 +298,20 @@ READONLY_OR_CONTROL_TERMS = (
     "暂停",
     "resume",
 )
-PRESET_LIST_TERMS = (
+PRESET_LIST_QUERY_TERMS = (
+    "有什么",
+    "有哪些",
+    "哪几个",
+    "几个",
+    "列出",
+    "列表",
+    "清单",
+    "推荐",
+    "可选",
+    "给我看",
+    "看看",
+)
+PRESET_LIST_OBJECT_TERMS = (
     "预设剧本",
     "预设团",
     "预设",
@@ -306,28 +319,34 @@ PRESET_LIST_TERMS = (
     "内置团",
     "模板库",
     "剧本库",
-    "有什么剧本",
-    "有哪些剧本",
-    "有什么团",
-    "有哪些团",
-    "可选剧本",
-    "可选团本",
-    "剧本列表",
-    "团本列表",
-    "推荐剧本",
-    "推荐几个剧本",
+    "剧本",
+    "团本",
     "开箱即玩",
 )
-PRESET_SELECTION_TERMS = (
-    "预设",
-    "模板",
-    "内置",
+PRESET_LIST_EXACT_TERMS = (
+    "预设列表",
+    "剧本列表",
+    "团本列表",
+    "模板库",
+    "剧本库",
+    "开箱即玩",
+)
+PRESET_SELECTION_CONTEXT_TERMS = (
     "选",
     "选择",
     "载入",
     "就跑",
+    "用这个",
+    "用那个",
+    "跑这个",
+    "跑那个",
 )
-EXPLICIT_PRESET_TERMS = PRESET_SELECTION_TERMS + (
+PRESET_SELECTION_TERMS = PRESET_SELECTION_CONTEXT_TERMS + (
+    "预设",
+    "模板",
+    "内置",
+)
+EXPLICIT_PRESET_TERMS = PRESET_SELECTION_CONTEXT_TERMS + (
     "跑这个",
     "跑那个",
     "用这个",
@@ -402,7 +421,12 @@ def looks_like_campaign_preset_list_request(text: str) -> bool:
     normalized = _normalize(text)
     if not normalized:
         return False
-    return _contains_any(normalized, PRESET_LIST_TERMS)
+    if _contains_any(normalized, PRESET_LIST_EXACT_TERMS):
+        return True
+    return _contains_any(normalized, PRESET_LIST_QUERY_TERMS) and _contains_any(
+        normalized,
+        PRESET_LIST_OBJECT_TERMS,
+    )
 
 
 def format_campaign_preset_list() -> str:
@@ -800,7 +824,7 @@ def _looks_like_preset_selection_context(text: str) -> bool:
     normalized = _normalize(text)
     if not normalized:
         return False
-    if _contains_any(normalized, PRESET_SELECTION_TERMS):
+    if _contains_any(normalized, PRESET_SELECTION_CONTEXT_TERMS):
         return True
     if normalized.startswith("跑") and not normalized.startswith("跑团"):
         return True
