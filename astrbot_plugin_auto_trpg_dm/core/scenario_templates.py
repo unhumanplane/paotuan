@@ -320,12 +320,21 @@ PRESET_LIST_TERMS = (
 )
 PRESET_SELECTION_TERMS = (
     "预设",
-    "模板",
     "内置",
     "选",
     "选择",
     "载入",
     "就跑",
+)
+PRESET_TEMPLATE_SELECTION_CONTEXT_TERMS = (
+    "剧本模板",
+    "预设模板",
+    "模板库",
+    "套模板",
+    "用模板",
+    "选模板",
+    "选择模板",
+    "载入模板",
 )
 EXPLICIT_PRESET_TERMS = PRESET_SELECTION_TERMS + (
     "跑这个",
@@ -423,7 +432,10 @@ def select_campaign_preset(text: str) -> Optional[CampaignTemplate]:
         return None
     if looks_like_custom_campaign_brief(text):
         return None
-    explicit_preset = _contains_any(normalized, EXPLICIT_PRESET_TERMS)
+    explicit_preset = _contains_any(normalized, EXPLICIT_PRESET_TERMS) or _contains_any(
+        normalized,
+        PRESET_TEMPLATE_SELECTION_CONTEXT_TERMS,
+    )
     if not explicit_preset:
         return None
     selected_index = _selected_preset_number(normalized)
@@ -802,13 +814,15 @@ def _looks_like_preset_selection_context(text: str) -> bool:
         return False
     if _contains_any(normalized, PRESET_SELECTION_TERMS):
         return True
+    if _contains_any(normalized, PRESET_TEMPLATE_SELECTION_CONTEXT_TERMS):
+        return True
     if normalized.startswith("跑") and not normalized.startswith("跑团"):
         return True
-    if ("用" in normalized or "按" in normalized) and _contains_any(normalized, ("预设", "模板", "内置")):
+    if ("用" in normalized or "按" in normalized) and _contains_any(normalized, ("预设", "内置")):
         return True
     if _contains_any(normalized, ("就这个", "就那个", "用这个", "用那个")) and _contains_any(
         normalized,
-        ("预设", "模板", "剧本", "团本"),
+        ("预设", "剧本", "团本"),
     ):
         return True
     return False

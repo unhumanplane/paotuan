@@ -106,12 +106,17 @@ def test_preset_selection_by_number_and_title():
     by_number = select_campaign_preset("跑 3 号")
     by_title = select_campaign_preset("就跑暖炉酒馆小镇奇案")
     not_direct_selection = select_campaign_preset("开一个战锤40K底巢清剿团")
+    preference_with_generic_template_word = select_campaign_preset("按照coc的模板来吧，简单一点，偏向调查")
+    explicit_template_context = select_campaign_preset("选择雾港悬疑调查剧本模板")
 
     assert by_number is not None
     assert by_number.title == "雾港悬疑调查"
     assert by_title is not None
     assert by_title.key == "cozy_tavern_mystery"
     assert not_direct_selection is None
+    assert preference_with_generic_template_word is None
+    assert explicit_template_context is not None
+    assert explicit_template_context.key == "fog_harbor_investigation"
 
 
 def test_preset_patch_marks_quickstart_scaffold():
