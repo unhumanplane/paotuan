@@ -866,23 +866,35 @@ def _apply_safe_scene_thread_patch(
         thread["updated_at"] = utc_now_iso()
         return {"ok": True, "type": "scene_thread", "thread_id": thread_id, "patch": {"status": "active"}}
     if not status and any(key in patch for key in ("status", "summary", "current_objective", "current_conflict", "location")):
-        if not _reactivation_evidence_for_thread(
+        if _scene_thread_is_closed(thread):
+            if not _reactivation_evidence_for_thread(
+                session,
+                thread_id,
+                thread,
+                actor=actor,
+                player_message=player_message,
+                completion=completion,
+                tool_results=tool_results,
+            ):
+                return {"ok": False, "type": "scene_thread", "thread_id": thread_id, "reason": "missing_reactivation_evidence"}
+            thread.pop("status", None)
+            for key in ("summary", "current_objective", "current_conflict", "location"):
+                value = patch.get(key)
+                if isinstance(value, str) and value.strip() and not _terminal_status_text_match(value):
+                    thread[key] = _short_text(value, 700 if key == "summary" else 360)
+            thread["updated_at"] = utc_now_iso()
+            return {"ok": True, "type": "scene_thread", "thread_id": thread_id, "patch": {"status": ""}}
+        mirror_result = _apply_evidence_backed_scene_thread_mirror_patch(
             session,
             thread_id,
             thread,
-            actor=actor,
-            player_message=player_message,
+            patch,
             completion=completion,
             tool_results=tool_results,
-        ):
-            return {"ok": False, "type": "scene_thread", "thread_id": thread_id, "reason": "missing_reactivation_evidence"}
-        thread.pop("status", None)
-        for key in ("summary", "current_objective", "current_conflict", "location"):
-            value = patch.get(key)
-            if isinstance(value, str) and value.strip() and not _terminal_status_text_match(value):
-                thread[key] = _short_text(value, 700 if key == "summary" else 360)
-        thread["updated_at"] = utc_now_iso()
-        return {"ok": True, "type": "scene_thread", "thread_id": thread_id, "patch": {"status": ""}}
+        )
+        if mirror_result.get("ok"):
+            return mirror_result
+        return mirror_result
     if status and status not in CLOSED_THREAD_STATUSES:
         return {"ok": False, "type": "scene_thread", "thread_id": thread_id, "reason": "unsupported_status"}
     if status in CLOSED_THREAD_STATUSES:
@@ -900,7 +912,53 @@ def _apply_safe_scene_thread_patch(
                 thread[key] = _short_text(value, 700 if key == "summary" else 360)
         thread["updated_at"] = utc_now_iso()
         return {"ok": True, "type": "scene_thread", "thread_id": thread_id, "patch": {"status": status}}
+    mirror_result = _apply_evidence_backed_scene_thread_mirror_patch(
+        session,
+        thread_id,
+        thread,
+        patch,
+        completion=completion,
+        tool_results=tool_results,
+    )
+    if mirror_result.get("ok") or any(key in patch for key in SCENE_MIRROR_KEYS):
+        return mirror_result
     return {"ok": False, "type": "scene_thread", "thread_id": thread_id, "reason": "no_safe_change"}
+
+
+def _apply_evidence_backed_scene_thread_mirror_patch(
+    session: GameSession,
+    thread_id: str,
+    thread: dict[str, Any],
+    patch: dict[str, Any],
+    *,
+    completion: str,
+    tool_results: list[dict[str, Any]],
+) -> dict[str, Any]:
+    safe_patch: dict[str, Any] = {}
+    for key, value in patch.items():
+        if key == "status":
+            continue
+        if key not in SCENE_MIRROR_KEYS:
+            continue
+        if value in (None, "", [], {}):
+            continue
+        if _scene_patch_value_is_backed(session, value, tool_results, completion=completion):
+            safe_patch[key] = _compact_json_value(value, depth=3)
+    if not safe_patch:
+        return {"ok": False, "type": "scene_thread", "thread_id": thread_id, "reason": "scene_thread_patch_not_evidence_backed"}
+    changed = False
+    for key, value in safe_patch.items():
+        if key in {"open_hooks", "npcs"} and isinstance(value, list):
+            if _merge_dict_list_by_id(thread, key, value):
+                changed = True
+            continue
+        if thread.get(key) != value:
+            thread[key] = value
+            changed = True
+    if not changed:
+        return {"ok": False, "type": "scene_thread", "thread_id": thread_id, "reason": "no_safe_change"}
+    thread["updated_at"] = utc_now_iso()
+    return {"ok": True, "type": "scene_thread", "thread_id": thread_id, "patch": safe_patch}
 
 
 def _reactivate_character_threads(session: GameSession, character_id: str) -> dict[str, Any]:

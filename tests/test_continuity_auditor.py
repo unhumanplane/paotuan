@@ -892,6 +892,112 @@ def test_audit_scene_patch_projects_pressure_clock_and_stakes_to_thread():
     assert "当前前哨战斗已经收束" in thread["stakes"]
 
 
+def test_audit_scene_thread_patch_can_sync_evidence_backed_pressure_clock_without_status_change():
+    session = GameSession.new("group")
+    session.scene.update(
+        {
+            "scene_threads": {
+                "character:pc_moyu": {
+                    "summary": "墨鱼在隘口侧翼。",
+                    "participants": ["pc_moyu"],
+                    "active_character_id": "pc_moyu",
+                    "pressure_clock": {
+                        "label": "隘口警觉",
+                        "tick": 3,
+                        "max": 4,
+                        "description": "旧状态：哨兵持续搜索墨鱼。",
+                    },
+                }
+            }
+        }
+    )
+    payload = {
+        "safe_patches": {
+            "scene_threads": [
+                {
+                    "thread_id": "character:pc_moyu",
+                    "patch": {
+                        "pressure_clock": {
+                            "label": "隘口增援风险",
+                            "tick": 1,
+                            "max": 4,
+                            "description": "报信人逃脱只代表后续增援风险，隘口当前未全面开战。",
+                        }
+                    },
+                }
+            ]
+        }
+    }
+    tool_results = [
+        {
+            "tool": "update_scene",
+            "args": {"scene_thread_id": "character:pc_moyu"},
+            "result": {
+                "ok": True,
+                "scene_thread_id": "character:pc_moyu",
+                "pressure_clock": {
+                    "label": "隘口增援风险",
+                    "tick": 1,
+                    "max": 4,
+                    "description": "报信人逃脱只代表后续增援风险，隘口当前未全面开战。",
+                },
+            },
+        }
+    ]
+
+    result = apply_continuity_audit_patches(
+        session,
+        payload,
+        actor={"player_id": "p1"},
+        player_message="同步墨鱼线程压力钟",
+        completion="更正：隘口当前只是增援风险。",
+        tool_results=tool_results,
+    )
+
+    thread = session.scene["scene_threads"]["character:pc_moyu"]
+    assert any(item.get("type") == "scene_thread" for item in result["applied"])
+    assert not result["rejected"]
+    assert thread["pressure_clock"]["tick"] == 1
+    assert thread["pressure_clock"]["description"] == "报信人逃脱只代表后续增援风险，隘口当前未全面开战。"
+    assert "status" not in thread
+
+
+def test_audit_scene_thread_patch_rejects_unbacked_pressure_clock_without_status_change():
+    session = GameSession.new("group")
+    session.scene["scene_threads"] = {
+        "character:pc_moyu": {
+            "summary": "墨鱼在隘口侧翼。",
+            "participants": ["pc_moyu"],
+            "active_character_id": "pc_moyu",
+            "pressure_clock": {"label": "隘口警觉", "tick": 3, "max": 4},
+        }
+    }
+    payload = {
+        "safe_patches": {
+            "scene_threads": [
+                {
+                    "thread_id": "character:pc_moyu",
+                    "patch": {"pressure_clock": {"label": "凭空新增危机", "tick": 4, "max": 4}},
+                }
+            ]
+        }
+    }
+
+    result = apply_continuity_audit_patches(
+        session,
+        payload,
+        actor={"player_id": "p1"},
+        player_message="继续",
+        completion="墨鱼观察隘口。",
+        tool_results=[],
+    )
+
+    thread = session.scene["scene_threads"]["character:pc_moyu"]
+    assert not any(item.get("type") == "scene_thread" for item in result["applied"])
+    assert result["rejected"][0]["reason"] == "scene_thread_patch_not_evidence_backed"
+    assert thread["pressure_clock"]["tick"] == 3
+
+
 def test_audit_global_scene_repair_projects_shared_outpost_resolution_to_all_open_character_threads():
     session = GameSession.new("group")
     for character_id, name, player_id in (
