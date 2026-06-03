@@ -90,6 +90,12 @@ class LlmFailureResponse:
         return self.completion_text
 
 
+class ToolArgumentJsonFallbackResponse(LlmFailureResponse):
+    def __init__(self, reason: str = ""):
+        super().__init__(_tool_argument_json_fallback_reply(reason))
+        self.tool_argument_json_error = reason
+
+
 class ToolLoopResult:
     def __init__(self, completion_text: str, tool_results: list[dict[str, Any]] | None = None):
         self.completion_text = completion_text
@@ -1888,6 +1894,20 @@ class IntentRouter:
                 system_prompt=system_prompt,
                 func_tool=toolset,
             )
+            if isinstance(response, ToolArgumentJsonFallbackResponse):
+                completion_text = self._sanitize_completion_text(_response_completion_text(response))
+                audit_record = {
+                    "type": "llm_tool_arguments_json_fallback",
+                    "step": step + 1,
+                    "reason": str(getattr(response, "tool_argument_json_error", "") or "")[:240],
+                    "completion_hash": _short_hash(completion_text),
+                }
+                if audit_lock is None:
+                    self.repository.append_audit(session_id, audit_record)
+                else:
+                    async with audit_lock:
+                        self.repository.append_audit(session_id, audit_record)
+                return ToolLoopResult(await guarded_completion(completion_text), all_tool_results)
             tool_calls = self._extract_tool_calls(response)
             completion_text = _response_completion_text(response)
             if collector:
@@ -2404,17 +2424,7 @@ class IntentRouter:
                 "llm_tool_arguments_json_error fallback_to_text error=%s",
                 str(exc)[:200],
             )
-            retry_kwargs = dict(kwargs)
-            retry_kwargs.pop("func_tool", None)
-            retry_kwargs.pop("tools", None)
-            retry_kwargs["prompt"] = (
-                str(retry_kwargs.get("prompt") or "")
-                + "\n\n刚才工具参数 JSON 无法解析。请不要再调用工具，直接用简短自然语言说明本轮无法完成工具结算，并让玩家重发更短动作。"
-            )
-            try:
-                return await self._llm_generate_raw(retry_kwargs)
-            except Exception:
-                raise exc
+            return ToolArgumentJsonFallbackResponse(str(exc)[:200])
         except TypeError as exc:
             if "func_tool" not in kwargs:
                 raise
@@ -2427,17 +2437,7 @@ class IntentRouter:
                     "llm_tool_arguments_json_error fallback_to_text error=%s",
                     str(json_exc)[:200],
                 )
-                text_retry_kwargs = dict(kwargs)
-                text_retry_kwargs.pop("func_tool", None)
-                text_retry_kwargs.pop("tools", None)
-                text_retry_kwargs["prompt"] = (
-                    str(text_retry_kwargs.get("prompt") or "")
-                    + "\n\n刚才工具参数 JSON 无法解析。请不要再调用工具，直接用简短自然语言说明本轮无法完成工具结算，并让玩家重发更短动作。"
-                )
-                try:
-                    return await self._llm_generate_raw(text_retry_kwargs)
-                except Exception:
-                    raise json_exc
+                return ToolArgumentJsonFallbackResponse(str(json_exc)[:200])
             except TypeError:
                 raise exc
 
@@ -5324,6 +5324,13 @@ def _looks_like_tool_role_response(response: Any, completion_text: str) -> bool:
     if not text.strip():
         return False
     return "LLMResponse(role='tool'" in text or 'LLMResponse(role="tool"' in text
+
+
+def _tool_argument_json_fallback_reply(reason: str = "") -> str:
+    return (
+        "这轮我拿到的工具参数格式坏了，所以没有把未结算的结果写进存档。"
+        "当前行动先停在结算前：请把目标和动作再简短发一次，我会从这里继续判定。"
+    )
 
 
 def _tool_loop_fallback_reply(tool_results: list[dict[str, Any]]) -> str | None:

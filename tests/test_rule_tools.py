@@ -121,6 +121,38 @@ def calculate(strength):
     assert audit["input"]["args"] == {"strength": 15}
 
 
+def test_execute_rule_drops_hit_quality_and_target_type_context(tmp_path):
+    tools, runtime = _make_rule_tools(tmp_path)
+    runtime.register_rule(
+        "titan_charge",
+        "Resolve titan charge impact.",
+        """
+def calculate(power, defense):
+    return {"margin": power - defense, "success": power >= defense}
+""".strip(),
+        input_schema={"power": "number", "defense": "number"},
+    )
+
+    result = asyncio.run(
+        tools.execute_rule(
+            "titan_charge",
+            args={
+                "power": 18,
+                "defense": 13,
+                "hit_location": "center mass",
+                "hit_quality": "clean",
+                "target_type": "orc rescue team",
+            },
+            reason="test contextual hit arg cleanup",
+        )
+    )
+
+    assert result["ok"] is True
+    assert result["result"]["success"] is True
+    audit = tools.repository.last_audit_records("group", limit=1)[0]
+    assert audit["input"]["args"] == {"power": 18, "defense": 13}
+
+
 def test_execute_rule_d20_normalizes_common_llm_fields_without_double_count(tmp_path):
     tools, runtime = _make_rule_tools(tmp_path)
     runtime.register_rule(

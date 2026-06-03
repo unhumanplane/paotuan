@@ -102,6 +102,36 @@ def calculate(bonus, difficulty):
     assert executed["coerced_args"] == {"bonus": 2, "difficulty": 10}
 
 
+def test_schema_validation_ignores_hit_context_arguments(tmp_path: Path):
+    runtime = PythonRuleRuntime(tmp_path, timeout_seconds=3)
+    code = """
+def calculate(power, defense):
+    return {"success": power >= defense, "margin": power - defense}
+""".strip()
+    registered = runtime.register_rule(
+        rule_name="titan_charge",
+        description="impact check",
+        code_string=code,
+        input_schema={"power": "number", "defense": "number"},
+    )
+    assert registered["ok"] is True
+
+    executed = runtime.execute_rule(
+        "titan_charge",
+        {
+            "power": 18,
+            "defense": 13,
+            "hit_location": "center mass",
+            "hit_quality": "clean",
+            "target_type": "orc rescue team",
+        },
+    )
+
+    assert executed["ok"] is True
+    assert executed["result"]["success"] is True
+    assert executed["coerced_args"] == {"power": 18, "defense": 13}
+
+
 def test_context_arguments_do_not_break_no_arg_rule(tmp_path: Path):
     runtime = PythonRuleRuntime(tmp_path, timeout_seconds=3)
     code = """

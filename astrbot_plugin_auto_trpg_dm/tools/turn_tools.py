@@ -18,6 +18,14 @@ DEFAULT_TURN_OUTPUT_LIMIT_CHARS = 1440
 TURN_SEQUENCE_FLEXIBLE = "flexible"
 TURN_SEQUENCE_STRICT = "strict"
 TURN_SEQUENCE_MODES = {TURN_SEQUENCE_FLEXIBLE, TURN_SEQUENCE_STRICT}
+TURN_ORDER_SOURCE_RULE_INITIATIVE = "rule_initiative"
+TURN_ORDER_SOURCE_EXISTING_STATE = "existing_state"
+TURN_ORDER_SOURCE_DERIVED_BATTLE_STATE = "derived_battle_state"
+TURN_ORDER_SOURCES = {
+    TURN_ORDER_SOURCE_RULE_INITIATIVE,
+    TURN_ORDER_SOURCE_EXISTING_STATE,
+    TURN_ORDER_SOURCE_DERIVED_BATTLE_STATE,
+}
 
 
 class TurnControlArgs(BaseModel):
@@ -38,7 +46,11 @@ class TurnControlArgs(BaseModel):
     advance_after: bool = Field(default=True, description="record_action/auto_act_current 后是否自动推进到下一阶段")
     sequence_mode: str = Field(
         default="",
-        description="回合顺序策略：strict=像标准 DND/CoC 先攻表一样只能 current_entity_id 行动；flexible=默认弹性锚点，允许当前发言人的未行动角色乱序行动",
+        description="内部回合顺序策略：strict=只能 current_entity_id 行动；flexible=默认弹性锚点。strict 只能用于规则/主持侧已有或派生的顺序，不能由玩家关键词或玩家提供队列触发",
+    )
+    order_source: str = Field(
+        default="",
+        description="行动顺序来源；strict 下若提供 turn_order，必须是 rule_initiative（规则/先攻检定结果），不能是玩家口头指定",
     )
 
 
@@ -64,11 +76,13 @@ class TurnTools:
         auto_policy: str = "defend_or_follow",
         advance_after: bool = True,
         sequence_mode: str = "",
+        order_source: str = "",
     ) -> Dict[str, Any]:
         session = self.repository.load_session(self.session_id)
         turn = self._ensure_turn_state(session)
         normalized = action.strip().lower()
         requested_sequence_mode = _normalize_sequence_mode(sequence_mode)
+        normalized_order_source = _normalize_order_source(order_source)
         output_limit_chars = max(
             DEFAULT_TURN_OUTPUT_LIMIT_CHARS,
             min(2000, int(output_limit_chars or DEFAULT_TURN_OUTPUT_LIMIT_CHARS)),
@@ -76,12 +90,7 @@ class TurnTools:
 
         if normalized in {"status", "状态"}:
             result = self._status(session)
-        elif normalized in {"set_sequence_mode", "sequence_mode", "turn_sequence_mode", "strict_turns", "严格回合制", "严格回合", "弹性回合"}:
-            if not requested_sequence_mode:
-                if normalized in {"strict_turns", "严格回合制", "严格回合"}:
-                    requested_sequence_mode = TURN_SEQUENCE_STRICT
-                elif normalized == "弹性回合":
-                    requested_sequence_mode = TURN_SEQUENCE_FLEXIBLE
+        elif normalized in {"set_sequence_mode", "sequence_mode", "turn_sequence_mode"}:
             if not requested_sequence_mode:
                 result = {
                     "ok": False,
@@ -90,23 +99,41 @@ class TurnTools:
                     "allowed_sequence_modes": sorted(TURN_SEQUENCE_MODES),
                 }
             else:
-                turn["sequence_mode"] = requested_sequence_mode
-                if summary:
-                    self._append_turn_log(session, "sequence_mode_changed", summary, reason)
-                self.repository.save_session(session)
-                result = self._status(session)
+                guard = self._validate_sequence_mode_change(
+                    session,
+                    turn,
+                    requested_sequence_mode,
+                    explicit_order=self._clean_order(turn_order or []),
+                    order_source=normalized_order_source,
+                    action=normalized,
+                )
+                if guard:
+                    result = guard
+                else:
+                    turn["sequence_mode"] = requested_sequence_mode
+                    if summary:
+                        self._append_turn_log(session, "sequence_mode_changed", summary, reason)
+                    self.repository.save_session(session)
+                    result = self._status(session)
         elif normalized in {"start_round", "start", "开始轮次", "开始回合"}:
-            order = self._clean_order(turn_order or []) or self._derive_turn_order(
+            explicit_order = self._clean_order(turn_order or [])
+            order = explicit_order or self._derive_turn_order(
                 session,
                 include_bound_characters=False,
             )
+            guard = self._validate_sequence_mode_change(
+                session,
+                turn,
+                requested_sequence_mode,
+                explicit_order=explicit_order,
+                order_source=normalized_order_source,
+                action=normalized,
+                candidate_order=order,
+            )
             if not order:
-                result = {
-                    "ok": False,
-                    "error": "empty_turn_order",
-                    "message": "没有明确参战者或战棋实体；请传入 turn_order，或先创建/链接战斗地图。",
-                    "requires_explicit_turn_order": True,
-                }
+                result = self._empty_order_result(requested_sequence_mode)
+            elif guard:
+                result = guard
             else:
                 session.battle["active"] = True
                 turn.update(
@@ -130,8 +157,19 @@ class TurnTools:
                 result = self._status(session)
         elif normalized in {"set_order", "设置顺序", "initiative", "先攻"}:
             order = self._clean_order(turn_order or [])
+            guard = self._validate_sequence_mode_change(
+                session,
+                turn,
+                requested_sequence_mode,
+                explicit_order=order,
+                order_source=normalized_order_source,
+                action=normalized,
+                candidate_order=order,
+            )
             if not order:
                 result = {"ok": False, "error": "empty_turn_order"}
+            elif guard:
+                result = guard
             else:
                 turn["turn_order"] = order
                 turn["active"] = True
@@ -147,18 +185,25 @@ class TurnTools:
                 self.repository.save_session(session)
                 result = self._status(session)
         elif normalized in {"start_scene_resolution", "scene_resolution", "场面结算"}:
+            explicit_order = self._clean_order(turn_order or [])
             order = (
-                self._clean_order(turn_order or [])
+                explicit_order
                 or self._clean_order(list(turn.get("turn_order") or []))
                 or self._derive_turn_order(session, include_bound_characters=False)
             )
+            guard = self._validate_sequence_mode_change(
+                session,
+                turn,
+                requested_sequence_mode,
+                explicit_order=explicit_order,
+                order_source=normalized_order_source,
+                action=normalized,
+                candidate_order=order,
+            )
             if not order:
-                result = {
-                    "ok": False,
-                    "error": "empty_turn_order",
-                    "message": "场面结算需要明确本场参战者；请传入 turn_order，不能默认把全团角色拉入战斗。",
-                    "requires_explicit_turn_order": True,
-                }
+                result = self._empty_order_result(requested_sequence_mode, scene_resolution=True)
+            elif guard:
+                result = guard
             else:
                 turn["turn_order"] = order
                 turn["active"] = True
@@ -275,10 +320,88 @@ class TurnTools:
                 "auto_policy": auto_policy,
                 "advance_after": advance_after,
                 "sequence_mode": sequence_mode,
+                "order_source": order_source,
             },
             result,
         )
         return result
+
+    def _validate_sequence_mode_change(
+        self,
+        session: GameSession,
+        turn: Dict[str, Any],
+        requested_sequence_mode: str,
+        *,
+        explicit_order: List[str],
+        order_source: str,
+        action: str,
+        candidate_order: Optional[List[str]] = None,
+    ) -> Optional[Dict[str, Any]]:
+        if not requested_sequence_mode:
+            return None
+        if requested_sequence_mode == TURN_SEQUENCE_FLEXIBLE:
+            return None
+        if requested_sequence_mode != TURN_SEQUENCE_STRICT:
+            return {
+                "ok": False,
+                "error": "invalid_sequence_mode",
+                "message": "sequence_mode 只能是 strict 或 flexible。",
+                "allowed_sequence_modes": sorted(TURN_SEQUENCE_MODES),
+            }
+        if explicit_order and order_source != TURN_ORDER_SOURCE_RULE_INITIATIVE:
+            return {
+                "ok": False,
+                "error": "strict_sequence_requires_rule_order",
+                "message": "严格轮次不能采用玩家口头指定或普通叙事提供的行动顺序；如需传入 turn_order，必须来自规则先攻/速度/检定结果，并设置 order_source='rule_initiative'。",
+                "allowed_order_sources": sorted(TURN_ORDER_SOURCES),
+                "received_order_source": order_source or "",
+                "sequence_mode": TURN_SEQUENCE_STRICT,
+            }
+        if action in {"set_sequence_mode", "sequence_mode", "turn_sequence_mode"}:
+            order = self._clean_order(list(turn.get("turn_order") or []))
+            if not order:
+                return {
+                    "ok": False,
+                    "error": "strict_sequence_requires_existing_order",
+                    "message": "严格轮次需要先已有规则/战斗状态确定的 turn_order；不能只靠玩家一句话或关键词开启。",
+                    "sequence_mode": TURN_SEQUENCE_STRICT,
+                }
+            if order_source not in TURN_ORDER_SOURCES:
+                return {
+                    "ok": False,
+                    "error": "strict_sequence_requires_order_source",
+                    "message": "开启严格轮次必须声明顺序来源：existing_state、derived_battle_state 或 rule_initiative；不能只靠玩家关键词开启。",
+                    "allowed_order_sources": sorted(TURN_ORDER_SOURCES),
+                    "sequence_mode": TURN_SEQUENCE_STRICT,
+                }
+            return None
+        order = self._clean_order(candidate_order or [])
+        if not order:
+            return self._empty_order_result(TURN_SEQUENCE_STRICT)
+        return None
+
+    @staticmethod
+    def _empty_order_result(sequence_mode: str = "", *, scene_resolution: bool = False) -> Dict[str, Any]:
+        if sequence_mode == TURN_SEQUENCE_STRICT:
+            return {
+                "ok": False,
+                "error": "empty_turn_order",
+                "message": "严格轮次需要规则/主持侧先确定参战者顺序，例如已有战斗地图实体或规则先攻/速度/检定结果；不能要求玩家直接给队列。",
+                "requires_rule_or_battle_order": True,
+            }
+        if scene_resolution:
+            return {
+                "ok": False,
+                "error": "empty_turn_order",
+                "message": "场面结算需要明确本场参战者；请传入 turn_order，不能默认把全团角色拉入战斗。",
+                "requires_explicit_turn_order": True,
+            }
+        return {
+            "ok": False,
+            "error": "empty_turn_order",
+            "message": "没有明确参战者或战棋实体；请传入 turn_order，或先创建/链接战斗地图。",
+            "requires_explicit_turn_order": True,
+        }
 
     def _ensure_turn_state(self, session: GameSession) -> Dict[str, Any]:
         if not session.battle:
@@ -1091,41 +1214,46 @@ def _normalize_sequence_mode(value: Any) -> str:
         return ""
     if text in {
         TURN_SEQUENCE_STRICT,
-        "fixed",
-        "initiative",
-        "initiative_order",
-        "standard",
-        "dnd",
-        "d&d",
-        "coc",
-        "call_of_cthulhu",
-        "严格",
-        "严格回合",
-        "严格回合制",
-        "标准",
-        "标准回合",
-        "标准回合制",
-        "固定顺序",
-        "先攻顺序",
     }:
         return TURN_SEQUENCE_STRICT
     if text in {
         TURN_SEQUENCE_FLEXIBLE,
-        "loose",
-        "soft",
-        "anchor",
-        "cinematic",
-        "default",
-        "弹性",
-        "弹性回合",
-        "弹性回合制",
-        "默认",
-        "默认回合",
-        "乱序",
-        "锚点",
     }:
         return TURN_SEQUENCE_FLEXIBLE
     return ""
+
+
+def _normalize_order_source(value: Any) -> str:
+    text = str(value or "").strip().lower()
+    if not text:
+        return ""
+    aliases = {
+        TURN_ORDER_SOURCE_RULE_INITIATIVE: TURN_ORDER_SOURCE_RULE_INITIATIVE,
+        "rules": TURN_ORDER_SOURCE_RULE_INITIATIVE,
+        "rule": TURN_ORDER_SOURCE_RULE_INITIATIVE,
+        "initiative": TURN_ORDER_SOURCE_RULE_INITIATIVE,
+        "initiative_roll": TURN_ORDER_SOURCE_RULE_INITIATIVE,
+        "initiative_order": TURN_ORDER_SOURCE_RULE_INITIATIVE,
+        "speed": TURN_ORDER_SOURCE_RULE_INITIATIVE,
+        "dex": TURN_ORDER_SOURCE_RULE_INITIATIVE,
+        "先攻": TURN_ORDER_SOURCE_RULE_INITIATIVE,
+        "先攻检定": TURN_ORDER_SOURCE_RULE_INITIATIVE,
+        "规则先攻": TURN_ORDER_SOURCE_RULE_INITIATIVE,
+        "规则": TURN_ORDER_SOURCE_RULE_INITIATIVE,
+        "速度": TURN_ORDER_SOURCE_RULE_INITIATIVE,
+        "敏捷": TURN_ORDER_SOURCE_RULE_INITIATIVE,
+        TURN_ORDER_SOURCE_EXISTING_STATE: TURN_ORDER_SOURCE_EXISTING_STATE,
+        "existing": TURN_ORDER_SOURCE_EXISTING_STATE,
+        "current_state": TURN_ORDER_SOURCE_EXISTING_STATE,
+        "已有顺序": TURN_ORDER_SOURCE_EXISTING_STATE,
+        "当前状态": TURN_ORDER_SOURCE_EXISTING_STATE,
+        TURN_ORDER_SOURCE_DERIVED_BATTLE_STATE: TURN_ORDER_SOURCE_DERIVED_BATTLE_STATE,
+        "battle_state": TURN_ORDER_SOURCE_DERIVED_BATTLE_STATE,
+        "map_state": TURN_ORDER_SOURCE_DERIVED_BATTLE_STATE,
+        "战斗状态": TURN_ORDER_SOURCE_DERIVED_BATTLE_STATE,
+        "地图实体": TURN_ORDER_SOURCE_DERIVED_BATTLE_STATE,
+    }
+    return aliases.get(text, "")
 
 
 def _looks_like_auto_request(text: str) -> bool:

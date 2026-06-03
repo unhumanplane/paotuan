@@ -234,6 +234,7 @@ def test_tool_registry_prefers_resolve_check_for_ordinary_d20_checks():
     assert "Preferred tool for ordinary d20 checks" in resolve_spec["description"]
     assert "do not call list_rules first for ordinary checks" in resolve_spec["description"]
     assert "普通搜索、说服、潜行、破解、操作设备等 d20 检定优先使用 resolve_check" in execute_spec["description"]
+    assert execute_spec["parameters"]["additionalProperties"] is False
     resolve_properties = resolve_spec["parameters"]["properties"]
     assert "modifier_note" in resolve_properties
     assert "target_dc" in resolve_properties
@@ -409,8 +410,10 @@ def test_turn_control_schema_exposes_sequence_mode_for_strict_turns():
 
     assert "turn_control" in names
     assert "sequence_mode" in turn_spec["parameters"]["properties"]
+    assert "order_source" in turn_spec["parameters"]["properties"]
     assert "strict/flexible" in turn_spec["description"]
-    assert "DND/CoC" in turn_spec["description"]
+    assert "玩家关键词" in turn_spec["description"]
+    assert "玩家口头队列" in turn_spec["description"]
 
 
 def test_tool_registry_exposes_control_authority_for_transfer_reclaim_and_hosting_intents():

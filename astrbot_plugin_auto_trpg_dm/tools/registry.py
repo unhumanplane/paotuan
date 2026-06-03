@@ -77,6 +77,7 @@ class LocalFunctionTool(FunctionTool[AstrAgentContext]):
     description: str
     parameters: dict
     handler: ToolHandler
+    model: Any = None
 
     def __post_init__(self) -> None:
         validate = getattr(self, "validate_parameters", None)
@@ -96,7 +97,20 @@ class LocalFunctionTool(FunctionTool[AstrAgentContext]):
         return json.dumps(result, ensure_ascii=False)
 
     async def execute_dict(self, kwargs: dict[str, Any]) -> dict[str, Any]:
-        return await self.handler(**kwargs)
+        payload = dict(kwargs or {})
+        if self.model is not None and self.parameters.get("additionalProperties") is False:
+            try:
+                validated = self.model(**payload)
+            except Exception as exc:
+                return {
+                    "ok": False,
+                    "error": "invalid_tool_arguments",
+                    "tool": self.name,
+                    "reason": str(exc),
+                }
+            if hasattr(validated, "dict"):
+                payload = validated.dict()
+        return await self.handler(**payload)
 
 
 def make_tool(
@@ -110,6 +124,7 @@ def make_tool(
         description=description,
         parameters=model_schema(model),
         handler=handler,
+        model=model,
     )
 
 
@@ -439,7 +454,7 @@ class ToolRegistry:
             ),
             "turn_control": make_tool(
                 name="turn_control",
-                description="控制战斗轮动状态：场面结算、角色回合、行动顺序、strict/flexible 回合顺序模式、推进下一行动者、120 秒超时、无人响应自动保守行动。玩家要求像标准 DND/CoC 一样严格先攻/硬回合制时，调用 set_sequence_mode 或 start_round 并传 sequence_mode='strict'；默认 flexible 允许当前发言人的未行动角色乱序行动。",
+                description="控制战斗轮动状态：场面结算、角色回合、行动顺序、strict/flexible 回合顺序模式、推进下一行动者、120 秒超时、无人响应自动保守行动。strict 只能基于规则/主持侧先攻、速度、检定、已有 turn_order 或结构化战斗状态启用；不要把玩家关键词或玩家口头队列当作严格顺序来源。默认 flexible 允许当前发言人的未行动角色乱序行动。",
                 model=TurnControlArgs,
                 handler=turn_tools.turn_control,
             ),

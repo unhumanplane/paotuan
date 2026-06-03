@@ -634,6 +634,50 @@ def test_router_falls_back_from_tool_role_response_at_max_steps():
     assert "resolve_check" in result.completion_text
 
 
+def test_router_tool_argument_json_error_returns_safe_player_reply_without_tool_execution():
+    class NoToolExecutor:
+        def __init__(self):
+            self.calls = []
+
+        async def execute(self, tool_name, args):
+            self.calls.append((tool_name, args))
+            raise AssertionError("bad tool JSON should not execute any tool")
+
+    async def run_case():
+        repository = InMemoryRepository()
+        router = IntentRouter.__new__(IntentRouter)
+        executor = NoToolExecutor()
+        router.max_steps = 3
+        router.repository = repository
+
+        async def llm_generate(**kwargs):
+            from astrbot_plugin_auto_trpg_dm.core.router import ToolArgumentJsonFallbackResponse
+
+            return ToolArgumentJsonFallbackResponse("Unterminated string starting at: line 1 column 11")
+
+        router._llm_generate = llm_generate
+        result = await router._run_llm_tool_loop(
+            chat_provider_id="fake-provider",
+            system_prompt="system",
+            initial_prompt="玩家行动",
+            toolset=object(),
+            tool_executor=executor,
+            session_id="group-1",
+            raw_player_message="射击援救队",
+            available_tool_names=["execute_rule", "final_response"],
+        )
+        return result, executor, repository.last_audit_records("group-1", limit=20)
+
+    result, executor, records = asyncio.run(run_case())
+
+    assert executor.calls == []
+    assert "工具参数格式坏了" in result.completion_text
+    assert "没有把未结算的结果写进存档" in result.completion_text
+    fallback_records = [item for item in records if item.get("type") == "llm_tool_arguments_json_fallback"]
+    assert fallback_records
+    assert fallback_records[-1]["step"] == 1
+
+
 def test_character_card_final_reply_guard_blocks_unverified_elite_join():
     session = GameSession.new("group-1")
     session.world_tags["_plot_locked"] = True

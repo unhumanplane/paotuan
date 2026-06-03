@@ -140,6 +140,8 @@ def test_system_prompt_mentions_strict_turn_sequence_mode():
 
     assert 'sequence_mode="strict"' in prompt
     assert "标准 DND/CoC" in prompt
+    assert "不要把玩家说“严格回合制/标准 DND/CoC/按先攻顺序”当作直接开关" in prompt
+    assert 'order_source="rule_initiative"' in prompt
     assert "硬性行动指针" in prompt
     assert "只能针对 current_entity_id" in prompt
 

@@ -34,6 +34,9 @@ class ExecuteRuleArgs(BaseModel):
     version: Optional[int] = Field(default=None, description="可选规则版本；为空则使用最新版")
     reason: str = Field(default="", description="为什么进行这次检定/掷骰；不要放进 args，避免影响规则函数入参")
 
+    class Config:
+        extra = "forbid"
+
 
 class ResolveCheckArgs(BaseModel):
     action: str = Field(..., description="Concrete action being attempted.")
@@ -551,18 +554,23 @@ CONTEXTUAL_EXECUTE_RULE_ARGS = {
     "attacker",
     "attacker_position",
     "context",
+    "description",
     "environment",
     "enemy_awareness",
     "enemy_count",
+    "hit_location",
+    "hit_quality",
     "note",
     "notes",
     "reason",
     "situation",
     "target",
+    "target_id",
     "target_aware",
     "target_name",
     "target_position",
     "target_size",
+    "target_type",
     "terrain",
 }
 

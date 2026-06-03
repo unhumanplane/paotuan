@@ -129,6 +129,7 @@ def test_set_sequence_mode_enables_strict_turn_order():
         TurnTools(repo, "group").turn_control(
             action="set_sequence_mode",
             sequence_mode="strict",
+            order_source="existing_state",
             summary="Use standard initiative order.",
         )
     )
@@ -138,6 +139,73 @@ def test_set_sequence_mode_enables_strict_turn_order():
     assert result["turn"]["strict_sequence"] is True
     assert "硬性行动指针" in result["llm_instruction"]
     assert repo.load_session("group").battle["turn"]["sequence_mode"] == "strict"
+
+
+def test_set_sequence_mode_requires_declared_order_source_for_strict():
+    repo = _repo_with_player_turn()
+
+    result = asyncio.run(
+        TurnTools(repo, "group").turn_control(
+            action="set_sequence_mode",
+            sequence_mode="strict",
+            summary="Player asked for strict turns.",
+        )
+    )
+
+    assert result["ok"] is False
+    assert result["error"] == "strict_sequence_requires_order_source"
+    assert repo.load_session("group").battle["turn"].get("sequence_mode") != "strict"
+
+
+def test_player_facing_strict_alias_does_not_enable_strict_sequence():
+    repo = _repo_with_player_turn()
+
+    result = asyncio.run(TurnTools(repo, "group").turn_control(action="严格回合制"))
+
+    assert result["ok"] is False
+    assert result["error"] == "unsupported_turn_control_action"
+    assert repo.load_session("group").battle["turn"].get("sequence_mode") != "strict"
+
+
+def test_strict_start_round_rejects_player_supplied_order_without_rule_source():
+    repo = _runtime_repo("strict_rejects_player_order")
+    session = GameSession.new("group")
+    session.world_tags["_background_ready"] = True
+    repo.save_session(session)
+
+    result = asyncio.run(
+        TurnTools(repo, "group").turn_control(
+            action="start_round",
+            turn_order=["pc_player_choice", "enemy_player_choice"],
+            sequence_mode="strict",
+            summary="Player supplied a preferred strict order.",
+        )
+    )
+
+    assert result["ok"] is False
+    assert result["error"] == "strict_sequence_requires_rule_order"
+    assert (repo.load_session("group").battle.get("turn") or {}).get("sequence_mode") != "strict"
+
+
+def test_strict_start_round_accepts_rule_initiative_source():
+    repo = _runtime_repo("strict_rule_initiative_order")
+    session = GameSession.new("group")
+    session.world_tags["_background_ready"] = True
+    repo.save_session(session)
+
+    result = asyncio.run(
+        TurnTools(repo, "group").turn_control(
+            action="start_round",
+            turn_order=["pc_won_initiative", "enemy_lost_initiative"],
+            sequence_mode="strict",
+            order_source="rule_initiative",
+            summary="Initiative check established the order.",
+        )
+    )
+
+    assert result["ok"] is True
+    assert result["turn"]["sequence_mode"] == "strict"
+    assert result["turn"]["turn_order"] == ["pc_won_initiative", "enemy_lost_initiative"]
 
 
 def test_strict_sequence_blocks_actor_from_resolving_later_owned_turn():
