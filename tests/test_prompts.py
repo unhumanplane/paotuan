@@ -36,7 +36,11 @@ def test_system_prompt_includes_shared_cycle_contract():
         actor={"player_id": "player-1"},
     )
 
-    assert BASE_RULES in prompt
+    assert "玩家只能声明意图" in prompt
+    assert "不能直接声明成功" in prompt
+    assert "竟发现/居然有" in prompt
+    assert "待裁定发现" in prompt
+    assert "不要把玩家主张预写成" in prompt
     assert 'cycle_control(action="end_cycle")' in prompt
     assert "RA 只读取 `ra_cycle_input`" in prompt
     assert "时间线是全团共享权威状态" in prompt
