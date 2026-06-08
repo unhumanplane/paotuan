@@ -10,6 +10,7 @@ from astrbot.core.agent.tool import FunctionTool, ToolSet
 from astrbot.core.astr_agent_context import AstrAgentContext
 
 from ..core.models import GameMode
+from ..core.story_forge_runtime import StoryForgeRuntimeConfig
 from ..core.map_request_guard import looks_text_only_map_request
 from ..core.map_tool_routing import add_map_renderer_tools, looks_legacy_svg_fallback_request, looks_visual_map_request
 from ..rules.python_runtime import PythonRuleRuntime
@@ -54,6 +55,7 @@ from .strict_lifecycle_tools import (
     StartCombatOnMapArgs,
     StrictLifecycleTools,
 )
+from .story_forge_tools import RecordStoryForgeConvergenceArgs, StoryForgeTools
 from .turn_tools import TurnControlArgs, TurnTools
 
 
@@ -183,12 +185,14 @@ class ToolRegistry:
         astr_context: Any | None = None,
         external_memory_config: Any | None = None,
         external_memory: Any | None = None,
+        story_forge_config: StoryForgeRuntimeConfig | None = None,
     ):
         self.repository = repository
         self.rule_runtime = rule_runtime
         self.astr_context = astr_context
         self.external_memory_config = external_memory_config
         self.external_memory = external_memory
+        self.story_forge_config = story_forge_config or StoryForgeRuntimeConfig()
 
     def for_mode(
         self,
@@ -216,6 +220,7 @@ class ToolRegistry:
         spatial_tools = SpatialTools(self.repository, session_id, actor=actor)
         strict_grid_render_tools = StrictGridRenderTools(self.repository, session_id, actor=actor)
         strict_lifecycle_tools = StrictLifecycleTools(self.repository, session_id, actor=actor)
+        story_forge_tools = StoryForgeTools(self.repository, session_id, actor=actor, config=self.story_forge_config)
         turn_tools = TurnTools(self.repository, session_id, actor=actor)
         cycle_tools = CycleTools(self.repository, session_id, actor=actor)
         control_tools = ControlTools(self.repository, session_id, actor=actor)
@@ -342,6 +347,17 @@ class ToolRegistry:
                 ),
                 model=RecordTimelineEventArgs,
                 handler=memory_tools.record_timeline_event,
+            ),
+            "record_story_forge_convergence": make_tool(
+                name="record_story_forge_convergence",
+                description=(
+                    "Record a Story Forge scene-goal card after the visible scene has enough evidence to converge. "
+                    "Use it to preserve the writer/DM split: submit player-safe next-scene goal, entry cost, success signal, "
+                    "failure-forward outcome, evidence, and optional player-visible grid map seed. "
+                    "Do not include hidden truth, secret motives, undiscovered culprits, hidden locations, raw SVG/XML, or backend notes."
+                ),
+                model=RecordStoryForgeConvergenceArgs,
+                handler=story_forge_tools.record_story_forge_convergence,
             ),
             "record_event_card": make_tool(
                 name="record_event_card",
@@ -518,6 +534,7 @@ class ToolRegistry:
             except Exception:
                 pass
             names = self._prune_diagnostic_tools(names, message=message)
+            names = self._prune_story_forge_tools(names)
             names = self._with_loop_control_tools(names)
             specs_for_names = [
                 {
@@ -548,6 +565,7 @@ class ToolRegistry:
         if not has_campaign_background(session):
             allowed = self._background_first_tool_names(allowed, message=message)
         allowed = self._prune_diagnostic_tools(allowed, message=message)
+        allowed = self._prune_story_forge_tools(allowed)
         allowed = self._with_loop_control_tools(allowed)
         if unbound_post_start_actor:
             allowed = [name for name in allowed if name != "cycle_control"]
@@ -629,6 +647,7 @@ class ToolRegistry:
                     "record_timeline_event",
                     "record_event_card",
                     "clarify_entity_timeline",
+                    "record_story_forge_convergence",
                     "session_control",
                     "estimate_token_usage",
                 ]
@@ -656,6 +675,7 @@ class ToolRegistry:
                     "record_timeline_event",
                     "record_event_card",
                     "clarify_entity_timeline",
+                    "record_story_forge_convergence",
                     "session_control",
                     "estimate_token_usage",
                 ]
@@ -683,6 +703,7 @@ class ToolRegistry:
                     "record_timeline_event",
                     "record_event_card",
                     "clarify_entity_timeline",
+                    "record_story_forge_convergence",
                     "session_control",
                     "estimate_token_usage",
                 ]
@@ -730,6 +751,7 @@ class ToolRegistry:
                 "execute_rule",
                 "update_scene",
                 "update_character_tags",
+                "record_story_forge_convergence",
                 "session_control",
                 "estimate_token_usage",
             ]
@@ -746,6 +768,7 @@ class ToolRegistry:
                 "record_timeline_event",
                 "record_event_card",
                 "clarify_entity_timeline",
+                "record_story_forge_convergence",
                 "start_game",
                 "list_rules",
                 "session_control",
@@ -756,6 +779,7 @@ class ToolRegistry:
             "record_timeline_event",
             "record_event_card",
             "clarify_entity_timeline",
+            "record_story_forge_convergence",
             "update_world_tags",
             "create_character",
             "bind_player_character",
@@ -826,6 +850,11 @@ class ToolRegistry:
         if text and _contains_any(text, DIAGNOSTIC_TERMS):
             return selected
         return [name for name in selected if name != "estimate_token_usage"]
+
+    def _prune_story_forge_tools(self, names: list[str]) -> list[str]:
+        if bool(getattr(self.story_forge_config, "enabled", False)):
+            return list(dict.fromkeys(names))
+        return [name for name in list(dict.fromkeys(names)) if name != "record_story_forge_convergence"]
 
     @staticmethod
     def _background_first_tool_names(names: list[str], message: str = "") -> list[str]:

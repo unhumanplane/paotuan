@@ -50,6 +50,7 @@ def _install_fake_astrbot_modules():
 _install_fake_astrbot_modules()
 
 from astrbot_plugin_auto_trpg_dm.core.models import Character, GameMode, GameSession, TagValue
+from astrbot_plugin_auto_trpg_dm.core.story_forge_runtime import StoryForgeRuntimeConfig
 from astrbot_plugin_auto_trpg_dm.rules.python_runtime import PythonRuleRuntime
 from astrbot_plugin_auto_trpg_dm.storage.json_repository import JsonGameRepository
 from astrbot_plugin_auto_trpg_dm.tools.registry import ToolRegistry
@@ -218,6 +219,42 @@ def test_tool_registry_exposes_timeline_fact_tools_for_narrative():
     assert any(spec["name"] == "record_timeline_event" for spec in specs)
     assert any(spec["name"] == "record_event_card" for spec in specs)
     assert any(spec["name"] == "clarify_entity_timeline" for spec in specs)
+
+
+def test_tool_registry_exposes_story_forge_convergence_when_enabled():
+    registry = _registry_with_ready_session()
+    _toolset, names, _executor, specs = registry.for_mode(
+        GameMode.NARRATIVE,
+        "group",
+        message="我调查灯塔下层，看看下一步怎么推进。",
+    )
+
+    assert "record_story_forge_convergence" in names
+    spec = next(spec for spec in specs if spec["name"] == "record_story_forge_convergence")
+    assert "scene_goal" in spec["parameters"]["properties"]
+    assert "map_grid_seed" in spec["parameters"]["properties"]
+
+
+def test_tool_registry_hides_story_forge_convergence_when_disabled():
+    root = Path(".pytest-runtime") / f"tool-registry-story-forge-off-{uuid4().hex}"
+    repo = JsonGameRepository(root / "data")
+    session = GameSession.new("group")
+    session.world_tags["_background_ready"] = True
+    repo.save_session(session)
+    registry = ToolRegistry(
+        repo,
+        PythonRuleRuntime(root / "rules"),
+        story_forge_config=StoryForgeRuntimeConfig(enabled=False),
+    )
+
+    _toolset, names, _executor, specs = registry.for_mode(
+        GameMode.NARRATIVE,
+        "group",
+        message="继续推进剧情。",
+    )
+
+    assert "record_story_forge_convergence" not in names
+    assert not any(spec["name"] == "record_story_forge_convergence" for spec in specs)
 
 
 def test_tool_registry_prefers_resolve_check_for_ordinary_d20_checks():

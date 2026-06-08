@@ -346,6 +346,7 @@ SCENE_PROJECTION_DROP_KEYS = {
     "last_ambient_image",
     "last_map_svg",
     "_pending_outputs",
+    "_story_forge_archive",
     "_map_delivery_cadence",
     "active_scene_thread_id",
     "scene_threads",
@@ -1580,6 +1581,12 @@ def build_system_prompt(
     只有 deterministic renderer 不可用、返回 missing 类错误，且本轮明确允许 generate_map_svg 作为 legacy fallback、风格实验或迁移用草图时，才退回 generate_map_svg；不要把普通地图请求直接交给 LLM 写 SVG。
     SVG 只是视觉层，不能替代 create_grid、move_entity、check_attack_vector 的物理事实；不要根据 SVG 自行改写坐标、视线或距离。
     地图生成成功后，只需简短说明“地图已生成/已附上”，不要把 SVG 源码贴进聊天。
+26a. Story Forge 剧情工程约束：开场后必须分离三层职责：编剧层只收束玩家已见材料为可跑的下一场目标，叙事 DM 只呈现当下可感知反馈和选择压力，记录/裁判层先用规则、状态、时间线、回合和空间工具完成权威落盘。
+    如果本轮允许 record_story_forge_convergence，并且已有足够玩家可见线索、objective、stakes 或工具结果支撑下一场，就在 final_response 前调用它记录一张“下一场目标卡”。
+    目标卡必须包含 scene_goal（入场目标）、entry_cost（代价/风险/资源/位置门槛）、success_signal（成功后玩家能观察到什么）、failure_forward（失败后游戏如何继续）、evidence（可见线索或工具依据）。
+    如果下一场需要站位、路线、门、障碍、NPC 或可交互点，可在 map_grid_seed 写入 player_view 可见网格（width、height、cells、entities、doors、hazards、labels）；系统会用确定 renderer 生成 SVG，不要自己写 SVG/XML。
+    不得在 Story Forge 目标卡、map_grid_seed、普通回复或 scene 可见字段里写 hidden_truth、真凶身份、未发现密室、隐藏地点、隐藏机关或秘密动机；只写玩家已能观察、合理怀疑或已检定确认的事情。
+    record_story_forge_convergence 是编剧结构记录工具，不替代 resolve_check、execute_rule、update_scene、turn_control 或空间工具；先完成规则裁定和状态落盘，再用它固定下一场的可执行结构。
 27. 当前会话快照里的 rules 是二级摘要：level_1 给出规则名索引和标签统计，level_2 只给近期/重要规则详情。
     如果需要完整规则列表、旧规则详情或确认入参，再调用 list_rules；执行规则时使用 level_1.names 或 level_2.name 中的规则名。
 28. 开局顺序是硬约束：必须先有背景设定，再有剧本、角色卡和战场。

@@ -312,5 +312,59 @@
     "description": "生成生图 prompt 前发送给 prompt 模型的模板。留空时使用内置模板；可使用 {story_style}、{story_moment}、{rationale}、{scene}、{memory_summary}、{characters}、{world_tags}、{player_message}、{output_defaults} 等占位符。",
     "type": "string",
     "hint": ""
+  },
+  "story_forge_runtime_enabled": {
+    "description": "Enable the production Story Forge runtime. It archives each /dm turn, keeps a player-safe writer brief, and exposes the convergence-goal tool.",
+    "type": "bool",
+    "hint": "true",
+    "default": true
+  },
+  "story_forge_archive_enabled": {
+    "description": "Archive each /dm turn into the internal Story Forge archive. The raw archive is not projected into ordinary DM prompts.",
+    "type": "bool",
+    "hint": "true",
+    "default": true
+  },
+  "story_forge_map_seed_render_enabled": {
+    "description": "Render player-safe Story Forge map_grid_seed payloads through the deterministic strict-grid SVG renderer.",
+    "type": "bool",
+    "hint": "true",
+    "default": true
+  },
+  "story_forge_map_seed_send_to_chat": {
+    "description": "When a Story Forge map seed is rendered, enqueue it as a normal map attachment if cadence allows it.",
+    "type": "bool",
+    "hint": "true",
+    "default": true
+  },
+  "story_forge_archive_max_turns": {
+    "description": "Maximum Story Forge turn records retained per session.",
+    "type": "int",
+    "hint": "80",
+    "default": 80
+  },
+  "story_forge_turn_text_max_chars": {
+    "description": "Maximum characters retained for a single archived player message or DM response.",
+    "type": "int",
+    "hint": "12000",
+    "default": 12000
+  },
+  "story_forge_max_open_threads": {
+    "description": "Maximum open hook/thread records retained in the player-safe Story Forge brief.",
+    "type": "int",
+    "hint": "24",
+    "default": 24
+  },
+  "story_forge_max_clue_ledger": {
+    "description": "Maximum clue ledger records retained in the player-safe Story Forge brief.",
+    "type": "int",
+    "hint": "48",
+    "default": 48
+  },
+  "story_forge_max_convergence_actions": {
+    "description": "Maximum Story Forge convergence goal cards retained and projected into the player-safe writer brief.",
+    "type": "int",
+    "hint": "6",
+    "default": 6
   }
 }

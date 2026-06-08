@@ -17,6 +17,7 @@ data/
 
 # Local debug/recovery artifacts
 .recovery/
+.story-forge-runs/
 latest_*.svg
 latest_*.png
 map_*_remote.png

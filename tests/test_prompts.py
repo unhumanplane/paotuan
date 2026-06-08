@@ -108,6 +108,31 @@ def test_system_prompt_includes_event_timeline_contract():
     assert "未知项不能反推成否定事实" in prompt
 
 
+def test_system_prompt_includes_story_forge_convergence_contract():
+    session = GameSession.new("group")
+
+    prompt = build_system_prompt(
+        session,
+        GameMode.NARRATIVE,
+        ["record_story_forge_convergence", "update_scene", "final_response"],
+        actor={"player_id": "player-1"},
+    )
+
+    assert "Story Forge 剧情工程约束" in prompt
+    assert "三层职责" in prompt
+    assert "编剧层只收束玩家已见材料" in prompt
+    assert "叙事 DM 只呈现当下可感知反馈" in prompt
+    assert "记录/裁判层先用规则" in prompt
+    assert "record_story_forge_convergence" in prompt
+    assert "下一场目标卡" in prompt
+    assert "scene_goal" in prompt
+    assert "entry_cost" in prompt
+    assert "success_signal" in prompt
+    assert "failure_forward" in prompt
+    assert "map_grid_seed" in prompt
+    assert "不要自己写 SVG/XML" in prompt
+
+
 def test_system_prompt_mentions_explicit_system_hosting_risk_bounds():
     session = GameSession.new("group")
 

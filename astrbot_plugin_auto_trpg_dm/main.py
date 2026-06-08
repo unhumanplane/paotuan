@@ -28,6 +28,7 @@ from .core.map_tool_routing import looks_visual_map_request
 from .core.plugin_log import configure_plugin_logging
 from .core.router import IntentRouter
 from .core.forensic_collector import ForensicCollector
+from .core.story_forge_runtime import StoryForgeRuntimeConfig, apply_story_forge_turn
 from .core.scenario_templates import (
     build_campaign_preference_question,
     build_campaign_preset_patch,
@@ -277,6 +278,18 @@ class AutoTrpgDmPlugin(Star):
             similarity_retry_enabled=self._config_bool("ambient_image_similarity_retry_enabled", True),
         )
         self.ambient_image_config = ambient_image_config
+        story_forge_config = StoryForgeRuntimeConfig(
+            enabled=self._config_bool("story_forge_runtime_enabled", True),
+            archive_enabled=self._config_bool("story_forge_archive_enabled", True),
+            map_seed_render_enabled=self._config_bool("story_forge_map_seed_render_enabled", True),
+            render_send_to_chat=self._config_bool("story_forge_map_seed_send_to_chat", True),
+            max_turns=max(1, self._config_int("story_forge_archive_max_turns", 80)),
+            max_turn_text_chars=max(1000, self._config_int("story_forge_turn_text_max_chars", 12000)),
+            max_open_threads=max(1, self._config_int("story_forge_max_open_threads", 24)),
+            max_clue_ledger=max(1, self._config_int("story_forge_max_clue_ledger", 48)),
+            max_convergence_actions=max(1, self._config_int("story_forge_max_convergence_actions", 6)),
+        )
+        self.story_forge_runtime_config = story_forge_config
         prompt_snapshot_projection_enabled = self._config_bool("prompt_snapshot_projection_enabled", True)
         heartbeat_idle_log_interval = max(1, self._config_int("heartbeat_idle_log_interval", 10))
         llm_tool_loop_max_steps = max(1, self._config_int("llm_tool_loop_max_steps", 16))
@@ -294,6 +307,7 @@ class AutoTrpgDmPlugin(Star):
             astr_context=context,
             external_memory_config=honcho_config,
             external_memory=external_memory,
+            story_forge_config=story_forge_config,
         )
         self.router = IntentRouter(
             astr_context=context,
@@ -328,13 +342,15 @@ class AutoTrpgDmPlugin(Star):
         self._start_heartbeat_task()
         self.admin_web = AutoTrpgAdminWeb(self.repository)
         self.plugin_logger.info(
-            "plugin_initialized version=%s data_dir=%s honcho_enabled=%s honcho_workspace=%s ambient_image_enabled=%s ambient_image_mode=%s prompt_snapshot_projection_enabled=%s continuity_auditor_enabled=%s heartbeat_idle_log_interval=%s llm_tool_loop_max_steps=%s forensic_dumps_enabled=%s forensic_max_turns=%s forensic_retain_days=%s",
+            "plugin_initialized version=%s data_dir=%s honcho_enabled=%s honcho_workspace=%s ambient_image_enabled=%s ambient_image_mode=%s story_forge_runtime_enabled=%s story_forge_map_seed_render_enabled=%s prompt_snapshot_projection_enabled=%s continuity_auditor_enabled=%s heartbeat_idle_log_interval=%s llm_tool_loop_max_steps=%s forensic_dumps_enabled=%s forensic_max_turns=%s forensic_retain_days=%s",
             PLUGIN_VERSION,
             data_dir,
             honcho_config.enabled,
             bool(honcho_config.workspace_id),
             ambient_image_config.enabled,
             ambient_image_config.api_mode,
+            story_forge_config.enabled,
+            story_forge_config.map_seed_render_enabled,
             prompt_snapshot_projection_enabled,
             self._config_bool("continuity_auditor_enabled", True),
             heartbeat_idle_log_interval,
@@ -452,6 +468,12 @@ class AutoTrpgDmPlugin(Star):
                 session_id,
                 sender_id,
                 self._dedupe_text(routed_message)[:160],
+            )
+            self._apply_story_forge_runtime_after_reply(
+                session_id,
+                actor,
+                routed_message,
+                fast_reply,
             )
             pending_outputs = self._pop_pending_outputs(session_id)
             yield self._quoted_result(event, fast_reply, pending_outputs=pending_outputs)
@@ -585,6 +607,12 @@ class AutoTrpgDmPlugin(Star):
             self._mark_message_finished(session_id, sender_id, routed_message)
             return
         await self._cancel_long_running_reassurance_task(reassurance_task)
+        self._apply_story_forge_runtime_after_reply(
+            session_id,
+            actor,
+            routed_message,
+            completion,
+        )
         pending_outputs = self._pop_pending_outputs(session_id)
         dice_outputs = [item for item in pending_outputs if item.get("type") == "dice_check"]
         other_outputs = [item for item in pending_outputs if item.get("type") != "dice_check"]
@@ -641,6 +669,41 @@ class AutoTrpgDmPlugin(Star):
         with suppress(asyncio.CancelledError):
             await task
         self.plugin_logger.info("long_running_reassurance_cancelled")
+
+    def _apply_story_forge_runtime_after_reply(
+        self,
+        session_id: str,
+        actor: dict[str, str],
+        player_message: str,
+        completion: str,
+    ) -> None:
+        config = getattr(self, "story_forge_runtime_config", None)
+        if not config or not bool(getattr(config, "enabled", False)):
+            return
+        try:
+            result = apply_story_forge_turn(
+                self.repository,
+                session_id,
+                actor=actor,
+                player_message=player_message,
+                dm_response=completion,
+                config=config,
+            )
+            if not result.get("skipped"):
+                self.plugin_logger.info(
+                    "story_forge_runtime_applied session=%s turns=%s convergence=%s rendered_maps=%s attempts=%s",
+                    session_id,
+                    result.get("turns", 0),
+                    result.get("convergence_actions", 0),
+                    result.get("rendered_maps", 0),
+                    result.get("render_attempts", 0),
+                )
+        except Exception as exc:
+            self.plugin_logger.warning(
+                "story_forge_runtime_skipped session=%s error=%s",
+                session_id,
+                exc,
+            )
 
     async def _run_long_running_reassurance_task(
         self,
