@@ -7,6 +7,7 @@ import json
 import os
 import re
 import subprocess
+import time
 import urllib.error
 import urllib.request
 from datetime import datetime, timezone
@@ -29,6 +30,9 @@ DEFAULT_NOTIFY_URL = os.environ.get('PAOTUAN_NOTIFY_URL', 'http://127.0.0.1:8767
 DEFAULT_NOTIFY_GROUP_ID = os.environ.get('PAOTUAN_NOTIFY_GROUP_ID', '1101538762')
 DEFAULT_NOTIFY_SECRET_PATH = Path(
     os.environ.get('HERMES_CODER_BRIDGE_SECRET_PATH') or OPS / 'secrets' / 'coder_bridge_secret'
+)
+DEFAULT_PAOTUAN_SSH_KEY = Path(
+    os.environ.get('PAOTUAN_SSH_KEY') or '/volume1/docker/hermes/home/.ssh/id_ed25519_paotuan'
 )
 DIRECT_NOTIFY_ENABLED = os.environ.get('PAOTUAN_STEWARD_DIRECT_NOTIFY', '1').lower() not in {
     '0',
@@ -268,34 +272,64 @@ def post_notify(
     group_id: str = DEFAULT_NOTIFY_GROUP_ID,
     secret_path: Path = DEFAULT_NOTIFY_SECRET_PATH,
     timeout: int = 15,
+    attempts: int = 3,
 ) -> dict[str, Any]:
     secret = read_notify_secret(secret_path)
     payload = {'group_id': str(group_id), 'text': text}
     body = json.dumps(payload, ensure_ascii=False, separators=(',', ':')).encode('utf-8')
     signature = hmac.new(secret.encode('utf-8'), body, hashlib.sha256).hexdigest()
-    req = urllib.request.Request(
-        url,
-        data=body,
-        headers={
-            'Content-Type': 'application/json',
-            'Accept': 'application/json',
-            'X-Hermes-Coder-Signature': signature,
-        },
-        method='POST',
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            raw = resp.read().decode('utf-8', errors='replace')
-            status = resp.status
-    except urllib.error.HTTPError as exc:
-        raw = exc.read().decode('utf-8', errors='replace')
-        status = exc.code
+    raw = ''
+    status = 0
+    last_error = ''
+    for attempt in range(1, max(1, attempts) + 1):
+        req = urllib.request.Request(
+            url,
+            data=body,
+            headers={
+                'Content-Type': 'application/json',
+                'Accept': 'application/json',
+                'X-Hermes-Coder-Signature': signature,
+            },
+            method='POST',
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                raw = resp.read().decode('utf-8', errors='replace')
+                status = resp.status
+        except urllib.error.HTTPError as exc:
+            try:
+                raw = exc.read().decode('utf-8', errors='replace')
+            except Exception:
+                raw = ''
+            status = exc.code
+        except Exception as exc:
+            raw = ''
+            status = 0
+            last_error = f'{type(exc).__name__}: {exc}'
+        if 200 <= status < 300:
+            break
+        if status and status not in {502, 503, 504, 0}:
+            break
+        if attempt < max(1, attempts):
+            time.sleep(min(2, attempt))
     try:
         parsed = json.loads(raw) if raw else {}
     except Exception:
         parsed = {'error': raw[:500]}
     parsed.setdefault('http_status', status)
+    if last_error and not parsed.get('error'):
+        parsed['error'] = last_error
     return parsed
+
+
+def ensure_git_ssh_env(env: dict[str, str], key_path: Path = DEFAULT_PAOTUAN_SSH_KEY) -> None:
+    if not key_path.exists():
+        return
+    env.setdefault('PAOTUAN_SSH_KEY', str(key_path))
+    env.setdefault(
+        'GIT_SSH_COMMAND',
+        f"ssh -i {key_path} -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new",
+    )
 
 
 def send_direct_notification(text: str, context: dict[str, Any], kind: str) -> bool:
@@ -446,6 +480,7 @@ def main() -> int:
     deploy_env.setdefault('PAOTUAN_RESTART_TIMEOUT', '90')
     deploy_env.setdefault('PAOTUAN_DOCKER_RESTART_STOP_TIMEOUT', '20')
     deploy_env.setdefault('PAOTUAN_DOCKER_STATUS_TIMEOUT', '10')
+    ensure_git_ssh_env(deploy_env)
     try:
         proc = subprocess.run(cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=130, env=deploy_env)
         deploy_output = proc.stdout or ''

@@ -1,5 +1,6 @@
 import importlib.util
 from pathlib import Path
+import urllib.error
 
 
 def _load_poll_module():
@@ -62,3 +63,54 @@ def test_pr_attention_notification_is_lightweight():
     assert "HashVal" in text
     assert "/coder" in text
     assert len(text) < 700
+
+
+def test_ensure_git_ssh_env_sets_stable_deploy_key(tmp_path):
+    key = tmp_path / "id_ed25519_paotuan"
+    key.write_text("private-key-placeholder", encoding="utf-8")
+    env = {}
+
+    poll_mod.ensure_git_ssh_env(env, key)
+
+    assert env["PAOTUAN_SSH_KEY"] == str(key)
+    assert str(key) in env["GIT_SSH_COMMAND"]
+    assert "IdentitiesOnly=yes" in env["GIT_SSH_COMMAND"]
+
+
+def test_post_notify_retries_transient_gateway_error(tmp_path, monkeypatch):
+    secret = tmp_path / "secret"
+    secret.write_text("notify-secret", encoding="utf-8")
+    calls = []
+
+    class FakeResponse:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self):
+            return b'{"ok":true}'
+
+    def fake_urlopen(req, timeout):
+        calls.append((req.full_url, timeout))
+        if len(calls) == 1:
+            raise urllib.error.HTTPError(req.full_url, 502, "bad gateway", {}, None)
+        return FakeResponse()
+
+    monkeypatch.setattr(poll_mod.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(poll_mod, "time", type("T", (), {"sleep": staticmethod(lambda seconds: None)}))
+
+    result = poll_mod.post_notify(
+        "hello",
+        url="http://bridge/notify",
+        group_id="1101538762",
+        secret_path=secret,
+        attempts=2,
+    )
+
+    assert result["ok"] is True
+    assert result["http_status"] == 200
+    assert len(calls) == 2

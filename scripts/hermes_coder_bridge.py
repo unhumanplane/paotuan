@@ -47,6 +47,7 @@ DEFAULT_ASTRBOT_API_KEY_PATH = OPS / "secrets" / "astrbot_openapi_im_key"
 DEFAULT_ASTRBOT_API_URL = "http://127.0.0.1:6185/api/v1/im/message"
 DEFAULT_NOTIFY_SESSION_TEMPLATE = "default:GroupMessage:{group_id}"
 DEFAULT_ASTRBOT_API_TIMEOUT_SECONDS = 10
+DEFAULT_ASTRBOT_API_ATTEMPTS = 3
 DEFAULT_MAX_NOTIFY_CHARS = 3500
 DEFAULT_BACKGROUND_ACCEPTED_REPLY = "Hermes 已转入后台执行，完成后会把结果发回群里。"
 DEFAULT_GAME_DATA_DIR = Path("/volume1/docker/astrbot/data/plugin_data/astrbot_plugin_auto_trpg_dm")
@@ -997,6 +998,7 @@ class CoderBridge:
         self.astrbot_api_url = str(args.astrbot_api_url).strip()
         self.astrbot_api_key_path = Path(args.astrbot_api_key_path)
         self.astrbot_api_timeout_seconds = int(args.astrbot_api_timeout_seconds)
+        self.astrbot_api_attempts = int(args.astrbot_api_attempts)
         self.astrbot_coder_config_path = Path(args.astrbot_coder_config_path)
         self.notify_group_whitelist = parse_str_set(args.notify_group_whitelist)
         self.notify_session_template = str(args.notify_session_template).strip() or DEFAULT_NOTIFY_SESSION_TEMPLATE
@@ -1510,7 +1512,7 @@ class CoderBridge:
         session = self.notify_session_template.format(group_id=group_id)
         return group_id, session, truncate_text(text, self.max_notify_chars)
 
-    def _post_astrbot_message(self, api_key: str, session: str, text: str) -> dict[str, Any]:
+    def _post_astrbot_message_once(self, api_key: str, session: str, text: str) -> dict[str, Any]:
         body = json.dumps(
             {"umo": session, "message": text},
             ensure_ascii=False,
@@ -1531,7 +1533,10 @@ class CoderBridge:
                 raw = resp.read().decode("utf-8", errors="replace")
                 status_code = resp.status
         except urllib.error.HTTPError as exc:
-            raw = exc.read().decode("utf-8", errors="replace")
+            try:
+                raw = exc.read().decode("utf-8", errors="replace")
+            except Exception:
+                raw = ""
             status_code = exc.code
         try:
             parsed = json.loads(raw) if raw else {}
@@ -1543,6 +1548,23 @@ class CoderBridge:
             "status_code": status_code,
             "error": parsed.get("message") or parsed.get("error") or parsed.get("status"),
         }
+
+    def _post_astrbot_message(self, api_key: str, session: str, text: str) -> dict[str, Any]:
+        attempts = max(1, self.astrbot_api_attempts)
+        result: dict[str, Any] = {}
+        for attempt in range(1, attempts + 1):
+            try:
+                result = self._post_astrbot_message_once(api_key, session, text)
+            except Exception as exc:
+                result = {"ok": False, "status_code": 0, "error": f"{type(exc).__name__}: {exc}"}
+            if result.get("ok"):
+                return result
+            status_code = int(result.get("status_code") or 0)
+            if status_code not in {0, 502, 503, 504}:
+                return result
+            if attempt < attempts:
+                time.sleep(min(2, attempt))
+        return result
 
 
 def parse_args() -> argparse.Namespace:
@@ -1564,6 +1586,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--astrbot-api-url", default=os.environ.get("HERMES_ASTRBOT_API_URL", DEFAULT_ASTRBOT_API_URL))
     parser.add_argument("--astrbot-api-key-path", default=os.environ.get("HERMES_ASTRBOT_API_KEY_PATH", str(DEFAULT_ASTRBOT_API_KEY_PATH)))
     parser.add_argument("--astrbot-api-timeout-seconds", type=int, default=int(os.environ.get("HERMES_ASTRBOT_API_TIMEOUT_SECONDS", str(DEFAULT_ASTRBOT_API_TIMEOUT_SECONDS))))
+    parser.add_argument("--astrbot-api-attempts", type=int, default=int(os.environ.get("HERMES_ASTRBOT_API_ATTEMPTS", str(DEFAULT_ASTRBOT_API_ATTEMPTS))))
     parser.add_argument("--astrbot-coder-config-path", default=os.environ.get("HERMES_ASTRBOT_CODER_CONFIG_PATH", str(DEFAULT_ASTRBOT_CODER_CONFIG_PATH)))
     parser.add_argument("--notify-group-whitelist", default=os.environ.get("HERMES_CODER_NOTIFY_GROUPS", ""))
     parser.add_argument("--notify-session-template", default=os.environ.get("HERMES_NOTIFY_SESSION_TEMPLATE", DEFAULT_NOTIFY_SESSION_TEMPLATE))

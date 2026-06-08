@@ -44,6 +44,7 @@ def _bridge(tmp_path, *, groups="", config_groups=None):
         astrbot_api_url="http://astrbot/api/v1/im/message",
         astrbot_api_key_path=str(api_key_path),
         astrbot_api_timeout_seconds=10,
+        astrbot_api_attempts=3,
         astrbot_coder_config_path=str(config_path),
         notify_group_whitelist=groups,
         notify_session_template="default:GroupMessage:{group_id}",
@@ -130,6 +131,38 @@ def test_post_astrbot_message_uses_im_open_api_payload(tmp_path, monkeypatch):
     }
     assert captured["api_key"] == "api-key"
     assert captured["timeout"] == 10
+
+
+def test_post_astrbot_message_retries_transient_502(tmp_path, monkeypatch):
+    bridge = _bridge(tmp_path, groups="1101538762")
+    calls = []
+
+    class FakeResponse:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self):
+            return b'{"status":"ok"}'
+
+    def fake_urlopen(req, timeout):
+        calls.append(req.full_url)
+        if len(calls) == 1:
+            raise bridge_mod.urllib.error.HTTPError(req.full_url, 502, "bad gateway", {}, None)
+        return FakeResponse()
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    monkeypatch.setattr(bridge_mod.time, "sleep", lambda seconds: None)
+
+    result = bridge._post_astrbot_message("api-key", "default:GroupMessage:1101538762", "hello")
+
+    assert result["ok"] is True
+    assert result["status_code"] == 200
+    assert len(calls) == 2
 
 
 def test_format_coder_job_reply_prefixes_nonzero_exit(tmp_path):
