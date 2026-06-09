@@ -32,6 +32,37 @@ class OutboundCleanupResult:
     semantic_candidate: SemanticReviewCandidate | None = None
 
 
+MARKDOWN_CODE_SPAN_OR_FENCE_RE = re.compile(r"(```[\s\S]*?```|`[^`\n]*`)")
+MARKDOWN_EMPHASIS_REPLACEMENTS = (
+    re.compile(r"(?<!\*)\*\*\*(?=[^\s*/])([\s\S]*?\S)\*\*\*(?!\*)"),
+    re.compile(r"(?<!\*)\*\*(?=[^\s*/])([\s\S]*?\S)\*\*(?!\*)"),
+)
+MARKDOWN_MARKER_ONLY_LINE_RE = re.compile(r"(?m)^[ \t]*\*{2,3}[ \t]*$")
+
+
+def cleanup_markdown_emphasis(text: str) -> str:
+    source = str(text or "")
+    if not source or "**" not in source:
+        return source
+    parts = MARKDOWN_CODE_SPAN_OR_FENCE_RE.split(source)
+    for index, part in enumerate(parts):
+        if not part or part.startswith("`"):
+            continue
+        parts[index] = _cleanup_markdown_emphasis_segment(part)
+    return "".join(parts)
+
+
+def _cleanup_markdown_emphasis_segment(text: str) -> str:
+    cleaned = str(text or "")
+    for _ in range(4):
+        before = cleaned
+        for pattern in MARKDOWN_EMPHASIS_REPLACEMENTS:
+            cleaned = pattern.sub(r"\1", cleaned)
+        if cleaned == before:
+            break
+    return MARKDOWN_MARKER_ONLY_LINE_RE.sub("", cleaned)
+
+
 MENU_INTRO_RE = re.compile(
     r"(你可以(?:选择|选|做|考虑|尝试)|"
     r"你有(?:几|两|三|\d+).{0,8}(?:条路|个选择|种选择|个选项|种选项)|"

@@ -46,6 +46,7 @@ from .core.scenario_templates import (
 )
 from .core.security import security_precheck
 from .core.models import CycleState, GameMode
+from .core.outbound_cleanup import cleanup_markdown_emphasis
 from .core.timeline import timeline_status_text
 from .core.turn_labels import fallback_turn_entity_label, public_turn_entity_label, turn_actor_kind, turn_entity_owner_id
 from .rules.python_runtime import PythonRuleRuntime
@@ -4517,7 +4518,9 @@ def _text_halo(fill: object):
 
 
 def _join_reply_sections(*sections: object) -> str:
-    return "\n\n".join(str(section).strip() for section in sections if str(section or "").strip())
+    return cleanup_markdown_emphasis(
+        "\n\n".join(str(section).strip() for section in sections if str(section or "").strip())
+    )
 
 
 def _format_roll_record(record: object) -> str:

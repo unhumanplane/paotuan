@@ -1,5 +1,6 @@
 from astrbot_plugin_auto_trpg_dm.core.outbound_cleanup import (
     apply_semantic_menu_judgment,
+    cleanup_markdown_emphasis,
     cleanup_menu_like_guidance,
 )
 
@@ -502,3 +503,23 @@ def test_cleanup_is_idempotent():
 
     assert first.changed is True
     assert second.text == first.text
+
+
+def test_cleanup_markdown_emphasis_strips_bold_markers_only():
+    text = "**Title**\n\nUse **focus** and ***very clear*** wording."
+
+    result = cleanup_markdown_emphasis(text)
+
+    assert result == "Title\n\nUse focus and very clear wording."
+
+
+def test_cleanup_markdown_emphasis_preserves_code_and_globs():
+    text = "Keep `**literal**`, fenced:\n```python\nvalue = 2 ** 8\n```\nCheck **/*.py and **bold**."
+
+    result = cleanup_markdown_emphasis(text)
+
+    assert "`**literal**`" in result
+    assert "value = 2 ** 8" in result
+    assert "**/*.py" in result
+    assert "bold" in result
+    assert "**bold**" not in result

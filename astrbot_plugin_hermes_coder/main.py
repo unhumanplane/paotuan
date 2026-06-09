@@ -30,6 +30,12 @@ from astrbot.core.message.message_event_result import MessageChain
 from astrbot.core.star.filter.command import GreedyStr
 from astrbot.core.utils.astrbot_path import get_astrbot_data_path
 
+try:
+    from astrbot_plugin_auto_trpg_dm.core.outbound_cleanup import cleanup_markdown_emphasis
+except Exception:  # Keep /coder usable even when the DM plugin is not installed.
+    def cleanup_markdown_emphasis(text: str) -> str:
+        return str(text or "")
+
 
 PLUGIN_VERSION = "0.1.0"
 DEFAULT_BRIDGE_URL = "http://192.168.123.148:8767/coder"
@@ -254,7 +260,7 @@ class HermesCoderPlugin(Star):
             event.stop_event()
             return
 
-        text = str(response.get("reply") or response.get("error") or "").strip()
+        text = cleanup_markdown_emphasis(response.get("reply") or response.get("error") or "").strip()
         if not text:
             text = "Hermes 没有返回文本结果。"
         if len(text) > self.max_reply_chars:

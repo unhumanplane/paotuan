@@ -290,7 +290,8 @@ def test_router_preserves_setup_suggestions_before_game_start():
     reply = asyncio.run(router.handle_message(FakeEvent("来一个现代背景的跑团：")))
     records = repository.last_audit_records("group-1", limit=20)
 
-    assert "**建议角色方向：**" in reply
+    assert "建议角色方向：" in reply
+    assert "**" not in reply
     assert "通灵者" in reply
     assert not any(item.get("type") == "outbound_menu_guidance_cleaned" for item in records)
 

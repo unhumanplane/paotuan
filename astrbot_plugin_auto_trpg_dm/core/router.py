@@ -43,6 +43,7 @@ from .turn_labels import public_turn_entity_label, turn_entity_owner_id
 from .outbound_cleanup import (
     SemanticReviewCandidate,
     apply_semantic_menu_judgment,
+    cleanup_markdown_emphasis,
     cleanup_menu_like_guidance,
 )
 from .plugin_log import get_plugin_logger
@@ -2566,6 +2567,7 @@ class IntentRouter:
     @staticmethod
     def _sanitize_completion_text(text: str) -> str:
         cleaned = _strip_tool_call_payloads(str(text or ""))
+        cleaned = cleanup_markdown_emphasis(cleaned)
         cleaned = cleaned.strip()
         if cleaned:
             return cleaned
