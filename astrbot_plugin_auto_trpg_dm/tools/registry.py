@@ -55,7 +55,12 @@ from .strict_lifecycle_tools import (
     StartCombatOnMapArgs,
     StrictLifecycleTools,
 )
-from .story_forge_tools import RecordStoryForgeConvergenceArgs, StoryForgeTools
+from .story_forge_tools import (
+    AdvanceStoryForgePressureClockArgs,
+    RecordStoryForgeConvergenceArgs,
+    RecordStoryForgePressureClockArgs,
+    StoryForgeTools,
+)
 from .turn_tools import TurnControlArgs, TurnTools
 
 
@@ -358,6 +363,26 @@ class ToolRegistry:
                 ),
                 model=RecordStoryForgeConvergenceArgs,
                 handler=story_forge_tools.record_story_forge_convergence,
+            ),
+            "record_story_forge_pressure_clock": make_tool(
+                name="record_story_forge_pressure_clock",
+                description=(
+                    "Create or update a Story Forge pressure clock so player choices have visible cost. "
+                    "Use it for time, resource, relation, space, moral, information, or danger pressure. "
+                    "Completion must stay failure-forward with a playable state change; do not include hidden truth."
+                ),
+                model=RecordStoryForgePressureClockArgs,
+                handler=story_forge_tools.record_story_forge_pressure_clock,
+            ),
+            "advance_story_forge_pressure_clock": make_tool(
+                name="advance_story_forge_pressure_clock",
+                description=(
+                    "Advance an existing Story Forge pressure clock after a concrete trigger such as delay, failed stealth, "
+                    "loud entry, resource expenditure, ignored warning, or a moral opportunity cost. "
+                    "Always provide cause and a player-visible effect; do not reveal hidden truth."
+                ),
+                model=AdvanceStoryForgePressureClockArgs,
+                handler=story_forge_tools.advance_story_forge_pressure_clock,
             ),
             "record_event_card": make_tool(
                 name="record_event_card",
@@ -852,9 +877,19 @@ class ToolRegistry:
         return [name for name in selected if name != "estimate_token_usage"]
 
     def _prune_story_forge_tools(self, names: list[str]) -> list[str]:
+        story_forge_tools = {
+            "record_story_forge_convergence",
+            "record_story_forge_pressure_clock",
+            "advance_story_forge_pressure_clock",
+        }
         if bool(getattr(self.story_forge_config, "enabled", False)):
-            return list(dict.fromkeys(names))
-        return [name for name in list(dict.fromkeys(names)) if name != "record_story_forge_convergence"]
+            selected = list(dict.fromkeys(names))
+            if "record_story_forge_convergence" in selected:
+                for name in ("record_story_forge_pressure_clock", "advance_story_forge_pressure_clock"):
+                    if name not in selected:
+                        selected.append(name)
+            return selected
+        return [name for name in list(dict.fromkeys(names)) if name not in story_forge_tools]
 
     @staticmethod
     def _background_first_tool_names(names: list[str], message: str = "") -> list[str]:

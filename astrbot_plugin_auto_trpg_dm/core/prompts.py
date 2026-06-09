@@ -1583,6 +1583,8 @@ def build_system_prompt(
     地图生成成功后，只需简短说明“地图已生成/已附上”，不要把 SVG 源码贴进聊天。
 26a. Story Forge 剧情工程约束：开场后必须分离三层职责：编剧层只收束玩家已见材料为可跑的下一场目标，叙事 DM 只呈现当下可感知反馈和选择压力，记录/裁判层先用规则、状态、时间线、回合和空间工具完成权威落盘。
     如果本轮允许 record_story_forge_convergence，并且已有足够玩家可见线索、objective、stakes 或工具结果支撑下一场，就在 final_response 前调用它记录一张“下一场目标卡”。
+    如果本轮允许 record_story_forge_pressure_clock，且当前目标存在时间、资源、关系、空间、道德、信息或危险压力，应先创建或更新一枚玩家可理解的 pressure clock；on_complete 必须是 failure_forward、新场景目标或状态变化，不能写成死局或直接团灭。
+    如果本轮允许 advance_story_forge_pressure_clock，且玩家拖延、失败检定、制造噪音、消耗关键资源、忽视警告、选择了机会成本或让敌方/NPC/环境获得推进窗口，应在 final_response 前推进对应 clock，并写清 trigger、cause、visible_effect；visible_effect 只能是玩家可感知的变化，不得泄露 hidden truth。
     目标卡必须包含 scene_goal（入场目标）、entry_cost（代价/风险/资源/位置门槛）、success_signal（成功后玩家能观察到什么）、failure_forward（失败后游戏如何继续）、evidence（可见线索或工具依据）。
     如果下一场需要站位、路线、门、障碍、NPC 或可交互点，可在 map_grid_seed 写入 player_view 可见网格（width、height、cells、entities、doors、hazards、labels）；系统会用确定 renderer 生成 SVG，不要自己写 SVG/XML。
     不得在 Story Forge 目标卡、map_grid_seed、普通回复或 scene 可见字段里写 hidden_truth、真凶身份、未发现密室、隐藏地点、隐藏机关或秘密动机；只写玩家已能观察、合理怀疑或已检定确认的事情。

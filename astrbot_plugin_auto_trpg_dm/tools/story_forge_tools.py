@@ -6,7 +6,9 @@ from pydantic import BaseModel, Field
 
 from ..core.story_forge_runtime import (
     StoryForgeRuntimeConfig,
+    advance_story_forge_pressure_clock,
     record_story_forge_convergence,
+    record_story_forge_pressure_clock,
 )
 from ..storage.json_repository import JsonGameRepository
 
@@ -25,6 +27,31 @@ class RecordStoryForgeConvergenceArgs(BaseModel):
         description="Optional player-visible grid seed: width, height, cells, entities, doors, hazards, obstacles, labels.",
     )
     send_to_chat: bool = Field(default=True, description="Whether a rendered map seed should be attached to this turn if eligible.")
+
+
+class RecordStoryForgePressureClockArgs(BaseModel):
+    clock_id: str = Field(default="", description="Stable clock id. Leave empty to derive from label.")
+    label: str = Field(..., description="Player-facing pressure clock label.")
+    pressure_type: str = Field(default="time", description="time, resource, relation, space, moral, information, or danger.")
+    value: int = Field(default=0, description="Current clock value.")
+    max: int = Field(default=4, description="Clock completion value.")
+    visibility: str = Field(default="public", description="public, partial, or hidden. Hidden clocks are not projected to player brief.")
+    public_signal: str = Field(default="", description="What players can currently perceive without hidden truth.")
+    stakes: str = Field(default="", description="Playable consequence if pressure keeps rising.")
+    next_risk_hint: str = Field(default="", description="Short hint for what kind of choice will tick this clock next.")
+    counterplay_hint: str = Field(default="", description="Short hint for how players can slow, reduce, or redirect this pressure.")
+    on_complete: Dict[str, Any] = Field(
+        default_factory=dict,
+        description="Completion effect with at least one of failure_forward, new_scene_goal, or state_change.",
+    )
+
+
+class AdvanceStoryForgePressureClockArgs(BaseModel):
+    clock_id: str = Field(..., description="Existing pressure clock id.")
+    delta: int = Field(default=1, description="Clock delta, usually 1. Negative values can relieve pressure.")
+    trigger: str = Field(..., description="Concrete trigger such as continued_investigation, failed_stealth, loud_entry, or ignored_warning.")
+    cause: str = Field(..., description="Specific in-fiction reason this clock changed.")
+    visible_effect: str = Field(..., description="Player-visible signal of the clock movement. No hidden truth.")
 
 
 class StoryForgeTools:
@@ -71,5 +98,59 @@ class StoryForgeTools:
             self.session_id,
             actor=self.actor,
             payload=payload,
+            config=self.config,
+        )
+
+    async def record_story_forge_pressure_clock(
+        self,
+        clock_id: str = "",
+        label: str = "",
+        pressure_type: str = "time",
+        value: int = 0,
+        max: int = 4,
+        visibility: str = "public",
+        public_signal: str = "",
+        stakes: str = "",
+        next_risk_hint: str = "",
+        counterplay_hint: str = "",
+        on_complete: Dict[str, Any] | None = None,
+    ) -> Dict[str, Any]:
+        return record_story_forge_pressure_clock(
+            self.repository,
+            self.session_id,
+            actor=self.actor,
+            clock={
+                "clock_id": clock_id,
+                "label": label,
+                "pressure_type": pressure_type,
+                "value": value,
+                "max": max,
+                "visibility": visibility,
+                "public_signal": public_signal,
+                "stakes": stakes,
+                "next_risk_hint": next_risk_hint,
+                "counterplay_hint": counterplay_hint,
+                "on_complete": on_complete or {},
+            },
+            config=self.config,
+        )
+
+    async def advance_story_forge_pressure_clock(
+        self,
+        clock_id: str,
+        delta: int = 1,
+        trigger: str = "",
+        cause: str = "",
+        visible_effect: str = "",
+    ) -> Dict[str, Any]:
+        return advance_story_forge_pressure_clock(
+            self.repository,
+            self.session_id,
+            actor=self.actor,
+            clock_id=clock_id,
+            delta=delta,
+            trigger=trigger,
+            cause=cause,
+            visible_effect=visible_effect,
             config=self.config,
         )

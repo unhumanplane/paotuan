@@ -114,7 +114,13 @@ def test_system_prompt_includes_story_forge_convergence_contract():
     prompt = build_system_prompt(
         session,
         GameMode.NARRATIVE,
-        ["record_story_forge_convergence", "update_scene", "final_response"],
+        [
+            "record_story_forge_convergence",
+            "record_story_forge_pressure_clock",
+            "advance_story_forge_pressure_clock",
+            "update_scene",
+            "final_response",
+        ],
         actor={"player_id": "player-1"},
     )
 
@@ -129,6 +135,10 @@ def test_system_prompt_includes_story_forge_convergence_contract():
     assert "entry_cost" in prompt
     assert "success_signal" in prompt
     assert "failure_forward" in prompt
+    assert "record_story_forge_pressure_clock" in prompt
+    assert "advance_story_forge_pressure_clock" in prompt
+    assert "trigger、cause、visible_effect" in prompt
+    assert "时间、资源、关系、空间、道德、信息或危险压力" in prompt
     assert "map_grid_seed" in prompt
     assert "不要自己写 SVG/XML" in prompt
 

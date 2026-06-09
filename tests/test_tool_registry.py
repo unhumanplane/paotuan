@@ -230,9 +230,15 @@ def test_tool_registry_exposes_story_forge_convergence_when_enabled():
     )
 
     assert "record_story_forge_convergence" in names
+    assert "record_story_forge_pressure_clock" in names
+    assert "advance_story_forge_pressure_clock" in names
     spec = next(spec for spec in specs if spec["name"] == "record_story_forge_convergence")
     assert "scene_goal" in spec["parameters"]["properties"]
     assert "map_grid_seed" in spec["parameters"]["properties"]
+    clock_spec = next(spec for spec in specs if spec["name"] == "record_story_forge_pressure_clock")
+    assert "on_complete" in clock_spec["parameters"]["properties"]
+    advance_spec = next(spec for spec in specs if spec["name"] == "advance_story_forge_pressure_clock")
+    assert "visible_effect" in advance_spec["parameters"]["properties"]
 
 
 def test_tool_registry_hides_story_forge_convergence_when_disabled():
@@ -254,7 +260,11 @@ def test_tool_registry_hides_story_forge_convergence_when_disabled():
     )
 
     assert "record_story_forge_convergence" not in names
+    assert "record_story_forge_pressure_clock" not in names
+    assert "advance_story_forge_pressure_clock" not in names
     assert not any(spec["name"] == "record_story_forge_convergence" for spec in specs)
+    assert not any(spec["name"] == "record_story_forge_pressure_clock" for spec in specs)
+    assert not any(spec["name"] == "advance_story_forge_pressure_clock" for spec in specs)
 
 
 def test_tool_registry_prefers_resolve_check_for_ordinary_d20_checks():
