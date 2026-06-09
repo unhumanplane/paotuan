@@ -97,9 +97,38 @@ def apply_story_forge_turn(
         "convergence_actions": len(archive.get("convergence_actions") or []),
         "rendered_maps": len(archive.get("rendered_map_refs") or []),
         "render_attempts": len(render_results),
+        "diagnostics": story_forge_runtime_diagnostics(session),
     }
     _append_story_forge_audit(repository, session_id, "story_forge_turn_archived", result)
     return result
+
+
+def story_forge_runtime_diagnostics(session: GameSession | dict[str, Any]) -> dict[str, Any]:
+    scene = session.get("scene", {}) if isinstance(session, dict) else getattr(session, "scene", {})
+    archive = normalize_story_forge_archive(scene.get(STORY_FORGE_ARCHIVE_KEY) if isinstance(scene, dict) else {})
+    actions = _list_of_dicts(archive.get("convergence_actions"))
+    action_with_map_seed = [action for action in actions if isinstance(action.get("map_grid_seed"), dict)]
+    action_with_render = [action for action in actions if isinstance(action.get("rendered_map_ref"), dict)]
+    rendered_refs = _list_of_dicts(archive.get("rendered_map_refs"))
+    thread_progress = _list_of_dicts(archive.get("thread_progress"))
+    open_threads = _list_of_dicts(archive.get("open_threads"))
+    clue_ledger = _list_of_dicts(archive.get("clue_ledger"))
+    return {
+        "enabled_archive_present": bool(archive.get("turns") or open_threads or clue_ledger or actions),
+        "turn_count": len(_list_of_dicts(archive.get("turns"))),
+        "open_thread_count": len(open_threads),
+        "thread_progress_count": len(thread_progress),
+        "clue_ledger_count": len(clue_ledger),
+        "convergence_action_count": len(actions),
+        "scene_goal_card_count": sum(1 for action in actions if _has_scene_goal_fields(action)),
+        "map_seed_action_count": len(action_with_map_seed),
+        "rendered_action_count": len(action_with_render),
+        "rendered_map_ref_count": len(rendered_refs),
+        "map_seed_to_svg_closed": bool(action_with_map_seed) and len(action_with_render) >= len(action_with_map_seed),
+        "needs_scene_goal_cards": len(actions) == 0,
+        "needs_thread_progress": bool(open_threads) and not thread_progress and not actions,
+        "updated_at": _safe_text(archive.get("updated_at"), 80),
+    }
 
 
 def archive_story_forge_turn(
@@ -719,6 +748,13 @@ def _project_action_for_brief(action: dict[str, Any]) -> dict[str, Any]:
     if isinstance(action.get("rendered_map_ref"), dict):
         projected["rendered_map"] = _safe_render_ref({"ok": True, **action["rendered_map_ref"]})
     return {key: value for key, value in projected.items() if value not in (None, "", [], {})}
+
+
+def _has_scene_goal_fields(action: dict[str, Any]) -> bool:
+    return any(
+        _safe_text(action.get(key), 500)
+        for key in ("scene_goal", "entry_cost", "success_signal", "failure_forward")
+    )
 
 
 def _project_records_for_brief(value: Any, *, limit: int) -> list[dict[str, Any]]:

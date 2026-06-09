@@ -281,6 +281,7 @@ class ContinuityAuditor:
             "prompt": prompt,
             "contexts": [],
             "system_prompt": CONTINUITY_AUDITOR_SYSTEM_PROMPT,
+            "_call_purpose": "continuity_audit",
         }
         if self.max_tokens > 0:
             kwargs["max_tokens"] = self.max_tokens

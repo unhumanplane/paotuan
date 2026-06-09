@@ -279,43 +279,16 @@ def test_quoted_result_does_not_expose_local_svg_path_when_preview_fails():
     assert "gate.svg" in text
 
 
-def test_manual_ambient_image_fast_path_schedules_independent_generation():
+def test_direct_image_text_no_longer_triggers_local_generation():
     session = GameSession.new("group")
+    session.world_tags["_background_ready"] = True
+    session.scene["_game_started"] = True
     session.scene["summary"] = "黑塔城的雾夜调查仍在继续。"
     repo = FakeRepository(session)
     plugin = AutoTrpgDmPlugin.__new__(AutoTrpgDmPlugin)
     plugin.repository = repo
     plugin.ambient_image_config = AmbientImageConfig(enabled=True)
     plugin.plugin_logger = FakeLogger()
-    scheduled = {}
-
-    class Provider:
-        def _unavailable(self):
-            return None
-
-    def mark_generation_started(target_session):
-        state = dict(target_session.scene.get("ambient_image_state") or {})
-        state["generation_started_at"] = "now"
-        target_session.scene["ambient_image_state"] = state
-        repo.save_session(target_session)
-
-    plugin.router = types.SimpleNamespace(
-        ambient_image_provider=Provider(),
-        _mark_ambient_image_generation_started=mark_generation_started,
-    )
-
-    def schedule(event, session_id, actor, message, *, story_moment, rationale):
-        scheduled.update(
-            {
-                "session_id": session_id,
-                "actor": actor,
-                "message": message,
-                "story_moment": story_moment,
-                "rationale": rationale,
-            }
-        )
-
-    plugin._schedule_manual_ambient_image = schedule
 
     reply = asyncio.run(
         plugin._local_fast_path(
@@ -326,32 +299,21 @@ def test_manual_ambient_image_fast_path_schedules_independent_generation():
         )
     )
 
-    assert "独立图片 API key" in reply
-    assert scheduled["session_id"] == "group"
-    assert scheduled["story_moment"] == "当前雾夜街道"
-    assert repo.session.scene["ambient_image_state"]["generation_started_at"] == "now"
-    assert repo.audits[-1]["action"] == "manual_ambient_image_scheduled"
+    assert reply == ""
+    assert "ambient_image_state" not in repo.session.scene
+    assert not any(audit.get("action") == "manual_ambient_image_scheduled" for audit in repo.audits)
 
 
-def test_manual_ambient_image_fast_path_reports_missing_independent_key():
+def test_direct_image_text_does_not_report_missing_key_locally():
     session = GameSession.new("group")
+    session.world_tags["_background_ready"] = True
+    session.scene["_game_started"] = True
     session.scene["summary"] = "黑塔城的雾夜调查仍在继续。"
     repo = FakeRepository(session)
     plugin = AutoTrpgDmPlugin.__new__(AutoTrpgDmPlugin)
     plugin.repository = repo
     plugin.ambient_image_config = AmbientImageConfig(enabled=True)
     plugin.plugin_logger = FakeLogger()
-
-    class Provider:
-        def _unavailable(self):
-            return {
-                "ok": False,
-                "available": False,
-                "error": "ambient_image_api_key_missing",
-                "api_key_env": "PACKYAPI_SORA_API_KEY",
-            }
-
-    plugin.router = types.SimpleNamespace(ambient_image_provider=Provider())
 
     reply = asyncio.run(
         plugin._local_fast_path(
@@ -362,9 +324,8 @@ def test_manual_ambient_image_fast_path_reports_missing_independent_key():
         )
     )
 
-    assert "独立生图 API key 没有读取到" in reply
-    assert "PACKYAPI_SORA_API_KEY" in reply
-    assert repo.audits[-1]["action"] == "manual_ambient_image_blocked"
+    assert reply == ""
+    assert not any(audit.get("action") == "manual_ambient_image_blocked" for audit in repo.audits)
 
 
 def test_scene_tracking_status_fast_path_returns_visible_hooks_without_advancing():
@@ -613,7 +574,6 @@ def test_resume_fast_path_accepts_merged_resume_dm_resume_text():
     plugin.repository = repo
     plugin.ambient_image_config = AmbientImageConfig(enabled=False)
     plugin.plugin_logger = FakeLogger()
-    plugin._schedule_pause_resume_ambient_image = lambda *args, **kwargs: None
 
     reply = asyncio.run(
         plugin._local_fast_path(

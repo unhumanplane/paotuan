@@ -32,6 +32,7 @@ class RecorderAgent:
             "prompt": prompt,
             "contexts": [],
             "system_prompt": build_ra_system_prompt(),
+            "_call_purpose": "ra_cycle_resolution",
         }
         if self.max_tokens > 0:
             llm_kwargs["max_tokens"] = self.max_tokens

@@ -24,6 +24,7 @@ from scripts.story_forge_compare import (
     _suite_row,
     _simulation_summary_markdown,
     _unique_run_dir,
+    _usage_summary,
     build_simulation_audit_messages,
     build_simulation_messages,
     build_simulation_repair_messages,
@@ -36,6 +37,7 @@ from scripts.story_forge_compare import (
     parse_json_object,
     run_multi_turn_simulation,
     score_output,
+    should_repair_from_audit,
 )
 
 
@@ -536,6 +538,37 @@ def test_build_simulation_repair_messages_can_fix_safe_but_empty_response():
     assert "容易被玩家理解成秘密确认的准信号" in joined
     assert "convergence_actions_add" in joined
     assert "scene_goal" in joined
+
+
+def test_should_repair_from_audit_only_triggers_for_high_risk_by_default():
+    passed = {
+        "verdict": "pass",
+        "scores": {
+            "total": 86,
+            "hidden_truth_safety": 9,
+            "archive_quality": 8,
+            "actionable_next_steps": 8,
+            "narrative_payoff": 8,
+        },
+        "archive_gaps": [],
+        "missed_gameplay_opportunities": [],
+        "narrative_issues": [],
+    }
+    risky = {
+        "verdict": "needs_revision",
+        "scores": {"total": 81, "archive_quality": 6},
+        "archive_gaps": [{"path": "archive_patch.thread_progress_add"}],
+    }
+
+    assert should_repair_from_audit(passed) == (False, "audit_passed_or_low_risk")
+    should_repair, reason = should_repair_from_audit(risky)
+    assert should_repair is True
+    assert reason in {
+        "needs_revision_with_archive_gaps",
+        "low_audit_scores:archive_quality",
+    }
+    assert should_repair_from_audit(passed, policy="always") == (True, "repair_policy_always")
+    assert should_repair_from_audit(risky, policy="never") == (False, "repair_policy_never")
 
 
 def test_multi_turn_audit_prompt_requires_thread_resolution_checks():
@@ -1969,3 +2002,50 @@ def test_suite_row_and_report_extract_runtime_acceptance_metrics(tmp_path):
     assert "hints" in report
     assert "continuity held" in report
     assert "15" in report
+
+
+def test_usage_summary_breaks_out_no_tool_second_call_phases(tmp_path):
+    run_dir = tmp_path / "run"
+    turn_dir = run_dir / "turn_01"
+    turn_dir.mkdir(parents=True)
+    (turn_dir / "simulation.response.json").write_text(
+        json.dumps({"usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}}),
+        encoding="utf-8",
+    )
+    (turn_dir / "simulation_audit.response.json").write_text(
+        json.dumps(
+            {
+                "usage": {
+                    "prompt_tokens": 20,
+                    "completion_tokens": 6,
+                    "total_tokens": 26,
+                    "prompt_cache_hit_tokens": 12,
+                    "prompt_cache_miss_tokens": 8,
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    (turn_dir / "simulation_repair.response.json").write_text(
+        json.dumps(
+            {
+                "usage": {
+                    "prompt_tokens": 30,
+                    "completion_tokens": 7,
+                    "total_tokens": 37,
+                    "prompt_cache_hit_tokens": 24,
+                    "prompt_cache_miss_tokens": 6,
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    usage = _usage_summary(run_dir)
+
+    assert usage["total_tokens"] == 78
+    assert usage["no_tool_second_call_files"] == 2
+    assert usage["no_tool_second_call_tokens"] == 63
+    assert usage["by_phase"]["simulation"]["total_tokens"] == 15
+    assert usage["by_phase"]["simulation_audit"]["prompt_cache_hit_ratio"] == 0.6
+    assert usage["by_phase"]["simulation_repair"]["prompt_cache_hit_ratio"] == 0.8

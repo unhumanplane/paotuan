@@ -58,6 +58,7 @@ from astrbot_plugin_auto_trpg_dm.core.router import (
     _actor_equipment_final_reply_guard,
     _character_card_final_reply_guard,
     _extract_llm_usage_summary,
+    _llm_request_shape,
     _is_diagnostic_request,
     _maybe_close_concluded_turn,
     _reset_confirmation_output_guard,
@@ -84,6 +85,21 @@ def test_extract_llm_usage_summary_reads_openai_cached_tokens():
     assert summary["cached_tokens"] == 64
     assert summary["cache_hit_ratio_pct"] == 64.0
     assert "completion_text" not in summary
+
+
+def test_llm_request_shape_marks_call_purpose_without_affecting_tool_flag():
+    shape = _llm_request_shape(
+        {
+            "prompt": "retry final text",
+            "contexts": [{"role": "assistant", "content": "tool result"}],
+            "system_prompt": "dm",
+            "_call_purpose": "final_response_tool_loop",
+        }
+    )
+
+    assert shape["call_purpose"] == "final_response_tool_loop"
+    assert shape["tool_enabled"] is False
+    assert shape["contexts_count"] == 1
 
 
 def test_fact_check_correction_does_not_become_narrative_trace():

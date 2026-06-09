@@ -12,6 +12,7 @@ from astrbot_plugin_auto_trpg_dm.core.story_forge_runtime import (
     build_story_grid_render_envelope,
     normalize_convergence_action,
     record_story_forge_convergence,
+    story_forge_runtime_diagnostics,
 )
 from astrbot_plugin_auto_trpg_dm.storage.json_repository import JsonGameRepository
 
@@ -148,6 +149,32 @@ def test_story_forge_convergence_renders_map_seed_and_enqueues_pending_output():
     assert Path(pending[0]["path"]).exists()
     archive_action = saved.scene[STORY_FORGE_ARCHIVE_KEY]["convergence_actions"][0]
     assert archive_action["rendered_map_ref"]["file_name"] == result["rendered_map"]["file_name"]
+    diagnostics = story_forge_runtime_diagnostics(saved)
+    assert diagnostics["scene_goal_card_count"] == 1
+    assert diagnostics["map_seed_action_count"] == 1
+    assert diagnostics["rendered_action_count"] == 1
+    assert diagnostics["rendered_map_ref_count"] == 1
+    assert diagnostics["map_seed_to_svg_closed"] is True
+    assert diagnostics["needs_scene_goal_cards"] is False
+
+
+def test_story_forge_diagnostics_flags_missing_goal_cards_and_progress():
+    session = GameSession.new("group")
+    session.scene[STORY_FORGE_ARCHIVE_KEY] = {
+        "turns": [{"turn_id": "t1"}],
+        "open_threads": [{"id": "hook", "text": "Who moved the bell?"}],
+        "thread_progress": [],
+        "clue_ledger": [{"id": "clue", "text": "Fresh scrape marks."}],
+        "convergence_actions": [],
+    }
+
+    diagnostics = story_forge_runtime_diagnostics(session)
+
+    assert diagnostics["enabled_archive_present"] is True
+    assert diagnostics["open_thread_count"] == 1
+    assert diagnostics["thread_progress_count"] == 0
+    assert diagnostics["needs_scene_goal_cards"] is True
+    assert diagnostics["needs_thread_progress"] is True
 
 
 def test_story_grid_render_envelope_adapts_model_type_fields_without_hidden_entities():

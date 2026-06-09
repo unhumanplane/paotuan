@@ -20,7 +20,6 @@ from ..storage.json_repository import JsonGameRepository
 
 
 PromptLlmGenerate = Callable[..., Awaitable[Any]]
-PAUSE_RESUME_TRIGGER_WINDOW_MINUTES = 10
 AMBIENT_IMAGE_GENERATION_IN_PROGRESS_MINUTES = 5
 RECENT_PLAYER_MESSAGES_LIMIT = 50
 
@@ -350,6 +349,7 @@ class AmbientImageTools:
             ),
             "contexts": [],
             "system_prompt": AMBIENT_IMAGE_SIMILARITY_SYSTEM,
+            "_call_purpose": "ambient_image_similarity",
         }
         if prompt_model:
             kwargs["chat_provider_id"] = prompt_model
@@ -381,6 +381,7 @@ class AmbientImageTools:
             "prompt": generation_prompt,
             "contexts": [],
             "system_prompt": AMBIENT_IMAGE_PROMPT_SYSTEM,
+            "_call_purpose": "ambient_image_prompt",
         }
         if prompt_model:
             kwargs["chat_provider_id"] = prompt_model
@@ -604,13 +605,6 @@ def explicit_ambient_image_trigger(session: Any, config: AmbientImageConfig, tri
         if state.get("ending_generated_key") == ending_key:
             return {"ok": False, "available": False, "reason": "ambient_image_ending_already_generated"}
         return {"ok": True, "trigger": "ending", "ending_key": ending_key, "frequency": frequency}
-    if trigger == "pause_resume":
-        pause_resume = _pause_resume_trigger_result(session, state, frequency, strict=True)
-        if pause_resume:
-            return pause_resume
-        return {"ok": False, "available": False, "reason": "ambient_image_pause_resume_not_ready"}
-    if trigger == "manual":
-        return {"ok": True, "trigger": "manual", "frequency": frequency}
     return {
         "ok": False,
         "available": False,
@@ -623,9 +617,6 @@ def ambient_image_trigger(session: Any, config: AmbientImageConfig) -> dict[str,
     frequency = _normalize_frequency(config.frequency)
     scene = getattr(session, "scene", {}) or {}
     state = dict(scene.get("ambient_image_state") or {})
-    pause_resume = _pause_resume_trigger_result(session, state, frequency, strict=False)
-    if pause_resume:
-        return pause_resume
     ending_key = _story_ending_key(session)
     if ending_key and state.get("ending_generated_key") != ending_key:
         return {"ok": True, "trigger": "ending", "frequency": frequency}
@@ -684,7 +675,7 @@ def should_offer_ambient_image(
         return False
     if _looks_like_direct_ambient_image_request(player_message):
         return False
-    if gate.get("trigger") in {"pause_resume", "ending"}:
+    if gate.get("trigger") == "ending":
         return True
     scene = getattr(session, "scene", {}) or {}
     if not _campaign_has_started(session):
@@ -726,15 +717,6 @@ def mark_ambient_image_trigger(session: Any, trigger: str) -> None:
         key = _story_ending_key(session)
         if key:
             state["ending_generated_key"] = key
-    elif trigger == "pause_resume":
-        event = _pause_resume_event(session)
-        key = event.get("key", "")
-        kind = event.get("kind", "")
-        if key and kind in {"pause", "resume"}:
-            state[f"last_{kind}_key"] = key
-            state[f"last_{kind}_generated_at"] = utc_now_iso()
-    elif trigger == "manual":
-        state["last_manual_generated_at"] = utc_now_iso()
     scene["ambient_image_state"] = state
 
 
@@ -1064,71 +1046,6 @@ def _story_ending_key(session: Any) -> str:
         return _short_text(str(scene.get("summary", "") or "ending"), 80) or "ending"
     return ""
 
-
-def _pause_resume_event(session: Any) -> dict[str, str]:
-    scene = getattr(session, "scene", {}) or {}
-    paused_at = str(scene.get("_dm_paused_at", "") or "").strip()
-    resumed_at = str(scene.get("_dm_resumed_at", "") or "").strip()
-    if (
-        bool(scene.get("_dm_paused"))
-        and paused_at
-        and _minutes_since(paused_at) <= PAUSE_RESUME_TRIGGER_WINDOW_MINUTES
-    ):
-        return {"kind": "pause", "key": "pause:" + _short_text(paused_at, 80)}
-    if resumed_at and _minutes_since(resumed_at) <= PAUSE_RESUME_TRIGGER_WINDOW_MINUTES:
-        return {"kind": "resume", "key": "resume:" + _short_text(resumed_at, 80)}
-    explicit = str(scene.get("pause_state", "") or scene.get("story_pause_state", "") or "").strip().lower()
-    if explicit in {"paused", "pause", "暂停"}:
-        return {"kind": "pause", "key": "pause:" + _short_text(str(scene.get("summary", "") or "paused"), 80)}
-    if explicit in {"resumed", "resume", "恢复", "继续"}:
-        return {"kind": "resume", "key": "resume:" + _short_text(str(scene.get("summary", "") or "resumed"), 80)}
-    return {}
-
-
-def _pause_resume_trigger_result(
-    session: Any,
-    state: dict[str, Any],
-    frequency: str,
-    *,
-    strict: bool,
-) -> dict[str, Any]:
-    event = _pause_resume_event(session)
-    pause_resume_key = event.get("key", "")
-    kind = event.get("kind", "")
-    if not pause_resume_key:
-        return {}
-    if kind not in {"pause", "resume"}:
-        return {}
-    last_key_field = f"last_{kind}_key"
-    last_at_field = f"last_{kind}_generated_at"
-    if state.get(last_key_field) == pause_resume_key:
-        if not strict:
-            return {}
-        return {
-            "ok": False,
-            "available": False,
-            "reason": "ambient_image_pause_resume_already_generated",
-            "pause_resume_kind": kind,
-            "pause_resume_key": pause_resume_key,
-        }
-    cooldown_elapsed = _minutes_since(str(state.get(last_at_field, "") or ""))
-    if cooldown_elapsed >= 120:
-        return {
-            "ok": True,
-            "trigger": "pause_resume",
-            "pause_resume_kind": kind,
-            "pause_resume_key": pause_resume_key,
-            "frequency": frequency,
-        }
-    return {
-        "ok": False,
-        "available": False,
-        "reason": "ambient_image_pause_resume_cooldown",
-        "pause_resume_kind": kind,
-        "pause_resume_key": pause_resume_key,
-        "cooldown_minutes_elapsed": cooldown_elapsed,
-        "cooldown_minutes_required": 120,
-    }
 
 
 def _looks_like_direct_ambient_image_request(text: str) -> bool:

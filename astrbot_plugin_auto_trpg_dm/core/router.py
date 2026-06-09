@@ -328,6 +328,7 @@ def _llm_request_shape(kwargs: Mapping[str, Any]) -> dict[str, Any]:
         "contexts_count": contexts_count,
         "contexts_chars": _safe_char_count(contexts),
         "tool_enabled": bool(kwargs.get("func_tool") is not None or kwargs.get("tools") is not None),
+        "call_purpose": str(kwargs.get("_call_purpose") or "unspecified"),
     }
 
 
@@ -360,15 +361,31 @@ def _log_llm_usage_summary(response: Any, kwargs: Mapping[str, Any]) -> None:
         usage = _extract_llm_usage_summary(response)
         shape = _llm_request_shape(kwargs)
         usage_text = json.dumps(usage, ensure_ascii=False, separators=(",", ":"))
+        no_tool_followup = (
+            not bool(shape["tool_enabled"])
+            and str(shape["call_purpose"])
+            in {
+                "continuity_audit",
+                "ra_cycle_resolution",
+                "ambient_image_prompt",
+                "ambient_image_similarity",
+                "map_svg_generation",
+                "map_renderer_supplement",
+                "final_response_tool_loop",
+                "outbound_menu_semantic_review",
+            }
+        )
         get_plugin_logger().info(
-            "llm_usage chat_provider=%s prompt_chars=%s system_prompt_chars=%s system_prompt_hash=%s contexts_count=%s contexts_chars=%s tool_enabled=%s usage_available=%s usage=%s",
+            "llm_usage chat_provider=%s purpose=%s prompt_chars=%s system_prompt_chars=%s system_prompt_hash=%s contexts_count=%s contexts_chars=%s tool_enabled=%s no_tool_followup=%s usage_available=%s usage=%s",
             kwargs.get("chat_provider_id", ""),
+            shape["call_purpose"],
             shape["prompt_chars"],
             shape["system_prompt_chars"],
             _short_hash(kwargs.get("system_prompt")),
             shape["contexts_count"],
             shape["contexts_chars"],
             shape["tool_enabled"],
+            no_tool_followup,
             bool(usage),
             usage_text,
         )
@@ -1647,6 +1664,7 @@ class IntentRouter:
                 chat_provider_id=chat_provider_id,
                 prompt=prompt,
                 system_prompt=OUTBOUND_MENU_JUDGE_SYSTEM_PROMPT,
+                _call_purpose="outbound_menu_semantic_review",
             )
         except Exception as exc:
             return {
@@ -1893,6 +1911,7 @@ class IntentRouter:
                 contexts=contexts,
                 system_prompt=system_prompt,
                 func_tool=toolset,
+                _call_purpose="dm_tool_loop",
             )
             if isinstance(response, ToolArgumentJsonFallbackResponse):
                 completion_text = self._sanitize_completion_text(_response_completion_text(response))
@@ -2027,6 +2046,7 @@ class IntentRouter:
                         ),
                         contexts=contexts,
                         system_prompt=system_prompt,
+                        _call_purpose="map_renderer_supplement",
                     )
                     supplement_text = self._sanitize_completion_text(_response_completion_text(supplement_response))
                     if supplement_text:
@@ -2251,6 +2271,7 @@ class IntentRouter:
             prompt="工具循环已达到最大步数。请基于已有工具结果输出阶段性叙事，必要时请玩家确认下一步。",
             contexts=contexts,
             system_prompt=system_prompt,
+            _call_purpose="final_response_tool_loop",
         )
         completion_text = _response_completion_text(final_response)
         if _looks_like_tool_role_response(final_response, completion_text):
@@ -2442,8 +2463,11 @@ class IntentRouter:
                 raise exc
 
     async def _llm_generate_raw(self, kwargs: dict[str, Any]) -> Any:
-        response = await self.astr_context.llm_generate(**kwargs)
-        _log_llm_usage_summary(response, kwargs)
+        call_kwargs = dict(kwargs)
+        log_kwargs = dict(kwargs)
+        call_kwargs.pop("_call_purpose", None)
+        response = await self.astr_context.llm_generate(**call_kwargs)
+        _log_llm_usage_summary(response, log_kwargs)
         return response
 
     @staticmethod

@@ -25,6 +25,10 @@ DEFAULT_OUTPUT_DIR = ".story-forge-runs"
 DEFAULT_API_KEY_ENV = "DEEPSEEK_API_KEY"
 DEFAULT_MAX_TOKENS = 8192
 DEFAULT_JUDGE_MAX_TOKENS = 4096
+REPAIR_POLICY_ALWAYS = "always"
+REPAIR_POLICY_HIGH_RISK = "high_risk"
+REPAIR_POLICY_NEVER = "never"
+REPAIR_POLICY_VALUES = (REPAIR_POLICY_HIGH_RISK, REPAIR_POLICY_ALWAYS, REPAIR_POLICY_NEVER)
 
 
 LEGACY_SCHEMA = {
@@ -1145,6 +1149,57 @@ def build_simulation_repair_messages(
     return [{"role": "system", "content": system}, {"role": "user", "content": user}]
 
 
+def should_repair_from_audit(
+    audit_payload: dict[str, Any] | None,
+    *,
+    policy: str = REPAIR_POLICY_HIGH_RISK,
+) -> tuple[bool, str]:
+    normalized_policy = str(policy or REPAIR_POLICY_HIGH_RISK).strip().lower()
+    if normalized_policy == REPAIR_POLICY_ALWAYS:
+        return True, "repair_policy_always"
+    if normalized_policy == REPAIR_POLICY_NEVER:
+        return False, "repair_policy_never"
+    if not isinstance(audit_payload, dict):
+        return False, "audit_payload_missing"
+
+    verdict = str(audit_payload.get("verdict") or "").strip().lower()
+    if verdict == "fail":
+        return True, "audit_verdict_fail"
+
+    scores = audit_payload.get("scores") if isinstance(audit_payload.get("scores"), dict) else {}
+    total = _number_or_none(scores.get("total"))
+    if total is not None and total < 78:
+        return True, "audit_total_below_78"
+
+    critical_lists = (
+        "leaks",
+        "railroading_flags",
+        "archive_gaps",
+        "missed_gameplay_opportunities",
+        "narrative_issues",
+    )
+    nonempty = [key for key in critical_lists if _list_len(audit_payload.get(key))]
+    if verdict == "needs_revision" and nonempty:
+        return True, "needs_revision_with_" + ",".join(nonempty[:3])
+
+    low_score_keys = (
+        "hidden_truth_safety",
+        "archive_quality",
+        "actionable_next_steps",
+        "narrative_payoff",
+        "failure_forward",
+    )
+    low_scores = [
+        key
+        for key in low_score_keys
+        if (_number_or_none(scores.get(key)) is not None and _number_or_none(scores.get(key)) < 7)
+    ]
+    if low_scores:
+        return True, "low_audit_scores:" + ",".join(low_scores[:3])
+
+    return False, "audit_passed_or_low_risk"
+
+
 def build_multi_turn_audit_messages(
     *,
     story_payload: dict[str, Any],
@@ -1762,6 +1817,7 @@ def run_multi_turn_simulation(
     story_payload = _read_story_file(args.story_file)
     actions = _read_player_actions_list(args.simulate_actions_list_file)
     archive_state = _read_archive_state(args.archive_file, story_payload)
+    repair_policy = getattr(args, "repair_policy", REPAIR_POLICY_HIGH_RISK)
     run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + "-multi-turn-" + _slug(
         actions[0] if actions else "simulation"
     )
@@ -1779,6 +1835,8 @@ def run_multi_turn_simulation(
             "temperature": args.temperature,
             "timeout": args.timeout,
             "audit_simulation": args.audit_simulation,
+            "repair_from_audit": args.repair_from_audit,
+            "repair_policy": repair_policy,
             "json_mode": not args.no_json_mode,
             "dry_run": args.dry_run,
             "api_key_source": _api_key_source(args),
@@ -1808,6 +1866,7 @@ def run_multi_turn_simulation(
         audit_result = None
         repair_messages = None
         repair_result = None
+        repair_decision = {"should_repair": False, "reason": "audit_not_run", "policy": repair_policy}
         simulation_payload = None
         archive_payload = None
         if not args.dry_run:
@@ -1849,7 +1908,20 @@ def run_multi_turn_simulation(
                 _write_json(turn_dir / "simulation_audit.response.json", _redact_raw_result(audit_result))
                 if isinstance(audit_result.get("payload"), dict):
                     _write_json(turn_dir / "simulation_audit_report.json", audit_result["payload"])
-                    if args.repair_from_audit and isinstance(simulation_payload, dict):
+                    should_repair, repair_reason = should_repair_from_audit(
+                        audit_result["payload"],
+                        policy=repair_policy,
+                    )
+                    repair_decision = {
+                        "should_repair": bool(args.repair_from_audit and should_repair and isinstance(simulation_payload, dict)),
+                        "would_repair": bool(should_repair),
+                        "reason": repair_reason,
+                        "policy": repair_policy,
+                        "repair_from_audit": bool(args.repair_from_audit),
+                        "simulation_payload_available": isinstance(simulation_payload, dict),
+                    }
+                    _write_json(turn_dir / "repair_decision.json", repair_decision)
+                    if repair_decision["should_repair"]:
                         repair_messages = build_simulation_repair_messages(
                             story_payload=story_payload,
                             player_actions=action,
@@ -1876,6 +1948,7 @@ def run_multi_turn_simulation(
                             _write_json(turn_dir / "simulation_repair_report.json", repair_result["payload"])
                             _write_json(turn_dir / "simulation_repaired_report.json", repaired)
                             archive_payload = repaired
+            _write_json(turn_dir / "repair_decision.json", repair_decision)
             if isinstance(archive_payload, dict):
                 current_archive = merge_archive_patch(
                     current_archive,
@@ -1893,6 +1966,7 @@ def run_multi_turn_simulation(
                 "simulation": simulation_payload if isinstance(simulation_payload, dict) else None,
                 "audit": audit_result.get("payload") if isinstance(audit_result, dict) else None,
                 "repair": repair_result.get("payload") if isinstance(repair_result, dict) else None,
+                "repair_decision": repair_decision,
                 "archive_source": "repair" if isinstance(archive_payload, dict) and archive_payload is not simulation_payload else "simulation",
                 "archive_after": current_archive,
                 "turn_dir": str(turn_dir),
@@ -2113,6 +2187,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--archive-file", default="", help="可选：读取当前 archive_state JSON。")
     parser.add_argument("--audit-simulation", action="store_true", help="对 Runtime DM 模拟输出进行专业审计。")
     parser.add_argument("--repair-from-audit", action="store_true", help="多回合模拟中，基于每回合审计最小化修补留档补丁后再合并 archive。")
+    parser.add_argument(
+        "--repair-policy",
+        choices=REPAIR_POLICY_VALUES,
+        default=REPAIR_POLICY_HIGH_RISK,
+        help="--repair-from-audit trigger policy: high_risk only repairs risky audit results; always keeps the old eager second pass; never records audit only.",
+    )
     parser.add_argument(
         "--thinking",
         choices=("disabled", "enabled", "auto"),
@@ -2532,6 +2612,8 @@ def _suite_row(index: int, case: dict[str, Any], run_dir: Path) -> dict[str, Any
     archive_counts = _archive_counts(final_archive if isinstance(final_archive, dict) else {})
     turn_count = len(turns) if isinstance(turns, list) else 0
     repair_count = 0
+    repair_skipped_count = 0
+    repair_would_run_count = 0
     archive_sources: list[str] = []
     if isinstance(turns, list):
         for turn in turns:
@@ -2539,6 +2621,12 @@ def _suite_row(index: int, case: dict[str, Any], run_dir: Path) -> dict[str, Any
                 archive_sources.append(str(turn.get("archive_source") or ""))
                 if isinstance(turn.get("repair"), dict):
                     repair_count += 1
+                decision = turn.get("repair_decision")
+                if isinstance(decision, dict):
+                    if decision.get("would_repair"):
+                        repair_would_run_count += 1
+                    if decision.get("repair_from_audit") and not decision.get("should_repair"):
+                        repair_skipped_count += 1
     structure_counts = _runtime_structure_counts(run_dir)
     board_metrics = _revelation_board_metrics(final_archive if isinstance(final_archive, dict) else {})
     initial_board_metrics = _revelation_board_metrics(initial_archive if isinstance(initial_archive, dict) else {})
@@ -2568,6 +2656,8 @@ def _suite_row(index: int, case: dict[str, Any], run_dir: Path) -> dict[str, Any
         "narrative_regression_count": _list_len(audit.get("narrative_or_gameplay_regressions")) if isinstance(audit, dict) else 0,
         "recommended_change_count": _list_len(audit.get("recommended_system_changes")) if isinstance(audit, dict) else 0,
         "repair_count": repair_count,
+        "repair_skipped_count": repair_skipped_count,
+        "repair_would_run_count": repair_would_run_count,
         "archive_sources": archive_sources,
         "archive_counts": archive_counts,
         "runtime_structure_counts": structure_counts,
@@ -2583,7 +2673,7 @@ def _suite_status_line(row: dict[str, Any]) -> str:
     usage = row.get("usage") if isinstance(row.get("usage"), dict) else {}
     return (
         "[{index}] {id} verdict={verdict} total={total} turns={turns} "
-        "repairs={repairs} tokens={tokens} run={run_dir}"
+        "repairs={repairs} skipped_repairs={skipped} tokens={tokens} second_call_tokens={second_tokens} run={run_dir}"
     ).format(
         index=row.get("index"),
         id=row.get("id"),
@@ -2591,7 +2681,9 @@ def _suite_status_line(row: dict[str, Any]) -> str:
         total=_display_score(row.get("total_score")),
         turns=row.get("turn_count"),
         repairs=row.get("repair_count"),
+        skipped=row.get("repair_skipped_count", 0),
         tokens=usage.get("total_tokens", 0),
+        second_tokens=usage.get("no_tool_second_call_tokens", 0),
         run_dir=row.get("run_dir"),
     )
 
@@ -2947,6 +3039,9 @@ def _usage_summary(run_dir: Path) -> dict[str, Any]:
     total_tokens = 0
     prompt_cache_hit_tokens = 0
     prompt_cache_miss_tokens = 0
+    by_phase: dict[str, dict[str, int]] = {}
+    no_tool_second_call_files = 0
+    no_tool_second_call_tokens = 0
     for path in run_dir.rglob("*.response.json"):
         payload = _read_json_if_exists(path)
         if not isinstance(payload, dict):
@@ -2954,13 +3049,49 @@ def _usage_summary(run_dir: Path) -> dict[str, Any]:
         usage = payload.get("usage")
         if not isinstance(usage, dict):
             continue
+        phase = _usage_phase_from_response_path(path)
+        phase_summary = by_phase.setdefault(
+            phase,
+            {
+                "response_files": 0,
+                "prompt_tokens": 0,
+                "completion_tokens": 0,
+                "total_tokens": 0,
+                "prompt_cache_hit_tokens": 0,
+                "prompt_cache_miss_tokens": 0,
+            },
+        )
+        current_prompt = int(_number_or_none(usage.get("prompt_tokens")) or 0)
+        current_completion = int(_number_or_none(usage.get("completion_tokens")) or 0)
+        current_total = int(_number_or_none(usage.get("total_tokens")) or 0)
+        current_cache_hit = int(_number_or_none(usage.get("prompt_cache_hit_tokens")) or 0)
+        current_cache_miss = int(_number_or_none(usage.get("prompt_cache_miss_tokens")) or 0)
         files += 1
-        prompt_tokens += int(_number_or_none(usage.get("prompt_tokens")) or 0)
-        completion_tokens += int(_number_or_none(usage.get("completion_tokens")) or 0)
-        total_tokens += int(_number_or_none(usage.get("total_tokens")) or 0)
-        prompt_cache_hit_tokens += int(_number_or_none(usage.get("prompt_cache_hit_tokens")) or 0)
-        prompt_cache_miss_tokens += int(_number_or_none(usage.get("prompt_cache_miss_tokens")) or 0)
+        prompt_tokens += current_prompt
+        completion_tokens += current_completion
+        total_tokens += current_total
+        prompt_cache_hit_tokens += current_cache_hit
+        prompt_cache_miss_tokens += current_cache_miss
+        phase_summary["response_files"] += 1
+        phase_summary["prompt_tokens"] += current_prompt
+        phase_summary["completion_tokens"] += current_completion
+        phase_summary["total_tokens"] += current_total
+        phase_summary["prompt_cache_hit_tokens"] += current_cache_hit
+        phase_summary["prompt_cache_miss_tokens"] += current_cache_miss
+        if phase in {"simulation_audit", "simulation_repair", "multi_turn_audit"}:
+            no_tool_second_call_files += 1
+            no_tool_second_call_tokens += current_total
     cache_observed = prompt_cache_hit_tokens + prompt_cache_miss_tokens
+    for phase_summary in by_phase.values():
+        phase_cache_observed = (
+            phase_summary.get("prompt_cache_hit_tokens", 0)
+            + phase_summary.get("prompt_cache_miss_tokens", 0)
+        )
+        phase_summary["prompt_cache_hit_ratio"] = (
+            round(phase_summary.get("prompt_cache_hit_tokens", 0) / phase_cache_observed, 4)
+            if phase_cache_observed
+            else None
+        )
     return {
         "response_files": files,
         "prompt_tokens": prompt_tokens,
@@ -2969,7 +3100,31 @@ def _usage_summary(run_dir: Path) -> dict[str, Any]:
         "prompt_cache_hit_tokens": prompt_cache_hit_tokens,
         "prompt_cache_miss_tokens": prompt_cache_miss_tokens,
         "prompt_cache_hit_ratio": round(prompt_cache_hit_tokens / cache_observed, 4) if cache_observed else None,
+        "by_phase": by_phase,
+        "no_tool_second_call_files": no_tool_second_call_files,
+        "no_tool_second_call_tokens": no_tool_second_call_tokens,
     }
+
+
+def _usage_phase_from_response_path(path: Path) -> str:
+    suffix = ".response.json"
+    name = path.name
+    if name.endswith(suffix):
+        name = name[: -len(suffix)]
+    if name in {
+        "simulation",
+        "simulation_audit",
+        "simulation_repair",
+        "multi_turn_audit",
+        "legacy",
+        "story_forge",
+        "judge",
+        "revision",
+        "revision_judge",
+        "revision_compare",
+    }:
+        return name
+    return "other"
 
 
 def _list_len(value: Any) -> int:

@@ -505,7 +505,7 @@ def test_opening_trigger_is_explicit_capability_not_auto_enabled():
     assert explicit["trigger"] == "opening"
 
 
-def test_manual_trigger_bypasses_automatic_warmup_but_not_combat():
+def test_manual_trigger_override_is_not_supported():
     session = GameSession.new("group")
     session.scene["summary"] = "黑塔城的雾夜调查仍在继续。"
     config = AmbientImageConfig(enabled=True)
@@ -517,12 +517,12 @@ def test_manual_trigger_bypasses_automatic_warmup_but_not_combat():
     combat = ambient_image_gate(session, config, trigger_override="manual")
 
     assert automatic["reason"] == "ambient_image_warmup_wait"
-    assert manual["ok"] is True
-    assert manual["trigger"] == "manual"
+    assert manual["reason"] == "ambient_image_trigger_override_invalid"
+    assert manual["trigger_override"] == "manual"
     assert combat["reason"] == "ambient_image_combat_active"
 
 
-def test_pause_and_resume_cooldowns_are_independent():
+def test_pause_resume_state_does_not_trigger_ambient_image():
     session = GameSession.new("group")
     session.scene["summary"] = "调查暂时告一段落。"
     session.scene["_dm_paused"] = True
@@ -549,17 +549,13 @@ def test_pause_and_resume_cooldowns_are_independent():
     }
     resume_after_recent_resume = ambient_image_gate(session, config)
 
-    assert pause_after_recent_resume["trigger"] == "pause_resume"
-    assert pause_after_recent_resume["pause_resume_kind"] == "pause"
-    assert pause_after_recent_pause["reason"] == "ambient_image_pause_resume_cooldown"
-    assert pause_after_recent_pause["pause_resume_kind"] == "pause"
-    assert resume_after_recent_pause["trigger"] == "pause_resume"
-    assert resume_after_recent_pause["pause_resume_kind"] == "resume"
-    assert resume_after_recent_resume["reason"] == "ambient_image_pause_resume_cooldown"
-    assert resume_after_recent_resume["pause_resume_kind"] == "resume"
+    assert pause_after_recent_resume["reason"] == "ambient_image_warmup_wait"
+    assert pause_after_recent_pause["reason"] == "ambient_image_warmup_wait"
+    assert resume_after_recent_pause["reason"] == "ambient_image_warmup_wait"
+    assert resume_after_recent_resume["reason"] == "ambient_image_warmup_wait"
 
 
-def test_pause_resume_trigger_bypasses_warmup_and_setup_filter():
+def test_pause_resume_state_respects_warmup_and_setup_filter():
     session = GameSession.new("group")
     session.scene["summary"] = "调查暂时告一段落。"
     session.scene["_dm_paused"] = False
@@ -577,9 +573,8 @@ def test_pause_resume_trigger_bypasses_warmup_and_setup_filter():
         player_message="恢复",
     )
 
-    assert result["ok"] is True
-    assert result["trigger"] == "pause_resume"
-    assert offered is True
+    assert result["reason"] == "ambient_image_warmup_wait"
+    assert offered is False
 
 
 def test_interval_trigger_skips_when_activity_window_has_too_few_messages():
@@ -644,7 +639,7 @@ def test_active_window_keeps_interval_trigger_eligible():
     assert result["trigger"] == "interval"
 
 
-def test_pause_resume_trigger_bypasses_activity_gate():
+def test_pause_resume_state_respects_activity_gate():
     session = GameSession.new("group")
     session.scene["summary"] = "调查暂时告一段落。"
     session.scene["_dm_paused"] = False
@@ -656,8 +651,7 @@ def test_pause_resume_trigger_bypasses_activity_gate():
 
     result = ambient_image_gate(session, config)
 
-    assert result["ok"] is True
-    assert result["trigger"] == "pause_resume"
+    assert result["reason"] == "ambient_image_warmup_wait"
 
 
 def test_narrative_continue_text_does_not_trigger_pause_resume_image():
