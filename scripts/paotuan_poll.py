@@ -31,6 +31,7 @@ DEFAULT_NOTIFY_GROUP_ID = os.environ.get('PAOTUAN_NOTIFY_GROUP_ID', '1101538762'
 DEFAULT_NOTIFY_SECRET_PATH = Path(
     os.environ.get('HERMES_CODER_BRIDGE_SECRET_PATH') or OPS / 'secrets' / 'coder_bridge_secret'
 )
+DEFAULT_REMOTE_URL = os.environ.get('PAOTUAN_GIT_REMOTE_URL', 'https://github.com/unhumanplane/paotuan.git')
 DEFAULT_PAOTUAN_SSH_KEY = Path(
     os.environ.get('PAOTUAN_SSH_KEY') or '/volume1/docker/hermes/home/.ssh/id_ed25519_paotuan'
 )
@@ -475,6 +476,7 @@ def main() -> int:
         '/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin',
     )
     deploy_env.setdefault('PAOTUAN_GIT_BIN', '/usr/bin/git')
+    deploy_env.setdefault('PAOTUAN_GIT_REMOTE_URL', DEFAULT_REMOTE_URL)
     deploy_env.setdefault('PAOTUAN_GIT_REMOTE_ATTEMPTS', '1')
     deploy_env.setdefault('PAOTUAN_GIT_REMOTE_TIMEOUT', '20')
     deploy_env.setdefault('PAOTUAN_RESTART_TIMEOUT', '90')
