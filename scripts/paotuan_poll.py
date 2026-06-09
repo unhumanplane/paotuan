@@ -32,6 +32,7 @@ DEFAULT_NOTIFY_SECRET_PATH = Path(
     os.environ.get('HERMES_CODER_BRIDGE_SECRET_PATH') or OPS / 'secrets' / 'coder_bridge_secret'
 )
 DEFAULT_REMOTE_URL = os.environ.get('PAOTUAN_GIT_REMOTE_URL', 'https://github.com/unhumanplane/paotuan.git')
+DEFAULT_DEPLOY_POLL_TIMEOUT_SECONDS = int(os.environ.get('PAOTUAN_DEPLOY_POLL_TIMEOUT_SECONDS', '300'))
 DEFAULT_PAOTUAN_SSH_KEY = Path(
     os.environ.get('PAOTUAN_SSH_KEY') or '/volume1/docker/hermes/home/.ssh/id_ed25519_paotuan'
 )
@@ -484,7 +485,14 @@ def main() -> int:
     deploy_env.setdefault('PAOTUAN_DOCKER_STATUS_TIMEOUT', '10')
     ensure_git_ssh_env(deploy_env)
     try:
-        proc = subprocess.run(cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=130, env=deploy_env)
+        proc = subprocess.run(
+            cmd,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            timeout=DEFAULT_DEPLOY_POLL_TIMEOUT_SECONDS,
+            env=deploy_env,
+        )
         deploy_output = proc.stdout or ''
         context['deploy_exit_code'] = proc.returncode
         context['deploy_output_tail'] = deploy_output[-5000:]
