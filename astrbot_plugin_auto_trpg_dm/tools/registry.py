@@ -12,7 +12,12 @@ from astrbot.core.astr_agent_context import AstrAgentContext
 from ..core.models import GameMode
 from ..core.story_forge_runtime import StoryForgeRuntimeConfig
 from ..core.map_request_guard import looks_text_only_map_request
-from ..core.map_tool_routing import add_map_renderer_tools, looks_legacy_svg_fallback_request, looks_visual_map_request
+from ..core.map_tool_routing import (
+    add_map_renderer_tools,
+    looks_legacy_svg_fallback_request,
+    looks_strict_grid_map_request,
+    looks_visual_map_request,
+)
 from ..rules.python_runtime import PythonRuleRuntime
 from ..storage.json_repository import JsonGameRepository
 from .control_tools import ControlAuthorityArgs, ControlTools
@@ -878,6 +883,7 @@ class ToolRegistry:
             selected.append("control_authority")
         if message and _looks_text_only_request(message):
             return list(dict.fromkeys(selected))
+        strict_grid_visual_request = looks_strict_grid_map_request(message or text)
         if _encounter_contract_useful(text, message):
             for name in ("record_story_forge_encounter_contract", "turn_control"):
                 if name not in selected:
@@ -886,6 +892,10 @@ class ToolRegistry:
                 for name in ("get_battle_snapshot", "create_strict_map", "start_combat_on_map"):
                     if name not in selected:
                         selected.append(name)
+                if strict_grid_visual_request:
+                    for name in ("create_grid", "place_entity"):
+                        if name not in selected:
+                            selected.append(name)
         return add_map_renderer_tools(selected, message)
 
     @staticmethod

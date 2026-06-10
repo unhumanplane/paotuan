@@ -332,6 +332,7 @@ def test_system_prompt_prefers_overview_topology_renderer_before_llm_svg_fallbac
 
     assert "优先调用 render_overview_topology_svg" in prompt
     assert "优先调用 render_strict_grid_svg" in prompt
+    assert "先基于玩家已观察、已检定或合理可见的事实创建局部网格" in prompt
     assert "不调用 LLM 写 SVG/XML" in prompt
     assert "才退回 generate_map_svg" in prompt
     assert "不要把普通地图请求直接交给 LLM 写 SVG" in prompt

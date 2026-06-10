@@ -42,6 +42,8 @@ def test_visual_map_guard_does_not_block_ordinary_layout_inquiries():
 def test_visual_map_guard_still_routes_explicit_artifact_requests():
     for message in (
         "显示现有地图",
+        "看一下现在的地图",
+        "看看当前地图",
         "画一下布局吧",
         "给我一张小镇示意图",
         "render the town map",

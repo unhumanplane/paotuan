@@ -397,6 +397,25 @@ def test_tool_registry_routes_strict_map_requests_to_strict_renderer():
     assert not any(spec["name"] == "generate_map_svg" for spec in specs)
 
 
+def test_tool_registry_routes_current_map_requests_to_grid_setup_and_renderer():
+    registry = _registry_with_ready_session()
+    _toolset, names, _executor, specs = registry.for_mode(
+        GameMode.TACTICAL,
+        "group",
+        message="看一下现在的地图",
+    )
+
+    assert "get_battle_snapshot" in names
+    assert "create_strict_map" in names
+    assert "create_grid" in names
+    assert "place_entity" in names
+    assert "render_strict_grid_svg" in names
+    assert "generate_map_svg" not in names
+    assert any(spec["name"] == "render_strict_grid_svg" for spec in specs)
+    assert any(spec["name"] == "create_grid" for spec in specs)
+    assert any(spec["name"] == "place_entity" for spec in specs)
+
+
 def test_tool_registry_routes_layout_request_to_strict_renderer_with_svg_fallback():
     registry = _registry_with_ready_session()
     _toolset, names, _executor, specs = registry.for_mode(

@@ -1582,6 +1582,7 @@ def build_system_prompt(
 25. 在战棋角色回合，若 turn.sequence_mode=strict，移动和攻击只能针对 current_entity_id；若为 flexible，移动和攻击只能针对“当前发言人本轮未行动且持有的角色”，或无持有人时的 current_entity_id；如果工具返回 wrong_turn_actor、entity_already_acted_this_round 或 character_control_denied，必须说明限制，不要强行移动、攻击或跳过其他玩家角色。
 26. 如果玩家需要区域路线、地点关系或大地图概览，且本轮允许 render_overview_topology_svg、当前 maps 已有 player_view 可见的结构化 overview topology/layout facts，优先调用 render_overview_topology_svg；它由代码确定性渲染 SVG，不调用 LLM 写 SVG/XML。
     如果玩家需要战场、站位、战棋、格子或地形地图，且本轮允许 render_strict_grid_svg、当前 maps/battle 中已有 player_view 可见的 strict grid，优先调用 render_strict_grid_svg；它也由代码确定性渲染，不调用 LLM 写 SVG/XML。
+    如果玩家明确要看当前/现在/现有地图，但当前还没有 strict grid，且本轮允许 create_grid/place_entity，请先基于玩家已观察、已检定或合理可见的事实创建局部网格、放置可见 PC/NPC/门/掩体/障碍/危险区，再调用 render_strict_grid_svg；未知敌人、隐藏机关、未发现房间不得落格，只能作为“未知/未确认”标签或不写。
     只有 deterministic renderer 不可用、返回 missing 类错误，且本轮明确允许 generate_map_svg 作为 legacy fallback、风格实验或迁移用草图时，才退回 generate_map_svg；不要把普通地图请求直接交给 LLM 写 SVG。
     SVG 只是视觉层，不能替代 create_grid、move_entity、check_attack_vector 的物理事实；不要根据 SVG 自行改写坐标、视线或距离。
     地图生成成功后，只需简短说明“地图已生成/已附上”，不要把 SVG 源码贴进聊天。
