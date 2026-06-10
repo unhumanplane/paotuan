@@ -1795,8 +1795,8 @@ class AutoTrpgDmPlugin(Star):
         if not _campaign_action_pacing_enabled(session):
             return ""
         now = datetime.now(timezone.utc)
-        pacing = dict((session.scene or {}).get("_action_pacing") or {})
-        record = dict(pacing.get(player_id) or {})
+        pacing = _coerce_json_object((session.scene or {}).get("_action_pacing"))
+        record = _coerce_json_object(pacing.get(player_id))
         last_at = _parse_datetime(record.get("last_action_at"))
         if last_at:
             elapsed = int((now - last_at).total_seconds())
@@ -3627,6 +3627,21 @@ def _campaign_action_pacing_enabled(session) -> bool:
     ):
         return True
     return False
+
+
+def _coerce_json_object(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return dict(value)
+    if isinstance(value, str):
+        text = value.strip()
+        if text.startswith("{") and text.endswith("}"):
+            try:
+                parsed = json.loads(text)
+            except json.JSONDecodeError:
+                return {}
+            if isinstance(parsed, dict):
+                return dict(parsed)
+    return {}
 
 
 def _post_start_reasonableness_fast_reply(session, text: str) -> str:

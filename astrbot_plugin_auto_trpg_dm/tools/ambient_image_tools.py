@@ -24,6 +24,42 @@ AMBIENT_IMAGE_GENERATION_IN_PROGRESS_MINUTES = 5
 RECENT_PLAYER_MESSAGES_LIMIT = 50
 
 
+def _coerce_scene_mapping(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return dict(value)
+    if isinstance(value, str):
+        text = value.strip()
+        if text.startswith("{") and text.endswith("}"):
+            try:
+                parsed = json.loads(text)
+            except json.JSONDecodeError:
+                return {}
+            if isinstance(parsed, dict):
+                return dict(parsed)
+    return {}
+
+
+def _coerce_scene_list(value: Any) -> list[Any]:
+    if isinstance(value, list):
+        return list(value)
+    if isinstance(value, str):
+        text = value.strip()
+        if text.startswith("[") and text.endswith("]"):
+            try:
+                parsed = json.loads(text)
+            except json.JSONDecodeError:
+                return []
+            if isinstance(parsed, list):
+                return list(parsed)
+    return []
+
+
+def coerce_ambient_image_state(scene: dict[str, Any] | Any) -> dict[str, Any]:
+    if not isinstance(scene, dict):
+        return {}
+    return _coerce_scene_mapping(scene.get("ambient_image_state"))
+
+
 class GenerateAmbientImageArgs(BaseModel):
     story_moment: str = Field(
         default="",
@@ -145,14 +181,14 @@ class AmbientImageTools:
             record["retry_source_player_id"] = prompt_result.get("retry_source_player_id", "")
         latest_session.scene["last_ambient_image"] = record
         latest_session.scene["ambient_image_state"] = {
-            **dict(latest_session.scene.get("ambient_image_state") or {}),
+            **coerce_ambient_image_state(latest_session.scene),
             "last_generated_at": record["created_at"],
             "last_turn_index": _ambient_turn_index(latest_session),
             "frequency": self.config.frequency,
         }
         mark_ambient_image_trigger(latest_session, str(gate.get("trigger") or "interval"))
         _remember_ambient_style(latest_session, str(prompt_result.get("style_seed") or ""))
-        history = list(latest_session.scene.get("ambient_image_prompts") or [])
+        history = _coerce_scene_list(latest_session.scene.get("ambient_image_prompts"))
         history.append(
             {
                 "created_at": record["created_at"],
@@ -568,7 +604,7 @@ def ambient_image_gate(
     if _combat_active(session):
         return {"ok": False, "available": False, "reason": "ambient_image_combat_active"}
     scene = getattr(session, "scene", {}) or {}
-    state = dict(scene.get("ambient_image_state") or {})
+    state = coerce_ambient_image_state(scene)
     in_progress = _ambient_generation_in_progress_state(state)
     if not ignore_generation_in_progress and not in_progress.get("ready"):
         return {
@@ -589,7 +625,7 @@ def ambient_image_gate(
 def explicit_ambient_image_trigger(session: Any, config: AmbientImageConfig, trigger_override: str) -> dict[str, Any]:
     frequency = _normalize_frequency(config.frequency)
     scene = getattr(session, "scene", {}) or {}
-    state = dict(scene.get("ambient_image_state") or {})
+    state = coerce_ambient_image_state(scene)
     trigger = str(trigger_override or "").strip().lower()
     if trigger == "opening":
         opening_key = _story_opening_key(session)
@@ -616,7 +652,7 @@ def explicit_ambient_image_trigger(session: Any, config: AmbientImageConfig, tri
 def ambient_image_trigger(session: Any, config: AmbientImageConfig) -> dict[str, Any]:
     frequency = _normalize_frequency(config.frequency)
     scene = getattr(session, "scene", {}) or {}
-    state = dict(scene.get("ambient_image_state") or {})
+    state = coerce_ambient_image_state(scene)
     ending_key = _story_ending_key(session)
     if ending_key and state.get("ending_generated_key") != ending_key:
         return {"ok": True, "trigger": "ending", "frequency": frequency}
@@ -693,7 +729,7 @@ def update_ambient_image_activity_state(
 ) -> None:
     scene = getattr(session, "scene", {}) or {}
     now = utc_now_iso()
-    state = dict(scene.get("ambient_image_state") or {})
+    state = coerce_ambient_image_state(scene)
     state.setdefault("first_interaction_at", now)
     interaction_count = _safe_int(state.get("interaction_count"), 0) + 1
     state["interaction_count"] = interaction_count
@@ -708,7 +744,7 @@ def update_ambient_image_activity_state(
 
 def mark_ambient_image_trigger(session: Any, trigger: str) -> None:
     scene = getattr(session, "scene", {}) or {}
-    state = dict(scene.get("ambient_image_state") or {})
+    state = coerce_ambient_image_state(scene)
     if trigger == "opening":
         key = _story_opening_key(session)
         if key:
@@ -1144,8 +1180,8 @@ def _remember_recent_player_message(
     message = _short_text(player_message, 500)
     if not message:
         return
-    history = scene.get("ambient_image_recent_player_messages")
-    items = [dict(item) for item in history if isinstance(item, dict)] if isinstance(history, list) else []
+    history = _coerce_scene_list(scene.get("ambient_image_recent_player_messages"))
+    items = [dict(item) for item in history if isinstance(item, dict)]
     items.append(
         {
             "created_at": created_at,
@@ -1164,9 +1200,7 @@ def _recent_player_messages(
     limit: int | None = None,
 ) -> list[dict[str, Any]]:
     scene = getattr(session, "scene", {}) or {}
-    history = scene.get("ambient_image_recent_player_messages")
-    if not isinstance(history, list):
-        return []
+    history = _coerce_scene_list(scene.get("ambient_image_recent_player_messages"))
     items: list[dict[str, Any]] = []
     for item in history:
         if not isinstance(item, dict):
@@ -1234,9 +1268,7 @@ def _is_suitable_ambient_source_message(message: str) -> bool:
 
 def _recent_ambient_prompts(session: Any, *, limit: int) -> list[dict[str, Any]]:
     scene = getattr(session, "scene", {}) or {}
-    history = scene.get("ambient_image_prompts")
-    if not isinstance(history, list):
-        return []
+    history = _coerce_scene_list(scene.get("ambient_image_prompts"))
     items = [dict(item) for item in history if isinstance(item, dict)]
     return items[-limit:]
 

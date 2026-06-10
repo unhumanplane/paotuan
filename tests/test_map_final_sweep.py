@@ -1,5 +1,6 @@
 import asyncio
 from datetime import datetime, timedelta, timezone
+import json
 import sys
 import types
 from pathlib import Path
@@ -410,6 +411,42 @@ def test_heartbeat_advances_non_player_turn_without_waiting_for_deadline(tmp_pat
     assert result["notice"] == ""
     assert saved.battle["turn"]["current_entity_id"] == "npc_b3_2"
     assert saved.battle["turn"]["actions_this_round"]["npc_b3_1"]["source"] == "auto"
+
+
+def test_action_pacing_accepts_legacy_json_string_state():
+    repo = _repo("action_pacing_json_state")
+    session = GameSession.new("group")
+    session.mode = GameMode.TACTICAL
+    session.scene["_action_pacing"] = json.dumps(
+        {
+            "player": {
+                "last_action_at": datetime.now(timezone.utc).isoformat(),
+                "last_action": "上一段行动",
+            }
+        },
+        ensure_ascii=False,
+    )
+    session.battle = {
+        "active": True,
+        "turn": {
+            "active": True,
+            "phase": "character_turn",
+            "turn_order": ["pc_owner"],
+            "current_entity_id": "pc_owner",
+        },
+    }
+    repo.save_session(session)
+    plugin = object.__new__(AutoTrpgDmPlugin)
+    plugin.repository = repo
+    plugin.plugin_logger = type("Logger", (), {"info": lambda *args, **kwargs: None})()
+
+    reply = plugin._action_pacing_reply(
+        "group",
+        {"player_id": "player", "display_name": "Player"},
+        "射击光源，制造黑暗，利用夜视仪优势",
+    )
+
+    assert "先等约" in reply
 
 
 def test_turn_destination_hides_unknown_internal_slug():

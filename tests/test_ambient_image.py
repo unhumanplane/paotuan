@@ -491,6 +491,44 @@ def test_ambient_image_warmup_requires_frequent_interaction_plus_five_minutes():
     assert ready["ok"] is True
 
 
+def test_ambient_image_activity_accepts_legacy_json_string_state():
+    session = GameSession.new("group")
+    first_at = (datetime.now(timezone.utc) - timedelta(minutes=6)).isoformat()
+    session.scene["ambient_image_state"] = json.dumps(
+        {
+            "first_interaction_at": first_at,
+            "interaction_count": 12,
+            "warmup_started_at": first_at,
+        },
+        ensure_ascii=False,
+    )
+    session.scene["ambient_image_recent_player_messages"] = json.dumps(
+        [
+            {
+                "created_at": first_at,
+                "player_id": "old",
+                "display_name": "Old",
+                "message": "旧消息",
+            }
+        ],
+        ensure_ascii=False,
+    )
+
+    update_ambient_image_activity_state(
+        session,
+        actor={"player_id": "new", "display_name": "New"},
+        player_message="射击光源，制造黑暗",
+    )
+
+    state = session.scene["ambient_image_state"]
+    recent = session.scene["ambient_image_recent_player_messages"]
+    assert isinstance(state, dict)
+    assert state["interaction_count"] == 13
+    assert isinstance(recent, list)
+    assert recent[-1]["player_id"] == "new"
+    assert recent[-1]["message"] == "射击光源，制造黑暗"
+
+
 def test_opening_trigger_is_explicit_capability_not_auto_enabled():
     session = GameSession.new("group")
     session.scene["summary"] = "黑塔城的第一夜，玩家刚刚抵达。"

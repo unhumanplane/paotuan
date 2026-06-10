@@ -59,6 +59,7 @@ from .prompts import (
 from ..storage.json_repository import JsonGameRepository
 from ..tools.ambient_image_tools import (
     AmbientImageTools,
+    coerce_ambient_image_state,
     should_offer_ambient_image,
     update_ambient_image_activity_state,
 )
@@ -1540,7 +1541,7 @@ class IntentRouter:
 
     def _mark_ambient_image_generation_started(self, session: Any) -> None:
         scene = getattr(session, "scene", {}) or {}
-        state = dict(scene.get("ambient_image_state") or {})
+        state = coerce_ambient_image_state(scene)
         state["generation_started_at"] = utc_now_iso()
         scene["ambient_image_state"] = state
         self.repository.save_session(session)
@@ -1549,7 +1550,7 @@ class IntentRouter:
         try:
             session = self.repository.load_session(session_id)
             scene = getattr(session, "scene", {}) or {}
-            state = dict(scene.get("ambient_image_state") or {})
+            state = coerce_ambient_image_state(scene)
             if "generation_started_at" not in state:
                 return
             state.pop("generation_started_at", None)
