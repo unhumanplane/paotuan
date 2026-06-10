@@ -1837,6 +1837,10 @@ def test_prompt_snapshot_projection_demotes_live_campaign_seed_context():
         {
             "_game_started": True,
             "_plot_locked": True,
+            "_opening_intro": "最初开场说线人可能在调度室，但这只是历史开局材料。",
+            "_initial_hook": "旧钩子：赶往调度室。",
+            "_player_guidance": "旧引导：寻找调度室路线。",
+            "initial_hook": "旧公开钩子：调度室。",
             "summary": "众人已进入北区旧仓库B区三号门内侧，残敌撤向仓库深处。",
             "location": "北区旧仓库B区三号门内侧/装卸区入口",
             "current_location": "北区旧仓库B区三号门内侧/装卸区入口",
@@ -1875,6 +1879,7 @@ def test_prompt_snapshot_projection_demotes_live_campaign_seed_context():
     assert "campaign_contract" not in world_tags
     assert "campaign_generation" not in world_tags
     assert "调度室" not in rendered_world
+    assert "调度室" not in rendered_scene
     assert "北区旧仓库B区三号门" in rendered_scene
 
 

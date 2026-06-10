@@ -274,16 +274,23 @@ def _project_snapshot_for_profile(
     actor_player_id = str((actor or {}).get("player_id") or "").strip()
     if actor_player_id:
         actor_character_id = str((session.player_character_map or {}).get(actor_player_id, "") or "")
+    live_started = _live_campaign_started(session)
     if actor_character_id:
         projected["actor_character_id"] = actor_character_id
         actor_character = _find_character_projection(snapshot.get("characters", []), actor_character_id)
         if actor_character:
             projected["actor_character"] = actor_character
-    projected["scene"] = _project_scene(snapshot.get("scene", {}), profile, actor_character_id=actor_character_id, message=message)
+    projected["scene"] = _project_scene(
+        snapshot.get("scene", {}),
+        profile,
+        actor_character_id=actor_character_id,
+        message=message,
+        live_started=live_started,
+    )
     projected["world_tags"] = _project_world_tags(
         snapshot.get("world_tags", {}),
         profile,
-        live_started=_live_campaign_started(session),
+        live_started=live_started,
     )
     projected["characters"] = _project_characters(
         snapshot.get("characters", []),
@@ -312,7 +319,14 @@ def _live_campaign_started(session: GameSession) -> bool:
     )
 
 
-def _project_scene(scene: Any, profile: str, *, actor_character_id: str = "", message: str = "") -> Any:
+def _project_scene(
+    scene: Any,
+    profile: str,
+    *,
+    actor_character_id: str = "",
+    message: str = "",
+    live_started: bool = False,
+) -> Any:
     if not isinstance(scene, dict):
         return scene
     active_thread_id = str(scene.get("active_scene_thread_id") or "").strip()
@@ -334,6 +348,8 @@ def _project_scene(scene: Any, profile: str, *, actor_character_id: str = "", me
         if value in (None, "", [], {}):
             continue
         if key in SCENE_PROJECTION_DROP_KEYS or key.startswith(SCENE_PROJECTION_DROP_PREFIXES):
+            continue
+        if live_started and key in SCENE_LIVE_HISTORICAL_DROP_KEYS:
             continue
         if demote_legacy_anchor and key in SCENE_LEGACY_ANCHOR_FIELDS:
             continue
@@ -383,6 +399,12 @@ SCENE_LEGACY_ANCHOR_FIELDS = {
     "current_vehicle_status",
     "current_access_state",
     "scene_anchor_note",
+}
+SCENE_LIVE_HISTORICAL_DROP_KEYS = {
+    "_initial_hook",
+    "_opening_intro",
+    "_player_guidance",
+    "initial_hook",
 }
 OBSOLETE_SCENE_STATUSES = {
     "resolved",
