@@ -2514,13 +2514,13 @@ class IntentRouter:
         names = list(getattr(response, "tools_call_name", None) or [])
         args_list = list(getattr(response, "tools_call_args", None) or [])
         if names:
-            return [
-                {
-                    "name": str(name),
-                    "args": args_list[index] if index < len(args_list) else {},
-                }
-                for index, name in enumerate(names)
-            ]
+            calls: list[dict[str, Any]] = []
+            for index, name in enumerate(names):
+                args = args_list[index] if index < len(args_list) else {}
+                if isinstance(args, str):
+                    args = _json_payload_prefix(args) or {}
+                calls.append({"name": str(name), "args": args if isinstance(args, dict) else {}})
+            return calls
 
         raw_calls = getattr(response, "tool_calls", None)
         if raw_calls is None and isinstance(response, dict):
@@ -2536,10 +2536,7 @@ class IntentRouter:
                 name = getattr(function, "name", None) or getattr(raw, "name", None)
                 args = getattr(function, "arguments", None) or getattr(raw, "args", None) or {}
             if isinstance(args, str):
-                try:
-                    args = json.loads(args)
-                except json.JSONDecodeError:
-                    args = {}
+                args = _json_payload_prefix(args) or {}
             if name:
                 calls.append({"name": str(name), "args": args if isinstance(args, dict) else {}})
         return calls
@@ -2555,6 +2552,9 @@ class IntentRouter:
         try:
             payloads.append(json.loads(stripped))
         except json.JSONDecodeError:
+            prefix_payload = _json_payload_prefix(stripped)
+            if prefix_payload is not None:
+                payloads.append(prefix_payload)
             payloads.extend(payload for _, _, payload in _json_object_payloads(stripped))
         if not payloads:
             return []
@@ -2720,6 +2720,35 @@ def _json_object_payloads(text: str) -> list[tuple[int, int, Any]]:
                         payloads.append((start, index + 1, payload))
                 start = -1
     return payloads
+
+
+def _json_payload_prefix(text: str) -> Any | None:
+    stripped = str(text or "").strip()
+    if stripped.startswith("```"):
+        lines = stripped.splitlines()
+        if len(lines) >= 3:
+            stripped = "\n".join(lines[1:-1]).strip()
+    if not stripped:
+        return None
+    try:
+        return json.loads(stripped)
+    except json.JSONDecodeError:
+        pass
+
+    decoder = json.JSONDecoder()
+    starts = [0]
+    object_start = stripped.find("{")
+    array_start = stripped.find("[")
+    for start in sorted(index for index in (object_start, array_start) if index > 0):
+        if start not in starts:
+            starts.append(start)
+    for start in starts:
+        try:
+            payload, _end = decoder.raw_decode(stripped[start:])
+        except json.JSONDecodeError:
+            continue
+        return payload
+    return None
 
 
 def _first_json_object_payload(text: str) -> Any | None:

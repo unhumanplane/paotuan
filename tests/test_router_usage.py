@@ -695,6 +695,58 @@ def test_router_tool_argument_json_error_returns_safe_player_reply_without_tool_
     assert fallback_records[-1]["step"] == 1
 
 
+def test_extract_tool_calls_recovers_function_argument_json_with_trailing_text():
+    class ToolCallResponse:
+        completion_text = ""
+        tools_call_name = []
+        tools_call_args = []
+        tool_calls = [
+            {
+                "function": {
+                    "name": "update_scene",
+                    "arguments": '{"patch":{"summary":"control room searched"}}\nI will narrate this next.',
+                }
+            }
+        ]
+
+    calls = IntentRouter._extract_tool_calls(ToolCallResponse())
+
+    assert calls == [{"name": "update_scene", "args": {"patch": {"summary": "control room searched"}}}]
+
+
+def test_extract_tool_calls_recovers_named_argument_json_with_trailing_text():
+    class ToolCallResponse:
+        completion_text = ""
+        tools_call_name = ["update_scene"]
+        tools_call_args = ['{"patch":{"summary":"lantern dimmed"}}\nextra explanation']
+        tool_calls = []
+
+    calls = IntentRouter._extract_tool_calls(ToolCallResponse())
+
+    assert calls == [{"name": "update_scene", "args": {"patch": {"summary": "lantern dimmed"}}}]
+
+
+def test_extract_text_tool_calls_recovers_tool_payload_json_with_trailing_text():
+    calls = IntentRouter._extract_text_tool_calls(
+        '{"tool_calls":[{"name":"update_scene","args":{"patch":{"summary":"door barred"}}}]}'
+        "\nNow I will continue the narration."
+    )
+
+    assert calls == [{"name": "update_scene", "args": {"patch": {"summary": "door barred"}}}]
+
+
+def test_extract_tool_calls_keeps_malformed_argument_json_safe():
+    class ToolCallResponse:
+        completion_text = ""
+        tools_call_name = []
+        tools_call_args = []
+        tool_calls = [{"function": {"name": "update_scene", "arguments": '{"patch": '}}]
+
+    calls = IntentRouter._extract_tool_calls(ToolCallResponse())
+
+    assert calls == [{"name": "update_scene", "args": {}}]
+
+
 def test_character_card_final_reply_guard_blocks_unverified_elite_join():
     session = GameSession.new("group-1")
     session.world_tags["_plot_locked"] = True

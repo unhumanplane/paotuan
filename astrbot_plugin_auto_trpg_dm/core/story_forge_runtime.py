@@ -106,6 +106,8 @@ def apply_story_forge_turn(
 def story_forge_runtime_diagnostics(session: GameSession | dict[str, Any]) -> dict[str, Any]:
     scene = session.get("scene", {}) if isinstance(session, dict) else getattr(session, "scene", {})
     archive = normalize_story_forge_archive(scene.get(STORY_FORGE_ARCHIVE_KEY) if isinstance(scene, dict) else {})
+    if isinstance(scene, dict):
+        _bootstrap_scene_pressure_clock(scene, archive, now=_safe_text(archive.get("updated_at"), 80) or utc_now_iso())
     actions = _list_of_dicts(archive.get("convergence_actions"))
     action_with_map_seed = [action for action in actions if isinstance(action.get("map_grid_seed"), dict)]
     action_with_render = [action for action in actions if isinstance(action.get("rendered_map_ref"), dict)]
@@ -154,6 +156,7 @@ def archive_story_forge_turn(
     scene = _ensure_scene(session)
     archive = normalize_story_forge_archive(scene.get(STORY_FORGE_ARCHIVE_KEY))
     now = utc_now_iso()
+    _bootstrap_scene_pressure_clock(scene, archive, actor=actor or {}, now=now)
     turn_id = _turn_id(session.session_id, player_message, dm_response, now)
     visible_tracking = _visible_tracking_state(scene)
     turn = {
@@ -390,6 +393,7 @@ def advance_story_forge_pressure_clock(
     runtime_config = config or StoryForgeRuntimeConfig()
     if not runtime_config.enabled:
         return {"ok": False, "error": "story_forge_runtime_disabled"}
+    requested_clock_id = _safe_text(clock_id, 240)
     safe_clock_id = _safe_clock_id(clock_id)
     if not safe_clock_id:
         return {"ok": False, "error": "story_forge_clock_id_required"}
@@ -404,14 +408,26 @@ def advance_story_forge_pressure_clock(
     scene = _ensure_scene(session)
     archive = normalize_story_forge_archive(scene.get(STORY_FORGE_ARCHIVE_KEY))
     clocks = _list_of_dicts(archive.get("pressure_clocks"))
-    clock_index = next(
-        (index for index, item in enumerate(clocks) if str(item.get("clock_id") or "") == safe_clock_id),
-        -1,
-    )
+    clock_index = _find_pressure_clock_index(clocks, safe_clock_id)
+    fallback_clock_id = ""
     if clock_index < 0:
-        return {"ok": False, "error": "story_forge_pressure_clock_not_found", "clock_id": safe_clock_id}
+        bootstrapped = _bootstrap_scene_pressure_clock(scene, archive, actor=actor or {}, now=utc_now_iso())
+        clocks = _list_of_dicts(archive.get("pressure_clocks"))
+        clock_index = _find_pressure_clock_index(clocks, safe_clock_id)
+        if clock_index < 0 and bootstrapped and len(_active_pressure_clocks(clocks)) == 1:
+            fallback_clock = _active_pressure_clocks(clocks)[0]
+            fallback_clock_id = str(fallback_clock.get("clock_id") or "")
+            clock_index = _find_pressure_clock_index(clocks, fallback_clock_id)
+        if clock_index < 0:
+            return {
+                "ok": False,
+                "error": "story_forge_pressure_clock_not_found",
+                "clock_id": safe_clock_id,
+                "requested_clock_id": requested_clock_id,
+            }
 
     clock = dict(clocks[clock_index])
+    actual_clock_id = str(clock.get("clock_id") or safe_clock_id)
     old_value = _safe_int(clock.get("value"), 0)
     max_value = max(1, _safe_int(clock.get("max"), 4))
     new_value = max(0, min(max_value, old_value + int(delta)))
@@ -427,7 +443,7 @@ def advance_story_forge_pressure_clock(
         completion = {}
     event = normalize_clock_event(
         {
-            "clock_id": safe_clock_id,
+            "clock_id": actual_clock_id,
             "clock_type": "pressure",
             "delta": int(delta),
             "old_value": old_value,
@@ -454,7 +470,7 @@ def advance_story_forge_pressure_clock(
     repository.save_session(session)
     result = {
         "ok": True,
-        "clock_id": safe_clock_id,
+        "clock_id": actual_clock_id,
         "old_value": old_value,
         "new_value": new_value,
         "max": max_value,
@@ -465,6 +481,10 @@ def advance_story_forge_pressure_clock(
     }
     if completed:
         result["completion"] = _project_clock_completion(completion)
+    if fallback_clock_id and fallback_clock_id != safe_clock_id:
+        result["requested_clock_id"] = requested_clock_id or safe_clock_id
+        result["normalized_requested_clock_id"] = safe_clock_id
+        result["clock_id_fallback"] = True
     _append_story_forge_audit(repository, session_id, "advance_story_forge_pressure_clock", result)
     return result
 
@@ -777,6 +797,95 @@ def _merge_convergence_action(
         merged.append(selected)
     archive["convergence_actions"] = merged[-max(1, limit) :]
     return selected, replaced
+
+
+def _bootstrap_scene_pressure_clock(
+    scene: dict[str, Any],
+    archive: dict[str, Any],
+    *,
+    actor: dict[str, str] | None = None,
+    now: str = "",
+) -> bool:
+    if not isinstance(scene, dict):
+        return False
+    existing = _list_of_dicts(archive.get("pressure_clocks"))
+    if _active_pressure_clocks(existing):
+        return False
+    legacy = scene.get("pressure_clock")
+    if legacy in (None, "", [], {}):
+        return False
+    payload = _legacy_scene_pressure_clock_payload(legacy, scene)
+    if not payload:
+        return False
+    try:
+        clock = normalize_pressure_clock(payload, actor=actor or {}, now=now or utc_now_iso())
+    except ValueError:
+        return False
+    archive["pressure_clocks"] = (existing + [clock])[-60:]
+    archive["updated_at"] = _safe_text(now or utc_now_iso(), 80)
+    return True
+
+
+def _legacy_scene_pressure_clock_payload(value: Any, scene: dict[str, Any]) -> dict[str, Any]:
+    if isinstance(value, dict):
+        if not _player_visible_record(value):
+            return {}
+        label = _safe_text(value.get("label") or value.get("title") or value.get("name") or "当前压力", 160)
+        public_signal = _safe_text(
+            value.get("public_signal")
+            or value.get("visible_signal")
+            or value.get("text")
+            or value.get("description")
+            or value.get("summary"),
+            360,
+        )
+        stakes = _safe_text(value.get("stakes") or value.get("consequence") or scene.get("stakes"), 360)
+        raw_max = value.get("max", value.get("segments", 4))
+        raw_tick = value.get("value", value.get("tick", 0))
+        pressure_type = value.get("pressure_type") or value.get("type") or "time"
+        visibility = value.get("visibility") or "public"
+        status = value.get("status") or "active"
+        raw_clock_id = value.get("clock_id") or value.get("id")
+    else:
+        label = "当前压力"
+        public_signal = _safe_text(value, 360)
+        stakes = _safe_text(scene.get("stakes"), 360)
+        raw_max = 4
+        raw_tick = 0
+        pressure_type = "time"
+        visibility = "public"
+        status = "active"
+        raw_clock_id = ""
+    if not label and not public_signal:
+        return {}
+    return {
+        "clock_id": raw_clock_id,
+        "label": label or "当前压力",
+        "pressure_type": pressure_type,
+        "value": raw_tick,
+        "max": raw_max,
+        "status": status,
+        "visibility": _normalize_clock_visibility(visibility),
+        "public_signal": public_signal,
+        "stakes": stakes or "压力升满后，局面会变得更困难，但仍保留可执行的补救路线。",
+        "next_risk_hint": "拖延、失败检定、制造噪音或放弃窗口会推进这个压力。",
+        "counterplay_hint": "快速行动、隐藏踪迹、切断风险来源或付出资源可减缓压力。",
+        "on_complete": {
+            "failure_forward": "压力升满后，局面会升级或入口条件变差，但角色仍能通过新的路线、代价或场景目标继续推进。",
+            "new_scene_goal": "处理升级后的风险，寻找替代路线或补救机会。",
+        },
+    }
+
+
+def _find_pressure_clock_index(clocks: list[dict[str, Any]], clock_id: str) -> int:
+    for index, item in enumerate(clocks):
+        if str(item.get("clock_id") or "") == clock_id:
+            return index
+    return -1
+
+
+def _active_pressure_clocks(clocks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [clock for clock in clocks if str(clock.get("status") or "active").lower() == "active"]
 
 
 def _write_story_forge_player_brief(

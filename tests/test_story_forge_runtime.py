@@ -234,6 +234,91 @@ def test_story_forge_pressure_clock_records_advances_and_projects_brief():
     assert diagnostics["clock_event_count"] == 1
 
 
+def test_story_forge_turn_bootstraps_legacy_scene_pressure_clock():
+    repo = _repo("story-forge-pressure-clock-legacy-bootstrap")
+    session = GameSession.new("group")
+    session.scene["pressure_clock"] = {
+        "label": "午夜倒计时与暴露风险",
+        "text": "一名哨兵已倒下；西侧巡逻者仍在外围；午夜前必须找到线人",
+        "status": "active",
+        "visibility": "player",
+    }
+    session.scene["stakes"] = "拖延会让巡逻重新覆盖月台，线人证据也可能被转移。"
+    repo.save_session(session)
+
+    result = apply_story_forge_turn(
+        repo,
+        "group",
+        player_message="I watch the patrol.",
+        dm_response="The patrol light moves west.",
+    )
+
+    saved = repo.load_session("group")
+    archive = saved.scene[STORY_FORGE_ARCHIVE_KEY]
+    brief = saved.scene[STORY_FORGE_BRIEF_KEY]
+
+    assert result["diagnostics"]["pressure_clock_count"] == 1
+    assert archive["pressure_clocks"][0]["label"] == "午夜倒计时与暴露风险"
+    assert archive["pressure_clocks"][0]["public_signal"].startswith("一名哨兵")
+    assert brief["visible_pressure_clocks"][0]["stakes"].startswith("拖延会让巡逻")
+
+
+def test_story_forge_pressure_clock_advance_falls_back_to_legacy_scene_clock():
+    repo = _repo("story-forge-pressure-clock-legacy-fallback")
+    session = GameSession.new("group")
+    session.scene["pressure_clock"] = {
+        "label": "午夜倒计时与暴露风险",
+        "text": "站内巡逻仍未确认。",
+        "status": "active",
+        "visibility": "player",
+    }
+    repo.save_session(session)
+
+    result = advance_story_forge_pressure_clock(
+        repo,
+        "group",
+        clock_id="clock:巡逻警觉",
+        trigger="failed_stealth",
+        cause="凯德横穿雨幕时踩到积水，暴露出一段反光。",
+        visible_effect="西侧手电光停顿了一下，随后向铁门方向扫来。",
+    )
+
+    saved = repo.load_session("group")
+    archive = saved.scene[STORY_FORGE_ARCHIVE_KEY]
+    brief = saved.scene[STORY_FORGE_BRIEF_KEY]
+
+    assert result["ok"] is True
+    assert result["clock_id_fallback"] is True
+    assert result["requested_clock_id"] == "clock:巡逻警觉"
+    assert archive["pressure_clocks"][0]["value"] == 1
+    assert archive["clock_events"][0]["clock_id"] == archive["pressure_clocks"][0]["clock_id"]
+    assert brief["recent_clock_events"][0]["visible_effect"].startswith("西侧手电")
+
+
+def test_story_forge_hidden_legacy_scene_pressure_clock_is_not_bootstrapped():
+    repo = _repo("story-forge-pressure-clock-hidden-legacy")
+    session = GameSession.new("group")
+    session.scene["pressure_clock"] = {
+        "label": "Hidden pursuer",
+        "text": "A secret pursuer closes in.",
+        "status": "active",
+        "visibility": "hidden",
+    }
+    repo.save_session(session)
+
+    result = apply_story_forge_turn(
+        repo,
+        "group",
+        player_message="I wait.",
+        dm_response="Rain keeps falling.",
+    )
+
+    saved = repo.load_session("group")
+
+    assert result["diagnostics"]["pressure_clock_count"] == 0
+    assert saved.scene[STORY_FORGE_BRIEF_KEY]["visible_pressure_clocks"] == []
+
+
 def test_story_forge_pressure_clock_derives_distinct_ids_from_chinese_labels():
     repo = _repo("story-forge-pressure-clock-chinese-id")
     session = GameSession.new("group")
