@@ -332,18 +332,23 @@ def _project_scene(
     active_thread_id = str(scene.get("active_scene_thread_id") or "").strip()
     raw_threads = scene.get("scene_threads")
     active_thread_id = _effective_active_scene_thread_id(raw_threads, active_thread_id)
+    recent_limit = 3 if profile in {"state_query", "character_profile"} else 6
+    demote_legacy_anchor = _should_demote_legacy_scene_anchor(
+        scene,
+        raw_threads,
+        _project_recent_events(scene.get("_recent_narrative_events"), recent_limit),
+    )
     scene = project_visible_scene_value(scene, depth=4, text_limit=500, item_limit=24)
     if not isinstance(scene, dict):
         return {}
     projected: dict[str, Any] = {}
-    recent_limit = 3 if profile in {"state_query", "character_profile"} else 6
     recent_events = _project_recent_events(scene.get("_recent_narrative_events"), recent_limit)
     continuity_anchor = _project_continuity_anchor(scene, recent_events, profile)
     if continuity_anchor:
         projected["continuity_anchor"] = continuity_anchor
     if recent_events:
         projected["recent_events"] = recent_events
-    demote_legacy_anchor = _should_demote_legacy_scene_anchor(scene, raw_threads, recent_events)
+    demote_legacy_anchor = demote_legacy_anchor or _should_demote_legacy_scene_anchor(scene, raw_threads, recent_events)
     for key, value in scene.items():
         if value in (None, "", [], {}):
             continue
