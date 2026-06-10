@@ -27,6 +27,7 @@ _ENEMY_PREFIXES = {
 }
 
 _NUMBERED_ID_RE = re.compile(r"^([a-z][a-z0-9]*)(?:[_-])(\d+)$", re.IGNORECASE)
+_TRAILING_NUMBER_RE = re.compile(r"(?:^|[_-])(\d+)$", re.IGNORECASE)
 _INTERNAL_SLUG_RE = re.compile(r"^[a-z][a-z0-9]*(?:[_-][a-z0-9]+)+$", re.IGNORECASE)
 
 
@@ -80,6 +81,16 @@ def fallback_turn_entity_label(entity_id: str) -> str:
             return f"玩家角色 {int(number)}"
         if prefix == "npc":
             return f"NPC {int(number)}"
+    trailing_number = _TRAILING_NUMBER_RE.search(lowered)
+    if trailing_number:
+        number = int(trailing_number.group(1))
+        for prefix, label in _NUMBERED_ENTITY_LABELS.items():
+            if lowered.startswith(prefix + "_") or lowered.startswith(prefix + "-"):
+                return f"{label} {number}"
+        if lowered.startswith("pc_") or lowered.startswith("pc-"):
+            return f"玩家角色 {number}"
+        if lowered.startswith("npc_") or lowered.startswith("npc-"):
+            return f"NPC {number}"
     if lowered.startswith("pc_") or lowered.startswith("pc-"):
         return "玩家角色"
     if lowered.startswith("npc_") or lowered.startswith("npc-"):

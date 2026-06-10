@@ -1,4 +1,5 @@
 import asyncio
+from datetime import datetime, timedelta, timezone
 import sys
 import types
 from pathlib import Path
@@ -137,6 +138,7 @@ from astrbot_plugin_auto_trpg_dm.core.map_core import (
     save_active_strict_grid,
 )
 from astrbot_plugin_auto_trpg_dm.core.models import Character, GameMode, GameSession
+from astrbot_plugin_auto_trpg_dm.core.turn_labels import fallback_turn_entity_label
 from astrbot_plugin_auto_trpg_dm.main import AutoTrpgDmPlugin, _heartbeat_turn_suspend_reason
 from astrbot_plugin_auto_trpg_dm.storage.json_repository import JsonGameRepository
 from astrbot_plugin_auto_trpg_dm.tools.map_tools import MapTools
@@ -297,6 +299,117 @@ def test_heartbeat_timeout_notice_hides_unmapped_enemy_internal_slug():
     assert "轮次推进：伏击者 2的敌方回合等待 133 秒后，已按保守策略推进。" in notice
     assert "建议行动：伏击者 3；本轮未行动者也可直接行动。" in notice
     assert "未响应" not in notice
+
+
+def test_fallback_turn_label_distinguishes_nested_npc_ids():
+    assert fallback_turn_entity_label("npc_b3_1") == "NPC 1"
+    assert fallback_turn_entity_label("npc_b3_2") == "NPC 2"
+    assert fallback_turn_entity_label("enemy_b3_2") == "敌人 2"
+
+
+def test_heartbeat_notice_for_fast_npc_advance_does_not_claim_player_timeout():
+    plugin = object.__new__(AutoTrpgDmPlugin)
+    session = GameSession.new("group")
+    session.mode = GameMode.TACTICAL
+    session.characters["pc_owner"] = Character(id="pc_owner", name="玩家角色", player_id="owner")
+    session.battle = {
+        "active": True,
+        "turn_entity_id": "pc_owner",
+        "turn": {
+            "active": True,
+            "round": 1,
+            "phase": "character_turn",
+            "turn_order": ["npc_b3_1", "pc_owner"],
+            "current_index": 1,
+            "current_entity_id": "pc_owner",
+            "actions_this_round": {"npc_b3_1": {"source": "auto", "summary": "done"}},
+        },
+    }
+
+    notice = plugin._format_heartbeat_timeout_notice(
+        "NPC 1",
+        7,
+        session,
+        {"auto_paused": False},
+        actor_kind="npc",
+    )
+
+    assert "无需等待玩家超时" in notice
+    assert "等待 120 秒" not in notice
+    assert "建议行动：玩家角色；本轮未行动者也可直接行动。" in notice
+
+
+def test_heartbeat_silences_consecutive_non_player_fallback_notices():
+    plugin = object.__new__(AutoTrpgDmPlugin)
+    session = GameSession.new("group")
+    session.mode = GameMode.TACTICAL
+    session.battle = {
+        "active": True,
+        "turn_entity_id": "npc_b3_2",
+        "turn": {
+            "active": True,
+            "round": 1,
+            "phase": "character_turn",
+            "turn_order": ["npc_b3_1", "npc_b3_2", "pc_owner"],
+            "current_index": 1,
+            "current_entity_id": "npc_b3_2",
+            "actions_this_round": {"npc_b3_1": {"source": "auto", "summary": "done"}},
+        },
+    }
+
+    assert plugin._should_send_heartbeat_timeout_notice(
+        session,
+        {"auto_paused": False},
+        actor_kind="npc",
+    ) is False
+
+    session.characters["pc_owner"] = Character(id="pc_owner", name="玩家角色", player_id="owner")
+    session.battle["turn_entity_id"] = "pc_owner"
+    session.battle["turn"]["current_entity_id"] = "pc_owner"
+    session.battle["turn"]["current_index"] = 2
+
+    assert plugin._should_send_heartbeat_timeout_notice(
+        session,
+        {"auto_paused": False},
+        actor_kind="npc",
+    ) is True
+
+
+def test_heartbeat_advances_non_player_turn_without_waiting_for_deadline(tmp_path):
+    repo = JsonGameRepository(tmp_path / "data")
+    session = GameSession.new("group")
+    session.mode = GameMode.TACTICAL
+    session.characters["pc_owner"] = Character(id="pc_owner", name="玩家角色", player_id="owner")
+    now = datetime.now(timezone.utc)
+    session.battle = {
+        "active": True,
+        "turn_entity_id": "npc_b3_1",
+        "turn": {
+            "active": True,
+            "round": 1,
+            "phase": "character_turn",
+            "turn_order": ["npc_b3_1", "npc_b3_2", "pc_owner"],
+            "current_index": 0,
+            "current_entity_id": "npc_b3_1",
+            "actions_this_round": {},
+            "timeout_seconds": 120,
+            "waiting_since_at": now.isoformat(),
+            "deadline_at": (now + timedelta(seconds=119)).isoformat(),
+            "turn_log": [],
+        },
+    }
+    repo.save_session(session)
+    plugin = object.__new__(AutoTrpgDmPlugin)
+    plugin.repository = repo
+    plugin.plugin_logger = type("Logger", (), {"info": lambda *args, **kwargs: None})()
+
+    result = asyncio.run(plugin._heartbeat_check_session("group"))
+
+    saved = repo.load_session("group")
+    assert result["advanced"] is True
+    assert result["notice"] == ""
+    assert saved.battle["turn"]["current_entity_id"] == "npc_b3_2"
+    assert saved.battle["turn"]["actions_this_round"]["npc_b3_1"]["source"] == "auto"
 
 
 def test_turn_destination_hides_unknown_internal_slug():

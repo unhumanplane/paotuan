@@ -2192,9 +2192,21 @@ class AutoTrpgDmPlugin(Star):
         suspended = self._suspend_heartbeat_turn_if_needed(session_id, session, battle, turn, phase)
         if suspended:
             return suspended
+        now = datetime.now(timezone.utc)
+        current_id = ""
+        current_label = ""
+        entities: dict[str, Any] = {}
+        actor_kind = ""
+        if phase == "character_turn":
+            current_id = str(turn.get("current_entity_id") or battle.get("turn_entity_id") or "").strip()
+            if not current_id:
+                return {"active": True, "phase": phase, "missing_current": True}
+            entities = load_active_strict_grid_entities(session.maps, battle)
+            current_label = _entity_label(session, current_id, entities)
+            actor_kind = turn_actor_kind(session, current_id, entities)
+
         deadline = _parse_datetime(turn.get("deadline_at"))
         if deadline is None:
-            now = datetime.now(timezone.utc)
             turn["timeout_seconds"] = 120
             turn["waiting_since_at"] = now.isoformat()
             turn["deadline_at"] = (now + timedelta(seconds=120)).isoformat()
@@ -2214,9 +2226,10 @@ class AutoTrpgDmPlugin(Star):
                 phase,
                 turn.get("deadline_at", ""),
             )
-            return {"active": True, "initialized": True, "phase": phase}
-        now = datetime.now(timezone.utc)
-        if now < deadline:
+            if phase != "character_turn" or actor_kind == "player":
+                return {"active": True, "initialized": True, "phase": phase}
+            deadline = now
+        if now < deadline and (phase != "character_turn" or actor_kind == "player"):
             return {"active": True, "phase": phase}
 
         if phase == "scene_resolution":
@@ -2247,20 +2260,16 @@ class AutoTrpgDmPlugin(Star):
                 )
             return {"active": True, "advanced": bool(result.get("ok")), "phase": phase, "notice": notice}
 
-        current_id = str(turn.get("current_entity_id") or battle.get("turn_entity_id") or "").strip()
-        if not current_id:
-            return {"active": True, "phase": phase, "missing_current": True}
-        entities = load_active_strict_grid_entities(session.maps, battle)
-        current_label = _entity_label(session, current_id, entities)
         waiting_since = _parse_datetime(turn.get("waiting_since_at")) or deadline
-        elapsed = max(120, int((now - waiting_since).total_seconds()))
-        actor_kind = turn_actor_kind(session, current_id, entities)
+        elapsed = max(0, int((now - waiting_since).total_seconds()))
         if actor_kind == "player":
             summary = f"{current_label}超过 120 秒未响应，本地心跳采取保守行动：防御、保持掩体或跟随队伍，不消耗稀缺资源。"
         elif actor_kind == "enemy":
-            summary = f"{current_label}的敌方回合已等待约 {elapsed} 秒，本地心跳按保守策略推进：保持掩体、压制最近威胁，不触发新的复杂机制。"
+            timing = f"已等待约 {elapsed} 秒" if elapsed >= 120 else "无需等待玩家超时"
+            summary = f"{current_label}的敌方回合{timing}，本地心跳按保守策略推进：保持掩体、压制最近威胁，不触发新的复杂机制。"
         else:
-            summary = f"{current_label}的回合已等待约 {elapsed} 秒，本地心跳按保守策略推进：保持当前位置、跟随局势，不消耗稀缺资源。"
+            timing = f"已等待约 {elapsed} 秒" if elapsed >= 120 else "无需等待玩家超时"
+            summary = f"{current_label}的回合{timing}，本地心跳按保守策略推进：保持当前位置、跟随局势，不消耗稀缺资源。"
         result = await TurnTools(
             self.repository,
             session_id,
@@ -2307,13 +2316,14 @@ class AutoTrpgDmPlugin(Star):
         notice = ""
         if result.get("ok"):
             updated_session = self.repository.load_session(session_id)
-            notice = self._format_heartbeat_timeout_notice(
-                current_label,
-                elapsed,
-                updated_session,
-                timeout_pause,
-                actor_kind=actor_kind,
-            )
+            if self._should_send_heartbeat_timeout_notice(updated_session, timeout_pause, actor_kind=actor_kind):
+                notice = self._format_heartbeat_timeout_notice(
+                    current_label,
+                    elapsed,
+                    updated_session,
+                    timeout_pause,
+                    actor_kind=actor_kind,
+                )
         return {
             "active": True,
             "advanced": bool(result.get("ok")),
@@ -2542,9 +2552,15 @@ class AutoTrpgDmPlugin(Star):
         if actor_kind == "player":
             first_line = f"轮次超时：{current_label}超过 {max(120, elapsed)} 秒未响应，已采取保守行动。"
         elif actor_kind == "enemy":
-            first_line = f"轮次推进：{current_label}的敌方回合等待 {max(120, elapsed)} 秒后，已按保守策略推进。"
+            if elapsed >= 120:
+                first_line = f"轮次推进：{current_label}的敌方回合等待 {elapsed} 秒后，已按保守策略推进。"
+            else:
+                first_line = f"轮次推进：{current_label}的敌方回合无需等待玩家超时，已按保守策略推进。"
         else:
-            first_line = f"轮次推进：{current_label}的回合等待 {max(120, elapsed)} 秒后，已按保守策略推进。"
+            if elapsed >= 120:
+                first_line = f"轮次推进：{current_label}的回合等待 {elapsed} 秒后，已按保守策略推进。"
+            else:
+                first_line = f"轮次推进：{current_label}的回合无需等待玩家超时，已按保守策略推进。"
         lines = [first_line]
         if timeout_pause.get("auto_paused"):
             lines.append(self._format_timeout_pause_line(timeout_pause))
@@ -2552,6 +2568,28 @@ class AutoTrpgDmPlugin(Star):
         else:
             lines.append(self._format_turn_destination(updated_session))
         return "\n".join(line for line in lines if line)
+
+    def _should_send_heartbeat_timeout_notice(
+        self,
+        updated_session,
+        timeout_pause: dict[str, object],
+        *,
+        actor_kind: str,
+    ) -> bool:
+        if timeout_pause.get("auto_paused") or actor_kind == "player":
+            return True
+        battle = updated_session.battle or {}
+        turn = dict(battle.get("turn") or {})
+        if not turn.get("active"):
+            return True
+        phase = str(turn.get("phase") or "")
+        if phase != "character_turn":
+            return True
+        current_id = str(turn.get("current_entity_id") or battle.get("turn_entity_id") or "").strip()
+        if not current_id:
+            return True
+        entities = load_active_strict_grid_entities(updated_session.maps, battle)
+        return turn_actor_kind(updated_session, current_id, entities) == "player"
 
     def _format_timeout_pause_line(self, timeout_pause: dict[str, object]) -> str:
         count = int(timeout_pause.get("count") or 0)
