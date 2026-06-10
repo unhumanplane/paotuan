@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import builtins
 import hashlib
 from contextlib import suppress
 from datetime import datetime, timedelta, timezone
@@ -59,6 +60,9 @@ from .tools.turn_tools import TurnTools
 
 
 PLUGIN_VERSION = "0.1.135"
+
+_HEARTBEAT_OWNER_ATTR = "_auto_trpg_dm_heartbeat_owner_token"
+_HEARTBEAT_TASK_ATTR = "_auto_trpg_dm_heartbeat_task"
 
 DEFAULT_REASSURANCE_PHRASES = (
     "正在翻找合适的骰子。",
@@ -334,6 +338,7 @@ class AutoTrpgDmPlugin(Star):
         if live_scene_migrations:
             self.plugin_logger.info("legacy_live_scene_state_migrated saves=%s", live_scene_migrations)
         self._heartbeat_task: asyncio.Task | None = None
+        self._heartbeat_owner_token: object | None = None
         self._heartbeat_idle_ticks = 0
         self._start_heartbeat_task()
         self.admin_web = AutoTrpgAdminWeb(self.repository)
@@ -2037,11 +2042,21 @@ class AutoTrpgDmPlugin(Star):
         return migrated
 
     async def terminate(self):
-        if self._heartbeat_task:
-            self._heartbeat_task.cancel()
-            with suppress(asyncio.CancelledError):
-                await self._heartbeat_task
+        heartbeat_task = getattr(self, "_heartbeat_task", None)
+        heartbeat_token = getattr(self, "_heartbeat_owner_token", None)
+        if getattr(builtins, _HEARTBEAT_OWNER_ATTR, None) is heartbeat_token:
+            setattr(builtins, _HEARTBEAT_OWNER_ATTR, None)
+        if heartbeat_task:
+            heartbeat_task.cancel()
+            try:
+                with suppress(asyncio.CancelledError):
+                    await asyncio.wait_for(heartbeat_task, timeout=5)
+            except TimeoutError:
+                self.plugin_logger.warning("turn_heartbeat_cancel_timeout")
+            if getattr(builtins, _HEARTBEAT_TASK_ATTR, None) is heartbeat_task:
+                setattr(builtins, _HEARTBEAT_TASK_ATTR, None)
             self._heartbeat_task = None
+            self._heartbeat_owner_token = None
         reassurance_tasks = list(getattr(self, "_reassurance_tasks", set()) or [])
         for task in reassurance_tasks:
             task.cancel()
@@ -2054,22 +2069,63 @@ class AutoTrpgDmPlugin(Star):
         logger.info("Auto TRPG DM plugin terminated.")
 
     def _start_heartbeat_task(self) -> None:
+        existing_task = getattr(self, "_heartbeat_task", None)
+        if existing_task and not existing_task.done():
+            self.plugin_logger.info("turn_heartbeat_start_skipped_existing")
+            return
+        owner_token = object()
+        previous_task = getattr(builtins, _HEARTBEAT_TASK_ATTR, None)
+        setattr(builtins, _HEARTBEAT_OWNER_ATTR, owner_token)
+        self._heartbeat_owner_token = owner_token
+        if isinstance(previous_task, asyncio.Task) and not previous_task.done():
+            previous_task.cancel()
+            self.plugin_logger.info("turn_heartbeat_previous_cancelled")
         try:
-            self._heartbeat_task = asyncio.create_task(self._turn_heartbeat_loop())
-            self.plugin_logger.info("turn_heartbeat_started interval_seconds=%s", self.HEARTBEAT_INTERVAL_SECONDS)
+            self._heartbeat_task = asyncio.create_task(self._turn_heartbeat_loop(owner_token))
+            setattr(builtins, _HEARTBEAT_TASK_ATTR, self._heartbeat_task)
+            self.plugin_logger.info(
+                "turn_heartbeat_started interval_seconds=%s owner=%s",
+                self.HEARTBEAT_INTERVAL_SECONDS,
+                id(owner_token),
+            )
         except RuntimeError as exc:
+            if getattr(builtins, _HEARTBEAT_OWNER_ATTR, None) is owner_token:
+                setattr(builtins, _HEARTBEAT_OWNER_ATTR, None)
+            self._heartbeat_owner_token = None
             self.plugin_logger.warning("turn_heartbeat_start_failed error=%s", exc)
 
-    async def _turn_heartbeat_loop(self) -> None:
-        await asyncio.sleep(self.HEARTBEAT_INTERVAL_SECONDS)
-        while True:
-            try:
-                await self._run_turn_heartbeat_once()
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:
-                self.plugin_logger.exception("turn_heartbeat_failed error=%s", exc)
+    def _is_current_heartbeat_owner(self, owner_token: object | None) -> bool:
+        return owner_token is not None and getattr(builtins, _HEARTBEAT_OWNER_ATTR, None) is owner_token
+
+    async def _turn_heartbeat_loop(self, owner_token: object | None = None) -> None:
+        owner_token = owner_token or getattr(self, "_heartbeat_owner_token", None)
+        stop_reason = "completed"
+        try:
             await asyncio.sleep(self.HEARTBEAT_INTERVAL_SECONDS)
+            while True:
+                if not self._is_current_heartbeat_owner(owner_token):
+                    stop_reason = "owner_replaced"
+                    return
+                try:
+                    await self._run_turn_heartbeat_once()
+                except asyncio.CancelledError:
+                    stop_reason = "cancelled"
+                    raise
+                except Exception as exc:
+                    self.plugin_logger.exception("turn_heartbeat_failed error=%s", exc)
+                await asyncio.sleep(self.HEARTBEAT_INTERVAL_SECONDS)
+        except asyncio.CancelledError:
+            stop_reason = "cancelled"
+            raise
+        finally:
+            current_task = asyncio.current_task()
+            if getattr(self, "_heartbeat_task", None) is current_task:
+                self._heartbeat_task = None
+            if getattr(builtins, _HEARTBEAT_TASK_ATTR, None) is current_task:
+                setattr(builtins, _HEARTBEAT_TASK_ATTR, None)
+            if getattr(builtins, _HEARTBEAT_OWNER_ATTR, None) is owner_token:
+                setattr(builtins, _HEARTBEAT_OWNER_ATTR, None)
+            self.plugin_logger.info("turn_heartbeat_stopped reason=%s owner=%s", stop_reason, id(owner_token))
 
     async def _run_turn_heartbeat_once(self) -> None:
         scanned = 0

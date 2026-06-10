@@ -1,4 +1,6 @@
 import asyncio
+import builtins
+from contextlib import suppress
 import sys
 import types
 
@@ -592,3 +594,71 @@ def test_builtin_reassurance_phrase_pools_are_safe():
         "冷页",
     )
     assert not any(fragment in phrase for phrase in phrases for fragment in banned_fragments)
+
+
+def _clear_heartbeat_globals():
+    for attr in (main_module._HEARTBEAT_OWNER_ATTR, main_module._HEARTBEAT_TASK_ATTR):
+        if hasattr(builtins, attr):
+            delattr(builtins, attr)
+
+
+def test_turn_heartbeat_new_owner_cancels_previous_task():
+    async def run_case():
+        _clear_heartbeat_globals()
+        plugin_a = _plugin()
+        plugin_a.HEARTBEAT_INTERVAL_SECONDS = 0.01
+        plugin_a._heartbeat_task = None
+        plugin_a._heartbeat_owner_token = None
+        plugin_a._heartbeat_idle_ticks = 0
+        plugin_a._run_turn_heartbeat_once = lambda: asyncio.sleep(0)
+        plugin_a._start_heartbeat_task()
+        first_task = plugin_a._heartbeat_task
+
+        plugin_b = _plugin()
+        plugin_b.HEARTBEAT_INTERVAL_SECONDS = 0.01
+        plugin_b._heartbeat_task = None
+        plugin_b._heartbeat_owner_token = None
+        plugin_b._heartbeat_idle_ticks = 0
+        plugin_b._run_turn_heartbeat_once = lambda: asyncio.sleep(0)
+        plugin_b._start_heartbeat_task()
+
+        await asyncio.sleep(0.03)
+        try:
+            assert first_task is not None
+            assert first_task.done()
+            assert plugin_b._heartbeat_task is not None
+            assert not plugin_b._heartbeat_task.done()
+            assert getattr(builtins, main_module._HEARTBEAT_TASK_ATTR) is plugin_b._heartbeat_task
+        finally:
+            await plugin_b.terminate()
+            _clear_heartbeat_globals()
+
+    asyncio.run(run_case())
+
+
+def test_turn_heartbeat_exits_when_owner_is_replaced_without_cancel():
+    async def run_case():
+        _clear_heartbeat_globals()
+        plugin = _plugin()
+        plugin.HEARTBEAT_INTERVAL_SECONDS = 0.01
+        plugin._heartbeat_task = None
+        plugin._heartbeat_owner_token = None
+        plugin._heartbeat_idle_ticks = 0
+        plugin._run_turn_heartbeat_once = lambda: asyncio.sleep(0)
+        plugin._start_heartbeat_task()
+        task = plugin._heartbeat_task
+        setattr(builtins, main_module._HEARTBEAT_OWNER_ATTR, object())
+
+        await asyncio.sleep(0.03)
+        try:
+            assert task is not None
+            assert task.done()
+            assert plugin._heartbeat_task is None
+        finally:
+            if task and not task.done():
+                task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await task
+            _clear_heartbeat_globals()
+
+    asyncio.run(run_case())

@@ -617,8 +617,9 @@ def advance_story_forge_pressure_clock(
         bootstrapped = _bootstrap_scene_pressure_clock(scene, archive, actor=actor or {}, now=utc_now_iso())
         clocks = _list_of_dicts(archive.get("pressure_clocks"))
         clock_index = _find_pressure_clock_index(clocks, safe_clock_id)
-        if clock_index < 0 and bootstrapped and len(_active_pressure_clocks(clocks)) == 1:
-            fallback_clock = _active_pressure_clocks(clocks)[0]
+        visible_active_clocks = [clock for clock in _active_pressure_clocks(clocks) if _clock_player_visible(clock)]
+        if clock_index < 0 and (bootstrapped or len(visible_active_clocks) == 1) and len(visible_active_clocks) == 1:
+            fallback_clock = visible_active_clocks[0]
             fallback_clock_id = str(fallback_clock.get("clock_id") or "")
             clock_index = _find_pressure_clock_index(clocks, fallback_clock_id)
         if clock_index < 0:

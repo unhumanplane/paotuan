@@ -357,27 +357,35 @@ def _short_hash(value: Any) -> str:
     return hashlib.sha256(text.encode("utf-8", errors="replace")).hexdigest()[:12]
 
 
+_AUXILIARY_NO_TOOL_PURPOSES = {
+    "continuity_audit",
+    "ra_cycle_resolution",
+    "ambient_image_prompt",
+    "ambient_image_similarity",
+    "map_svg_generation",
+    "map_renderer_supplement",
+    "outbound_menu_semantic_review",
+}
+
+
+def _llm_no_tool_call_flags(shape: Mapping[str, Any]) -> tuple[bool, bool]:
+    tool_enabled = bool(shape.get("tool_enabled"))
+    call_purpose = str(shape.get("call_purpose") or "")
+    if tool_enabled:
+        return False, False
+    no_tool_followup = call_purpose == "final_response_tool_loop"
+    auxiliary_no_tool_call = call_purpose in _AUXILIARY_NO_TOOL_PURPOSES
+    return no_tool_followup, auxiliary_no_tool_call
+
+
 def _log_llm_usage_summary(response: Any, kwargs: Mapping[str, Any]) -> None:
     try:
         usage = _extract_llm_usage_summary(response)
         shape = _llm_request_shape(kwargs)
         usage_text = json.dumps(usage, ensure_ascii=False, separators=(",", ":"))
-        no_tool_followup = (
-            not bool(shape["tool_enabled"])
-            and str(shape["call_purpose"])
-            in {
-                "continuity_audit",
-                "ra_cycle_resolution",
-                "ambient_image_prompt",
-                "ambient_image_similarity",
-                "map_svg_generation",
-                "map_renderer_supplement",
-                "final_response_tool_loop",
-                "outbound_menu_semantic_review",
-            }
-        )
+        no_tool_followup, auxiliary_no_tool_call = _llm_no_tool_call_flags(shape)
         get_plugin_logger().info(
-            "llm_usage chat_provider=%s purpose=%s prompt_chars=%s system_prompt_chars=%s system_prompt_hash=%s contexts_count=%s contexts_chars=%s tool_enabled=%s no_tool_followup=%s usage_available=%s usage=%s",
+            "llm_usage chat_provider=%s purpose=%s prompt_chars=%s system_prompt_chars=%s system_prompt_hash=%s contexts_count=%s contexts_chars=%s tool_enabled=%s no_tool_followup=%s auxiliary_no_tool_call=%s usage_available=%s usage=%s",
             kwargs.get("chat_provider_id", ""),
             shape["call_purpose"],
             shape["prompt_chars"],
@@ -387,6 +395,7 @@ def _log_llm_usage_summary(response: Any, kwargs: Mapping[str, Any]) -> None:
             shape["contexts_chars"],
             shape["tool_enabled"],
             no_tool_followup,
+            auxiliary_no_tool_call,
             bool(usage),
             usage_text,
         )

@@ -235,6 +235,87 @@ def test_story_forge_pressure_clock_records_advances_and_projects_brief():
     assert diagnostics["clock_event_count"] == 1
 
 
+def test_story_forge_pressure_clock_advance_falls_back_to_single_visible_active_clock():
+    repo = _repo("story-forge-pressure-clock-single-visible-fallback")
+    session = GameSession.new("group")
+    repo.save_session(session)
+    record_story_forge_pressure_clock(
+        repo,
+        "group",
+        clock={
+            "clock_id": "clock:real_alarm",
+            "label": "Alarm countdown",
+            "pressure_type": "time",
+            "value": 0,
+            "max": 4,
+            "visibility": "public",
+            "public_signal": "The amber light over the gate is blinking.",
+            "stakes": "At 4/4 the gate seals.",
+            "on_complete": {
+                "effect": "The gate seals.",
+                "failure_forward": "The party can still force a maintenance hatch.",
+            },
+        },
+    )
+
+    result = advance_story_forge_pressure_clock(
+        repo,
+        "group",
+        clock_id="clock:guessed_alarm",
+        trigger="delay",
+        cause="The party keeps searching while the alarm blinks.",
+        visible_effect="The amber light begins blinking twice as fast.",
+    )
+
+    saved = repo.load_session("group")
+    archive = saved.scene[STORY_FORGE_ARCHIVE_KEY]
+
+    assert result["ok"] is True
+    assert result["clock_id"] == "clock:real_alarm"
+    assert result["clock_id_fallback"] is True
+    assert result["normalized_requested_clock_id"] == "clock:guessed_alarm"
+    assert archive["pressure_clocks"][0]["value"] == 1
+    assert archive["clock_events"][0]["clock_id"] == "clock:real_alarm"
+
+
+def test_story_forge_pressure_clock_advance_does_not_fallback_when_visible_clock_is_ambiguous():
+    repo = _repo("story-forge-pressure-clock-ambiguous-fallback")
+    session = GameSession.new("group")
+    repo.save_session(session)
+    for clock_id, label in (("clock:alarm", "Alarm"), ("clock:fire", "Fire")):
+        record_story_forge_pressure_clock(
+            repo,
+            "group",
+            clock={
+                "clock_id": clock_id,
+                "label": label,
+                "pressure_type": "time",
+                "value": 0,
+                "max": 4,
+                "visibility": "public",
+                "public_signal": f"{label} is getting worse.",
+                "stakes": f"{label} reaches a hard consequence at 4/4.",
+                "on_complete": {
+                    "effect": f"{label} resolves badly.",
+                    "failure_forward": "The party still has a more expensive route.",
+                },
+            },
+        )
+
+    result = advance_story_forge_pressure_clock(
+        repo,
+        "group",
+        clock_id="clock:guessed",
+        trigger="delay",
+        cause="The party waits.",
+        visible_effect="Both risks remain present.",
+    )
+
+    assert result["ok"] is False
+    assert result["error"] == "story_forge_pressure_clock_not_found"
+    assert result["clock_id"] == "clock:guessed"
+
+
 def test_story_forge_encounter_contract_records_and_projects_without_forcing_combat():
     repo = _repo("story-forge-encounter-contract")
     session = GameSession.new("group")

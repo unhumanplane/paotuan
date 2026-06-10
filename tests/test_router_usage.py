@@ -58,6 +58,7 @@ from astrbot_plugin_auto_trpg_dm.core.router import (
     _actor_equipment_final_reply_guard,
     _character_card_final_reply_guard,
     _extract_llm_usage_summary,
+    _llm_no_tool_call_flags,
     _llm_request_shape,
     _is_diagnostic_request,
     _maybe_close_concluded_turn,
@@ -100,6 +101,35 @@ def test_llm_request_shape_marks_call_purpose_without_affecting_tool_flag():
     assert shape["call_purpose"] == "final_response_tool_loop"
     assert shape["tool_enabled"] is False
     assert shape["contexts_count"] == 1
+
+
+def test_llm_no_tool_call_flags_separate_auxiliary_from_final_followup():
+    final_shape = _llm_request_shape(
+        {
+            "prompt": "final text",
+            "system_prompt": "dm",
+            "_call_purpose": "final_response_tool_loop",
+        }
+    )
+    audit_shape = _llm_request_shape(
+        {
+            "prompt": "audit",
+            "system_prompt": "continuity",
+            "_call_purpose": "continuity_audit",
+        }
+    )
+    tool_shape = _llm_request_shape(
+        {
+            "prompt": "tool loop",
+            "system_prompt": "dm",
+            "func_tool": object(),
+            "_call_purpose": "dm_tool_loop",
+        }
+    )
+
+    assert _llm_no_tool_call_flags(final_shape) == (True, False)
+    assert _llm_no_tool_call_flags(audit_shape) == (False, True)
+    assert _llm_no_tool_call_flags(tool_shape) == (False, False)
 
 
 def test_fact_check_correction_does_not_become_narrative_trace():
