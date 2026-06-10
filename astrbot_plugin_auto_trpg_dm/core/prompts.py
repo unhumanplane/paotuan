@@ -280,7 +280,11 @@ def _project_snapshot_for_profile(
         if actor_character:
             projected["actor_character"] = actor_character
     projected["scene"] = _project_scene(snapshot.get("scene", {}), profile, actor_character_id=actor_character_id, message=message)
-    projected["world_tags"] = _project_world_tags(snapshot.get("world_tags", {}), profile)
+    projected["world_tags"] = _project_world_tags(
+        snapshot.get("world_tags", {}),
+        profile,
+        live_started=_live_campaign_started(session),
+    )
     projected["characters"] = _project_characters(
         snapshot.get("characters", []),
         session,
@@ -294,6 +298,18 @@ def _project_snapshot_for_profile(
     if map_view.get("records"):
         projected["maps"] = map_view
     return projected
+
+
+def _live_campaign_started(session: GameSession) -> bool:
+    scene = session.scene if isinstance(session.scene, dict) else {}
+    world_tags = session.world_tags if isinstance(session.world_tags, dict) else {}
+    return bool(
+        scene.get("_game_started")
+        or scene.get("_legacy_live_campaign")
+        or scene.get("_plot_locked")
+        or world_tags.get("_plot_locked") is True
+        or (session.battle or {}).get("active")
+    )
 
 
 def _project_scene(scene: Any, profile: str, *, actor_character_id: str = "", message: str = "") -> Any:
@@ -313,10 +329,13 @@ def _project_scene(scene: Any, profile: str, *, actor_character_id: str = "", me
         projected["continuity_anchor"] = continuity_anchor
     if recent_events:
         projected["recent_events"] = recent_events
+    demote_legacy_anchor = _should_demote_legacy_scene_anchor(scene, raw_threads, recent_events)
     for key, value in scene.items():
         if value in (None, "", [], {}):
             continue
         if key in SCENE_PROJECTION_DROP_KEYS or key.startswith(SCENE_PROJECTION_DROP_PREFIXES):
+            continue
+        if demote_legacy_anchor and key in SCENE_LEGACY_ANCHOR_FIELDS:
             continue
         if key == "last_resolution" and _is_fact_check_resolution(value):
             continue
@@ -358,6 +377,13 @@ SCENE_PROJECTION_DROP_PREFIXES = (
     "_honcho_",
     "_ra_",
 )
+SCENE_LEGACY_ANCHOR_FIELDS = {
+    "location",
+    "current_location",
+    "current_vehicle_status",
+    "current_access_state",
+    "scene_anchor_note",
+}
 OBSOLETE_SCENE_STATUSES = {
     "resolved",
     "closed",
@@ -371,6 +397,26 @@ OBSOLETE_SCENE_STATUSES = {
     "cancelled",
     "canceled",
 }
+
+
+def _should_demote_legacy_scene_anchor(
+    scene: dict[str, Any],
+    raw_threads: Any,
+    recent_events: list[dict[str, Any]],
+) -> bool:
+    note = str(scene.get("scene_anchor_note") or "").strip()
+    if not note.startswith("legacy_backfill"):
+        return False
+    if recent_events:
+        return True
+    if not isinstance(raw_threads, dict):
+        return False
+    for thread in raw_threads.values():
+        if not isinstance(thread, dict) or _scene_thread_is_closed(thread):
+            continue
+        if any(thread.get(key) not in (None, "", [], {}) for key in ("location", "summary", "current_conflict", "current_objective")):
+            return True
+    return False
 
 
 def _project_scene_value(key: str, value: Any, profile: str, *, message: str = "") -> Any:
@@ -696,15 +742,46 @@ def _project_continuity_anchor(
     return {key: value for key, value in anchor.items() if value not in ({}, [], "", None)}
 
 
-def _project_world_tags(world_tags: Any, profile: str) -> Any:
+LIVE_CAMPAIGN_HISTORICAL_WORLD_TAG_KEYS = {
+    "background",
+    "campaign_background",
+    "campaign_contract",
+    "campaign_generation",
+    "campaign_outline",
+    "central_conflict",
+    "main_plot",
+    "opening",
+    "plot",
+    "premise",
+    "starting_premise",
+    "story_outline",
+    "world",
+    "world_premise",
+    "剧情",
+    "剧本",
+    "主线",
+    "开场前提",
+    "世界观",
+    "背景",
+}
+
+
+def _project_world_tags(world_tags: Any, profile: str, *, live_started: bool = False) -> Any:
     if not isinstance(world_tags, dict):
         return world_tags
     projected: dict[str, Any] = {}
+    if live_started:
+        projected["campaign_seed_scope"] = (
+            "历史开局/剧本脚手架已降权；不得把旧种子、旧目标或旧地点当作当前位置、敌人当前去向、"
+            "当前线索状态或本轮可见事实。当前事实以 scene、scene_threads、recent_events、timeline、battle、maps 和工具结果为准。"
+        )
     for key, value in world_tags.items():
         if value in (None, "", [], {}):
             continue
         key_text = str(key)
         if _projection_hidden_key(key_text):
+            continue
+        if live_started and _live_campaign_historical_world_key(key_text):
             continue
         if _looks_like_relationship_projection_key(key_text):
             projected_value = _project_generic_value(
@@ -726,6 +803,11 @@ def _project_world_tags(world_tags: Any, profile: str) -> Any:
         if projected_value not in ({}, [], "", None):
             projected[key_text] = projected_value
     return projected
+
+
+def _live_campaign_historical_world_key(key: str) -> bool:
+    key_lower = str(key or "").strip().lower()
+    return key_lower in LIVE_CAMPAIGN_HISTORICAL_WORLD_TAG_KEYS or key in LIVE_CAMPAIGN_HISTORICAL_WORLD_TAG_KEYS
 
 
 def _world_tag_projection_text_limit(key: str, profile: str) -> int:
@@ -1360,6 +1442,7 @@ CURRENT_STATE_AUTHORITY_PROMPT = """
 当前事实优先级：
 - 当前会话状态快照是最高优先级；其中 scene、characters、timeline、battle、control_authority 是本轮裁定的权威上下文。
 - 本轮工具返回结果优先于所有摘要；工具结果、validator 结果和状态迁移能覆盖旧 summary、旧 tag、旧 RA 摘要和模型回忆。
+- 开场后的 world_tags.starting_premise/campaign_background/campaign_generation/campaign_contract 只是历史剧本脚手架；不得把其中的旧地点、旧目标或旧敌方动向当作当前事实。当前位置、当前冲突和敌方当前去向必须以 scene、scene_threads、recent_events、timeline、battle、maps 和本轮工具结果为准。
 - `memory_summary` 是历史压缩摘要，不代表当前事实；只能用于回忆历史脉络，不能覆盖当前快照里的位置、状态、线索、时间线、战斗或控制权。
 - `environment_summaries`/上一周期 RA 摘要是周期回顾；只有其中明确标记仍有效、且不与当前快照或本轮工具结果冲突的事项，才能当作当前事实使用。
 - Honcho 外部记忆只作回忆线索；若与本地会话状态、审计、规则或工具结果冲突，必须以本地权威状态和工具结果为准。

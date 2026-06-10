@@ -46,6 +46,7 @@ def test_system_prompt_includes_shared_cycle_contract():
     assert "场景定位锚点" in prompt
     assert "location/current_location/current_vehicle_status" in prompt
     assert "停稳、即将启动、正在行驶、已驶离" in prompt
+    assert "只是历史剧本脚手架" in prompt
     assert "完整 `GameSession`" in prompt
     assert "结束当前叙事周期" not in prompt
 
@@ -1827,6 +1828,91 @@ def test_prompt_snapshot_projection_keeps_long_campaign_seed_context():
     assert first in rendered
     assert second in rendered
     assert third in rendered
+
+
+def test_prompt_snapshot_projection_demotes_live_campaign_seed_context():
+    session = GameSession.new("group")
+    seed = "开场种子：线人可能被困在车站调度室，敌人会向调度室方向集结。"
+    session.scene.update(
+        {
+            "_game_started": True,
+            "_plot_locked": True,
+            "summary": "众人已进入北区旧仓库B区三号门内侧，残敌撤向仓库深处。",
+            "location": "北区旧仓库B区三号门内侧/装卸区入口",
+            "current_location": "北区旧仓库B区三号门内侧/装卸区入口",
+            "current_conflict": "门外残敌一死一撤，撤退方向只确认是仓库深处。",
+            "current_objective": "利用短暂安静窗口判断撤退敌人去向。",
+        }
+    )
+    session.world_tags.update(
+        {
+            "_background_ready": True,
+            "_plot_locked": True,
+            "genre": "现代战术悬疑",
+            "tone": "紧张克制",
+            "starting_premise": seed,
+            "campaign_background": seed,
+            "campaign_contract": {"premise": seed, "template_key": "custom_player_brief"},
+            "campaign_generation": {"seed": seed, "opening_scene": seed},
+        }
+    )
+
+    projected_snapshot, _stats = prompt_snapshot_data(
+        session,
+        GameMode.TACTICAL,
+        "换弹夹",
+        snapshot_projection_enabled=True,
+    )
+
+    world_tags = projected_snapshot["world_tags"]
+    rendered_world = json.dumps(world_tags, ensure_ascii=False)
+    rendered_scene = json.dumps(projected_snapshot["scene"], ensure_ascii=False)
+    assert world_tags["genre"] == "现代战术悬疑"
+    assert world_tags["tone"] == "紧张克制"
+    assert "campaign_seed_scope" in world_tags
+    assert "starting_premise" not in world_tags
+    assert "campaign_background" not in world_tags
+    assert "campaign_contract" not in world_tags
+    assert "campaign_generation" not in world_tags
+    assert "调度室" not in rendered_world
+    assert "北区旧仓库B区三号门" in rendered_scene
+
+
+def test_prompt_snapshot_projection_demotes_unverified_legacy_location_anchor():
+    session = GameSession.new("group")
+    session.scene.update(
+        {
+            "_game_started": True,
+            "summary": "队伍已经进入北区旧仓库B区三号门内侧，门外残敌撤向仓库深处。",
+            "current_conflict": "库区短暂安静，撤退方向只确认是仓库深处。",
+            "current_location": "从外围潜入车站，找到通往调度室的路线",
+            "location": "从外围潜入车站，找到通往调度室的路线",
+            "scene_anchor_note": "legacy_backfill_from_visible_scene_text; verify/update with update_scene on next location, vehicle, or access change",
+            "_recent_narrative_events": [
+                {
+                    "at": "2026-06-10T08:51:50+00:00",
+                    "player_id": "gali",
+                    "character_id": "pc_gali",
+                    "message": "射击光源，制造黑暗。",
+                    "outcome": "光源被击灭，残敌朝仓库深处撤去。",
+                }
+            ],
+        }
+    )
+
+    projected_snapshot, _stats = prompt_snapshot_data(
+        session,
+        GameMode.TACTICAL,
+        "换弹夹",
+        snapshot_projection_enabled=True,
+    )
+
+    scene = projected_snapshot["scene"]
+    rendered_scene = json.dumps(scene, ensure_ascii=False)
+    assert "调度室" not in rendered_scene
+    assert "仓库深处" in rendered_scene
+    assert "current_location" not in scene
+    assert "scene_anchor_note" not in scene
 
 
 def test_compact_snapshot_uses_map_store_entities_before_stale_battle_grid():
