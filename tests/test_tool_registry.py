@@ -230,6 +230,7 @@ def test_tool_registry_exposes_story_forge_convergence_when_enabled():
     )
 
     assert "record_story_forge_convergence" in names
+    assert "record_story_forge_encounter_contract" not in names, "|".join(names)
     assert "record_story_forge_pressure_clock" in names
     assert "advance_story_forge_pressure_clock" in names
     spec = next(spec for spec in specs if spec["name"] == "record_story_forge_convergence")
@@ -239,6 +240,36 @@ def test_tool_registry_exposes_story_forge_convergence_when_enabled():
     assert "on_complete" in clock_spec["parameters"]["properties"]
     advance_spec = next(spec for spec in specs if spec["name"] == "advance_story_forge_pressure_clock")
     assert "visible_effect" in advance_spec["parameters"]["properties"]
+
+
+def test_tool_registry_exposes_encounter_contract_for_conflict_when_enabled():
+    registry = _registry_with_ready_session()
+    _toolset, names, _executor, specs = registry.for_mode(
+        GameMode.NARRATIVE,
+        "group",
+        message="attack the guard and dive behind cover.",
+    )
+
+    assert "record_story_forge_encounter_contract" in names
+    assert "turn_control" in names
+    spec = next(spec for spec in specs if spec["name"] == "record_story_forge_encounter_contract")
+    assert "encounter_decision" in spec["parameters"]["properties"]
+    assert "recommended_next_tool" in spec["parameters"]["properties"]
+
+
+def test_tool_registry_exposes_encounter_map_support_for_visual_grid_requests():
+    registry = _registry_with_ready_session()
+    _toolset, names, _executor, _specs = registry.for_mode(
+        GameMode.NARRATIVE,
+        "group",
+        message="draw a battle map for the loading bay",
+    )
+
+    assert "record_story_forge_encounter_contract" in names
+    assert "turn_control" in names
+    assert "create_strict_map" in names
+    assert "start_combat_on_map" in names
+    assert "render_strict_grid_svg" in names
 
 
 def test_tool_registry_hides_story_forge_convergence_when_disabled():
@@ -256,13 +287,15 @@ def test_tool_registry_hides_story_forge_convergence_when_disabled():
     _toolset, names, _executor, specs = registry.for_mode(
         GameMode.NARRATIVE,
         "group",
-        message="继续推进剧情。",
+        message="鏀诲嚮 guard.",
     )
 
     assert "record_story_forge_convergence" not in names
+    assert "record_story_forge_encounter_contract" not in names
     assert "record_story_forge_pressure_clock" not in names
     assert "advance_story_forge_pressure_clock" not in names
     assert not any(spec["name"] == "record_story_forge_convergence" for spec in specs)
+    assert not any(spec["name"] == "record_story_forge_encounter_contract" for spec in specs)
     assert not any(spec["name"] == "record_story_forge_pressure_clock" for spec in specs)
     assert not any(spec["name"] == "advance_story_forge_pressure_clock" for spec in specs)
 

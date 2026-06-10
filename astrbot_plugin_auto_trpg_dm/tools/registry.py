@@ -58,6 +58,7 @@ from .strict_lifecycle_tools import (
 from .story_forge_tools import (
     AdvanceStoryForgePressureClockArgs,
     RecordStoryForgeConvergenceArgs,
+    RecordStoryForgeEncounterContractArgs,
     RecordStoryForgePressureClockArgs,
     StoryForgeTools,
 )
@@ -373,6 +374,18 @@ class ToolRegistry:
                 ),
                 model=RecordStoryForgePressureClockArgs,
                 handler=story_forge_tools.record_story_forge_pressure_clock,
+            ),
+            "record_story_forge_encounter_contract": make_tool(
+                name="record_story_forge_encounter_contract",
+                description=(
+                    "Record the writer/adjudicator encounter contract before resolving an escalating scene. "
+                    "This tool does not force combat by code; it classifies the visible situation as "
+                    "free_narrative, single_check, pressure_scene, soft_turns, strict_turns, or strict_grid. "
+                    "Include scene goal, stakes, action economy, map need, turn-order source, recommended next tool, "
+                    "and evidence. Hidden truth is rejected."
+                ),
+                model=RecordStoryForgeEncounterContractArgs,
+                handler=story_forge_tools.record_story_forge_encounter_contract,
             ),
             "advance_story_forge_pressure_clock": make_tool(
                 name="advance_story_forge_pressure_clock",
@@ -865,6 +878,14 @@ class ToolRegistry:
             selected.append("control_authority")
         if message and _looks_text_only_request(message):
             return list(dict.fromkeys(selected))
+        if _encounter_contract_useful(text, message):
+            for name in ("record_story_forge_encounter_contract", "turn_control"):
+                if name not in selected:
+                    selected.append(name)
+            if _encounter_map_tools_useful(text, message):
+                for name in ("get_battle_snapshot", "create_strict_map", "start_combat_on_map"):
+                    if name not in selected:
+                        selected.append(name)
         return add_map_renderer_tools(selected, message)
 
     @staticmethod
@@ -879,13 +900,17 @@ class ToolRegistry:
     def _prune_story_forge_tools(self, names: list[str]) -> list[str]:
         story_forge_tools = {
             "record_story_forge_convergence",
+            "record_story_forge_encounter_contract",
             "record_story_forge_pressure_clock",
             "advance_story_forge_pressure_clock",
         }
         if bool(getattr(self.story_forge_config, "enabled", False)):
             selected = list(dict.fromkeys(names))
             if "record_story_forge_convergence" in selected:
-                for name in ("record_story_forge_pressure_clock", "advance_story_forge_pressure_clock"):
+                for name in (
+                    "record_story_forge_pressure_clock",
+                    "advance_story_forge_pressure_clock",
+                ):
                     if name not in selected:
                         selected.append(name)
             return selected
@@ -1515,6 +1540,59 @@ TEXT_ONLY_TERMS = (
     "rule list",
 )
 
+ENCOUNTER_STRUCTURE_TERMS = (
+    "attack",
+    "shoot",
+    "fire",
+    "melee",
+    "grenade",
+    "combat",
+    "fight",
+    "initiative",
+    "cover",
+    "攻击",
+    "射击",
+    "点射",
+    "开火",
+    "近战",
+    "猛攻",
+    "火球",
+    "治疗",
+    "圣光",
+    "嘲讽",
+    "掩护",
+    "防御",
+    "闪避",
+    "附赠动作",
+    "反应",
+    "借机攻击",
+    "机会攻击",
+    "手榴弹",
+    "爆炸",
+    "倒地",
+    "束缚",
+    "中毒",
+    "目盲",
+    "生命值归零",
+)
+
+ENCOUNTER_TURN_STRUCTURE_TERMS = (
+    "round",
+    "turn order",
+    "initiative",
+    "strict turn",
+    "strict turns",
+    "回合",
+    "轮次",
+    "轮到",
+    "下一位",
+    "先攻",
+    "行动顺序",
+    "当前行动者",
+    "严格回合",
+    "按先攻",
+)
+
 def _contains_any(text: str, terms: tuple[str, ...]) -> bool:
     return any(term in text for term in terms)
 
@@ -1528,6 +1606,29 @@ def _looks_text_only_request(message: str) -> bool:
     if looks_visual_map_request(text):
         return False
     return _contains_any(text, TEXT_ONLY_TERMS)
+
+
+def _encounter_contract_useful(text: str, message: str = "") -> bool:
+    if not text:
+        return False
+    return (
+        _contains_any(text, ENCOUNTER_STRUCTURE_TERMS)
+        or _contains_any(text, BATTLE_JOIN_TERMS)
+        or _contains_any(text, BATTLE_RESOLUTION_TERMS)
+        or _contains_any(text, ENCOUNTER_TURN_STRUCTURE_TERMS)
+        or _contains_any(text, MAP_SETUP_TERMS)
+        or looks_visual_map_request(message or text)
+    )
+
+
+def _encounter_map_tools_useful(text: str, message: str = "") -> bool:
+    if not text:
+        return False
+    return (
+        _contains_any(text, MAP_SETUP_TERMS)
+        or _contains_any(text, BATTLE_JOIN_TERMS)
+        or looks_visual_map_request(message or text)
+    )
 
 
 def _looks_like_delegated_opening_seed(message: str) -> bool:

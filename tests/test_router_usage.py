@@ -2024,6 +2024,110 @@ def test_router_retries_final_response_risky_outcome_without_roll_support():
     assert not [record for record in records if record.get("type") == "adjudication_completeness_guard"]
 
 
+def test_router_retries_final_response_after_soft_turn_contract_without_turn_control():
+    class EncounterContractResponse:
+        completion_text = ""
+        tools_call_name = ["record_story_forge_encounter_contract"]
+        tools_call_args = [
+            {
+                "encounter_decision": "soft_turns",
+                "reason": "Both sides can react between focused actions.",
+                "scene_goal": "Hold the stairwell entry.",
+                "stakes": "Delay lets the guards regroup.",
+                "action_economy": "one_actor_focus",
+                "map_need": "sketch",
+                "turn_order_source": "derived_scene",
+                "recommended_next_tool": "turn_control",
+            }
+        ]
+        tool_calls = []
+
+    class PrematureFinalResponse:
+        completion_text = ""
+        tools_call_name = ["final_response"]
+        tools_call_args = [{"reply": "The guards press in and the exchange is resolved in one rush."}]
+        tool_calls = []
+
+    class FixedTurnResponse:
+        completion_text = ""
+        tools_call_name = ["turn_control", "final_response"]
+        tools_call_args = [
+            {"action": "start_scene_resolution", "summary": "Soft turns start at the stairwell."},
+            {"reply": "The stairwell is now under soft turns; one focused action at a time."},
+        ]
+        tool_calls = []
+
+    class FakeLoopLlm:
+        def __init__(self):
+            self.calls = 0
+            self.prompts = []
+
+        async def __call__(self, **kwargs):
+            self.calls += 1
+            self.prompts.append(kwargs["prompt"])
+            if self.calls == 1:
+                return EncounterContractResponse()
+            if self.calls == 2:
+                return PrematureFinalResponse()
+            return FixedTurnResponse()
+
+    class RecordingExecutor:
+        def __init__(self):
+            self.calls = []
+
+        async def execute(self, tool_name, args):
+            self.calls.append((tool_name, args))
+            if tool_name == "record_story_forge_encounter_contract":
+                return {
+                    "ok": True,
+                    "contract_id": "enc:test",
+                    "encounter_decision": "soft_turns",
+                    "recommended_next_tool": "turn_control",
+                }
+            if tool_name == "turn_control":
+                return {"ok": True, "phase": "scene_resolution", "current_entity_id": "pc_1"}
+            if tool_name == "final_response":
+                return {"ok": True, "reply": args.get("reply", "")}
+            raise AssertionError(f"unexpected tool: {tool_name}")
+
+    async def run_case():
+        repository = InMemoryRepository()
+        session = GameSession.new("group-1")
+        session.world_tags["_plot_locked"] = True
+        session.scene["_game_started"] = True
+        repository.save_session(session)
+        router = IntentRouter.__new__(IntentRouter)
+        llm = FakeLoopLlm()
+        executor = RecordingExecutor()
+        router.max_steps = 4
+        router._llm_generate = llm
+        router.repository = repository
+
+        result = await router._run_llm_tool_loop(
+            chat_provider_id="fake-provider",
+            system_prompt="system",
+            initial_prompt="player action",
+            toolset=object(),
+            tool_executor=executor,
+            session_id="group-1",
+            raw_player_message="I hold the stairwell.",
+            available_tool_names=["record_story_forge_encounter_contract", "turn_control", "final_response"],
+        )
+        return result, llm, executor
+
+    result, llm, executor = asyncio.run(run_case())
+
+    assert llm.calls == 3
+    assert "Encounter Contract" in llm.prompts[-1]
+    assert [name for name, _args in executor.calls] == [
+        "record_story_forge_encounter_contract",
+        "final_response",
+        "turn_control",
+        "final_response",
+    ]
+    assert result.completion_text == "The stairwell is now under soft turns; one focused action at a time."
+
+
 def test_router_does_not_append_completeness_guard_after_successful_check_and_final_response():
     class FakeToolCallResponse:
         completion_text = ""

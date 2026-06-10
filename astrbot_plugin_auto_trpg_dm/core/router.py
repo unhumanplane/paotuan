@@ -1727,6 +1727,7 @@ class IntentRouter:
         renderer_retry_requested = False
         legacy_map_fallback_requested = False
         adjudication_completion_retry_requested = False
+        encounter_contract_retry_requested = False
 
         async def append_map_guard_audit(
             action: str,
@@ -2053,6 +2054,17 @@ class IntentRouter:
                     if supplement_text:
                         return ToolLoopResult(supplement_text, all_tool_results)
                     return ToolLoopResult(build_missing_map_data_response(), all_tool_results)
+                encounter_guard = _encounter_contract_completion_guard(
+                    all_tool_results,
+                    completion=completion_text,
+                    available_tool_names=available_tool_names,
+                )
+                if encounter_guard and not encounter_contract_retry_requested and step + 1 < self.max_steps:
+                    contexts.append({"role": "user", "content": prompt})
+                    contexts.append({"role": "assistant", "content": completion_text})
+                    prompt = _encounter_contract_retry_prompt(encounter_guard)
+                    encounter_contract_retry_requested = True
+                    continue
                 completion_guard = adjudication_completion_guard_for(completion_text)
                 if (
                     completion_guard
@@ -2190,6 +2202,28 @@ class IntentRouter:
             final_reply = _final_response_reply(tool_results)
             if final_reply is not None and not tool_guard_blocked:
                 sanitized_final_reply = self._sanitize_completion_text(final_reply)
+                encounter_guard = _encounter_contract_completion_guard(
+                    all_tool_results,
+                    completion=sanitized_final_reply,
+                    available_tool_names=available_tool_names,
+                )
+                if encounter_guard and not encounter_contract_retry_requested and step + 1 < self.max_steps:
+                    contexts.append(
+                        {
+                            "role": "user",
+                            "content": "本轮工具返回（已投影，仅含叙事可用字段）：\n"
+                            + json.dumps(project_tool_results_for_dm_prompt(tool_results), ensure_ascii=False, indent=2),
+                        }
+                    )
+                    contexts.append(
+                        {
+                            "role": "user",
+                            "content": _encounter_contract_retry_prompt(encounter_guard),
+                        }
+                    )
+                    encounter_contract_retry_requested = True
+                    prompt = "请按 Encounter Contract 的 recommended_next_tool 补齐回合、地图或规则支撑后再 final_response。"
+                    continue
                 completion_guard = adjudication_completion_guard_for(sanitized_final_reply)
                 if (
                     completion_guard
@@ -5316,6 +5350,103 @@ def _final_response_reply(tool_results: list[dict[str, Any]]) -> str | None:
             if text:
                 return text
     return None
+
+
+def _encounter_contract_completion_guard(
+    tool_results: list[dict[str, Any]],
+    *,
+    completion: str = "",
+    available_tool_names: list[str] | tuple[str, ...] | None = None,
+) -> dict[str, Any]:
+    contract = _latest_successful_encounter_contract(tool_results)
+    if not contract:
+        return {}
+    decision = str(contract.get("encounter_decision") or "").strip()
+    if decision not in {"soft_turns", "strict_turns", "strict_grid"}:
+        return {}
+    if _completion_looks_like_necessary_clarification(completion):
+        return {}
+
+    successful_tools = {
+        str(item.get("tool") or "")
+        for item in tool_results
+        if isinstance(item, dict) and _tool_result_ok(item.get("result"))
+    }
+    recommended = str(contract.get("recommended_next_tool") or "").strip()
+    available = set(str(name or "") for name in (available_tool_names or ()))
+
+    required_tools: set[str]
+    if decision == "strict_grid":
+        required_tools = {"turn_control", "create_strict_map", "start_combat_on_map"}
+    else:
+        required_tools = {"turn_control"}
+
+    if successful_tools.intersection(required_tools):
+        return {}
+    if recommended in {"turn_control", "create_strict_map", "start_combat_on_map", "resolve_check", "execute_rule"}:
+        required_tools.add(recommended)
+    callable_required = sorted(tool for tool in required_tools if not available or tool in available)
+    if not callable_required:
+        return {}
+
+    return {
+        "reason": "encounter_contract_requires_tool_support",
+        "contract_id": str(contract.get("contract_id") or ""),
+        "encounter_decision": decision,
+        "recommended_next_tool": recommended,
+        "required_tools": callable_required,
+        "successful_tools": sorted(tool for tool in successful_tools if tool),
+    }
+
+
+def _latest_successful_encounter_contract(tool_results: list[dict[str, Any]]) -> dict[str, Any]:
+    for item in reversed(tool_results or []):
+        if not isinstance(item, dict) or item.get("tool") != "record_story_forge_encounter_contract":
+            continue
+        result = item.get("result")
+        if isinstance(result, dict) and _tool_result_ok(result):
+            decision = str(result.get("encounter_decision") or "").strip()
+            if decision:
+                return result
+    return {}
+
+
+def _completion_looks_like_necessary_clarification(completion: str) -> bool:
+    text = str(completion or "").strip().lower()
+    if not text:
+        return False
+    if _completion_claims_resolved_outcome(text) or _completion_claims_state_change(text):
+        return False
+    clarification_terms = (
+        "?",
+        "？",
+        "请确认",
+        "需要确认",
+        "我需要",
+        "告诉我",
+        "你要",
+        "目标",
+        "对象",
+        "位置",
+        "路线",
+        "先攻",
+        "顺序",
+        "澄清",
+        "确认",
+    )
+    return _contains_any_term(text, clarification_terms)
+
+
+def _encounter_contract_retry_prompt(guard: dict[str, Any]) -> str:
+    required = ", ".join(str(item) for item in guard.get("required_tools", []) if item) or "turn_control"
+    decision = str(guard.get("encounter_decision") or "")
+    recommended = str(guard.get("recommended_next_tool") or "")
+    return (
+        "Encounter Contract 守门发现：你已经把当前场景判定为 "
+        f"{decision}，但最终叙事前还没有成功调用必要支撑工具。"
+        f"请先调用 {recommended or required}（可用支撑：{required}），"
+        "不要直接结算多个玩家/敌方完整行动；若目标、位置或顺序不足，只用 final_response 问一个必要澄清。"
+    )
 
 
 RESET_CONFIRMATION_TOKEN_RE = re.compile(

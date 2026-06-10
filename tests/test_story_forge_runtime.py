@@ -12,6 +12,7 @@ from astrbot_plugin_auto_trpg_dm.core.story_forge_runtime import (
     apply_story_forge_turn,
     build_story_grid_render_envelope,
     normalize_convergence_action,
+    record_story_forge_encounter_contract,
     record_story_forge_pressure_clock,
     record_story_forge_convergence,
     story_forge_runtime_diagnostics,
@@ -232,6 +233,108 @@ def test_story_forge_pressure_clock_records_advances_and_projects_brief():
     assert diagnostics["pressure_clock_count"] == 1
     assert diagnostics["active_pressure_clock_count"] == 1
     assert diagnostics["clock_event_count"] == 1
+
+
+def test_story_forge_encounter_contract_records_and_projects_without_forcing_combat():
+    repo = _repo("story-forge-encounter-contract")
+    session = GameSession.new("group")
+    original_mode = session.mode
+    repo.save_session(session)
+
+    result = record_story_forge_encounter_contract(
+        repo,
+        "group",
+        actor={"player_id": "p1", "display_name": "Ada"},
+        payload={
+            "contract_id": "enc:stairwell",
+            "encounter_decision": "soft_turns",
+            "reason": "Armed guards can react between focused player actions.",
+            "scene_goal": "Secure the stairwell entry.",
+            "stakes": "Delay lets the guards regroup and block the lower door.",
+            "participants": ["pc_ada", "guard_squad"],
+            "pressure_vectors": ["time", "space", "danger"],
+            "action_economy": "one_actor_focus",
+            "map_need": "sketch",
+            "turn_order_source": "derived_scene",
+            "recommended_next_tool": "turn_control",
+            "player_visible_brief": "The stairwell is now a contested entry point.",
+            "evidence": ["Guards fired from the control room."],
+        },
+    )
+
+    saved = repo.load_session("group")
+    archive = saved.scene[STORY_FORGE_ARCHIVE_KEY]
+    brief = saved.scene[STORY_FORGE_BRIEF_KEY]
+    diagnostics = story_forge_runtime_diagnostics(saved)
+
+    assert result["ok"] is True
+    assert result["encounter_decision"] == "soft_turns"
+    assert saved.mode == original_mode
+    assert saved.battle.get("active") is False
+    assert archive["encounter_contracts"][0]["contract_id"] == "enc:stairwell"
+    assert brief["encounter_contracts"][0]["recommended_next_tool"] == "turn_control"
+    assert "reason" not in brief["encounter_contracts"][0]
+    assert diagnostics["encounter_contract_count"] == 1
+    assert diagnostics["latest_encounter_decision"] == "soft_turns"
+
+
+def test_story_forge_encounter_contract_rejects_hidden_truth_fields():
+    repo = _repo("story-forge-encounter-hidden")
+    repo.save_session(GameSession.new("group"))
+
+    result = record_story_forge_encounter_contract(
+        repo,
+        "group",
+        payload={
+            "encounter_decision": "pressure_scene",
+            "reason": "The patrol is close enough to make delay costly.",
+            "scene_goal": "Get through the archive door.",
+            "stakes": "Another exchange brings the patrol to the hall.",
+            "hidden_truth": "The captain is the informant.",
+        },
+    )
+
+    assert result["ok"] is False
+    assert result["error"] == "story_forge_encounter_contract_rejected"
+    assert "hidden_encounter_contract_fields_not_allowed" in result["reason"]
+
+
+def test_story_forge_encounter_contract_validates_strict_turn_source_and_map_need():
+    repo = _repo("story-forge-encounter-strict-guard")
+    repo.save_session(GameSession.new("group"))
+
+    missing_order = record_story_forge_encounter_contract(
+        repo,
+        "group",
+        payload={
+            "encounter_decision": "strict_turns",
+            "reason": "Multiple armed sides act in fixed initiative order.",
+            "scene_goal": "Hold the bridge.",
+            "stakes": "The rear gate closes if the group loses a round.",
+            "action_economy": "strict_order",
+            "turn_order_source": "derived_scene",
+            "recommended_next_tool": "turn_control",
+        },
+    )
+    loose_grid = record_story_forge_encounter_contract(
+        repo,
+        "group",
+        payload={
+            "encounter_decision": "strict_grid",
+            "reason": "Position, cover, and blast radius matter.",
+            "scene_goal": "Cross the loading bay.",
+            "stakes": "The alarm doors seal after another exchange.",
+            "action_economy": "strict_order",
+            "turn_order_source": "rule_initiative",
+            "map_need": "sketch",
+            "recommended_next_tool": "create_strict_map",
+        },
+    )
+
+    assert missing_order["ok"] is False
+    assert "encounter_contract_strict_requires_order_source" in missing_order["reason"]
+    assert loose_grid["ok"] is False
+    assert "encounter_contract_strict_grid_requires_map" in loose_grid["reason"]
 
 
 def test_story_forge_turn_bootstraps_legacy_scene_pressure_clock():

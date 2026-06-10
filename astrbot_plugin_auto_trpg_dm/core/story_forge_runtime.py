@@ -60,6 +60,7 @@ class StoryForgeRuntimeConfig:
     max_open_threads: int = 24
     max_clue_ledger: int = 48
     max_convergence_actions: int = 6
+    max_encounter_contracts: int = 12
 
 
 def apply_story_forge_turn(
@@ -116,6 +117,7 @@ def story_forge_runtime_diagnostics(session: GameSession | dict[str, Any]) -> di
     open_threads = _list_of_dicts(archive.get("open_threads"))
     clue_ledger = _list_of_dicts(archive.get("clue_ledger"))
     pressure_clocks = _list_of_dicts(archive.get("pressure_clocks"))
+    encounter_contracts = _list_of_dicts(archive.get("encounter_contracts"))
     active_pressure_clocks = [
         clock for clock in pressure_clocks if str(clock.get("status") or "active").lower() == "active"
     ]
@@ -135,6 +137,11 @@ def story_forge_runtime_diagnostics(session: GameSession | dict[str, Any]) -> di
         "active_pressure_clock_count": len(active_pressure_clocks),
         "visible_pressure_clock_count": sum(1 for clock in pressure_clocks if _clock_player_visible(clock)),
         "clock_event_count": len(clock_events),
+        "encounter_contract_count": len(encounter_contracts),
+        "latest_encounter_decision": _safe_text(
+            (encounter_contracts[-1] if encounter_contracts else {}).get("encounter_decision"),
+            80,
+        ),
         "turns_since_last_clock_event": _turns_since_last_clock_event(archive),
         "map_seed_to_svg_closed": bool(action_with_map_seed) and len(action_with_render) >= len(action_with_map_seed),
         "needs_scene_goal_cards": len(actions) == 0,
@@ -197,6 +204,7 @@ def normalize_story_forge_archive(value: Any) -> dict[str, Any]:
         "thread_progress": _list_of_dicts(archive.get("thread_progress"))[-300:],
         "clue_ledger": _list_of_dicts(archive.get("clue_ledger"))[-300:],
         "convergence_actions": _list_of_dicts(archive.get("convergence_actions"))[-120:],
+        "encounter_contracts": _normalize_encounter_contracts(archive.get("encounter_contracts")),
         "pressure_clocks": _normalize_pressure_clocks(archive.get("pressure_clocks")),
         "clock_events": _normalize_clock_events(archive.get("clock_events")),
         "rendered_map_refs": _list_of_dicts(archive.get("rendered_map_refs"))[-120:],
@@ -318,6 +326,201 @@ def record_story_forge_convergence(
         "message": "Story Forge convergence action recorded as a player-safe scene goal card.",
     }
     _append_story_forge_audit(repository, session_id, "record_story_forge_convergence", result)
+    return result
+
+
+def normalize_encounter_contract(
+    payload: dict[str, Any],
+    *,
+    actor: dict[str, str] | None = None,
+    now: str = "",
+) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        raise ValueError("encounter_contract_payload_not_object")
+    blocked = _blocked_hidden_paths(payload)
+    if blocked:
+        raise ValueError(f"hidden_encounter_contract_fields_not_allowed:{','.join(blocked[:4])}")
+    decision = _normalize_choice(
+        payload.get("encounter_decision") or payload.get("decision"),
+        allowed={
+            "free_narrative",
+            "single_check",
+            "pressure_scene",
+            "soft_turns",
+            "strict_turns",
+            "strict_grid",
+        },
+        default="single_check",
+    )
+    scene_goal = _safe_text(
+        _first_text(payload.get("scene_goal"), payload.get("goal"), payload.get("objective")),
+        500,
+    )
+    reason = _safe_text(payload.get("reason"), 500)
+    stakes = _safe_text(payload.get("stakes"), 500)
+    if not scene_goal:
+        raise ValueError("encounter_contract_scene_goal_required")
+    if not reason:
+        raise ValueError("encounter_contract_reason_required")
+    if decision in {"pressure_scene", "soft_turns", "strict_turns", "strict_grid"} and not stakes:
+        raise ValueError("encounter_contract_stakes_required")
+
+    action_economy = _normalize_choice(
+        payload.get("action_economy"),
+        allowed={"none", "one_actor_focus", "side_based", "strict_order"},
+        default=_default_action_economy(decision),
+    )
+    map_need = _normalize_choice(
+        payload.get("map_need"),
+        allowed={"none", "sketch", "strict_grid"},
+        default="strict_grid" if decision == "strict_grid" else "none",
+    )
+    turn_order_source = _normalize_choice(
+        payload.get("turn_order_source"),
+        allowed={"none", "derived_scene", "derived_battle_state", "rule_initiative", "existing_state"},
+        default="none",
+    )
+    recommended_next_tool = _normalize_choice(
+        payload.get("recommended_next_tool"),
+        allowed={
+            "none",
+            "resolve_check",
+            "execute_rule",
+            "turn_control",
+            "create_strict_map",
+            "start_combat_on_map",
+            "record_story_forge_pressure_clock",
+            "advance_story_forge_pressure_clock",
+            "update_scene",
+            "final_response",
+        },
+        default=_default_encounter_next_tool(decision),
+    )
+    participants = _safe_text_list(payload.get("participants"), limit=16, item_limit=120)
+    pressure_vectors = [
+        vector
+        for vector in (
+            _normalize_choice(
+                item,
+                allowed={"time", "resource", "relation", "space", "moral", "information", "danger"},
+                default="",
+            )
+            for item in _safe_text_list(payload.get("pressure_vectors"), limit=8, item_limit=80)
+        )
+        if vector
+    ]
+    evidence = _safe_text_list(payload.get("evidence"), limit=10, item_limit=240)
+    if decision in {"soft_turns", "strict_turns", "strict_grid"}:
+        if action_economy == "none":
+            raise ValueError("encounter_contract_action_economy_required")
+        if recommended_next_tool not in {"turn_control", "create_strict_map", "start_combat_on_map", "resolve_check", "execute_rule"}:
+            raise ValueError("encounter_contract_turn_tool_required")
+    if decision in {"strict_turns", "strict_grid"}:
+        if action_economy != "strict_order":
+            raise ValueError("encounter_contract_strict_requires_strict_order")
+        if turn_order_source not in {"derived_battle_state", "rule_initiative", "existing_state"}:
+            raise ValueError("encounter_contract_strict_requires_order_source")
+    if decision == "strict_grid" and map_need != "strict_grid":
+        raise ValueError("encounter_contract_strict_grid_requires_map")
+
+    created_at = _safe_text(payload.get("created_at") or now or utc_now_iso(), 80)
+    updated_at = _safe_text(now or payload.get("updated_at") or created_at, 80)
+    created_by = _safe_actor(actor or {}) or (
+        _safe_actor(payload.get("created_by")) if isinstance(payload.get("created_by"), dict) else {}
+    )
+    contract_id = _safe_id(
+        payload.get("contract_id")
+        or payload.get("id")
+        or "enc:" + _stable_hash(
+            {
+                "decision": decision,
+                "scene_goal": scene_goal,
+                "participants": participants,
+                "created_at": created_at,
+            }
+        )[:16]
+    )
+    contract = {
+        "contract_id": contract_id,
+        "created_at": created_at,
+        "updated_at": updated_at,
+        "status": _normalize_choice(
+            payload.get("status"),
+            allowed={"active", "superseded", "resolved", "cancelled"},
+            default="active",
+        ),
+        "encounter_decision": decision,
+        "reason": reason,
+        "scene_goal": scene_goal,
+        "stakes": stakes,
+        "participants": participants,
+        "pressure_vectors": pressure_vectors,
+        "action_economy": action_economy,
+        "map_need": map_need,
+        "turn_order_source": turn_order_source,
+        "recommended_next_tool": recommended_next_tool,
+        "player_visible_brief": _safe_text(payload.get("player_visible_brief"), 360),
+        "evidence": evidence,
+        "created_by": created_by,
+    }
+    return {key: value for key, value in contract.items() if value not in (None, "", [], {})}
+
+
+def record_story_forge_encounter_contract(
+    repository: Any,
+    session_id: str,
+    *,
+    actor: dict[str, str] | None = None,
+    payload: dict[str, Any],
+    config: StoryForgeRuntimeConfig | None = None,
+) -> dict[str, Any]:
+    runtime_config = config or StoryForgeRuntimeConfig()
+    if not runtime_config.enabled:
+        return {"ok": False, "error": "story_forge_runtime_disabled"}
+    session = repository.load_session(session_id)
+    scene = _ensure_scene(session)
+    archive = normalize_story_forge_archive(scene.get(STORY_FORGE_ARCHIVE_KEY))
+    try:
+        contract = normalize_encounter_contract(payload, actor=actor or {}, now=utc_now_iso())
+    except ValueError as exc:
+        result = {"ok": False, "error": "story_forge_encounter_contract_rejected", "reason": str(exc)}
+        _append_story_forge_audit(repository, session_id, "record_story_forge_encounter_contract", result)
+        return result
+
+    contracts = _list_of_dicts(archive.get("encounter_contracts"))
+    replaced = False
+    merged: list[dict[str, Any]] = []
+    for existing in contracts:
+        if str(existing.get("contract_id") or "") == str(contract.get("contract_id") or ""):
+            merged_contract = {
+                **existing,
+                **contract,
+                "created_at": existing.get("created_at") or contract.get("created_at"),
+                "updated_at": contract.get("updated_at"),
+            }
+            merged.append(merged_contract)
+            contract = merged_contract
+            replaced = True
+        else:
+            merged.append(existing)
+    if not replaced:
+        merged.append(contract)
+    archive["encounter_contracts"] = merged[-max(1, runtime_config.max_encounter_contracts) :]
+    archive["updated_at"] = utc_now_iso()
+    scene[STORY_FORGE_ARCHIVE_KEY] = archive
+    _write_story_forge_player_brief(scene, archive, config=runtime_config)
+    repository.save_session(session)
+    result = {
+        "ok": True,
+        "contract_id": contract.get("contract_id", ""),
+        "encounter_decision": contract.get("encounter_decision", ""),
+        "action_economy": contract.get("action_economy", ""),
+        "map_need": contract.get("map_need", ""),
+        "recommended_next_tool": contract.get("recommended_next_tool", ""),
+        "replaced": replaced,
+        "message": "Story Forge encounter contract recorded.",
+    }
+    _append_story_forge_audit(repository, session_id, "record_story_forge_encounter_contract", result)
     return result
 
 
@@ -904,6 +1107,11 @@ def _write_story_forge_player_brief(
             for action in (archive.get("convergence_actions") or [])[-max(1, config.max_convergence_actions) :]
             if isinstance(action, dict)
         ],
+        "encounter_contracts": [
+            _project_encounter_contract_for_brief(contract)
+            for contract in (archive.get("encounter_contracts") or [])[-max(1, config.max_encounter_contracts) :]
+            if isinstance(contract, dict)
+        ],
         "visible_pressure_clocks": [
             _project_pressure_clock_for_brief(clock)
             for clock in (archive.get("pressure_clocks") or [])[-12:]
@@ -1033,6 +1241,24 @@ def _project_action_for_brief(action: dict[str, Any]) -> dict[str, Any]:
     return {key: value for key, value in projected.items() if value not in (None, "", [], {})}
 
 
+def _project_encounter_contract_for_brief(contract: dict[str, Any]) -> dict[str, Any]:
+    projected = {
+        "contract_id": _safe_text(contract.get("contract_id"), 120),
+        "status": _safe_text(contract.get("status") or "active", 80),
+        "encounter_decision": _safe_text(contract.get("encounter_decision"), 80),
+        "scene_goal": _safe_text(contract.get("scene_goal"), 300),
+        "stakes": _safe_text(contract.get("stakes"), 260),
+        "participants": _safe_text_list(contract.get("participants"), limit=12, item_limit=100),
+        "pressure_vectors": _safe_text_list(contract.get("pressure_vectors"), limit=8, item_limit=80),
+        "action_economy": _safe_text(contract.get("action_economy"), 80),
+        "map_need": _safe_text(contract.get("map_need"), 80),
+        "turn_order_source": _safe_text(contract.get("turn_order_source"), 80),
+        "recommended_next_tool": _safe_text(contract.get("recommended_next_tool"), 80),
+        "player_visible_brief": _safe_text(contract.get("player_visible_brief"), 260),
+    }
+    return {key: value for key, value in projected.items() if value not in (None, "", [], {})}
+
+
 def normalize_pressure_clock(
     payload: dict[str, Any],
     *,
@@ -1136,6 +1362,16 @@ def _normalize_clock_events(value: Any) -> list[dict[str, Any]]:
     return events
 
 
+def _normalize_encounter_contracts(value: Any) -> list[dict[str, Any]]:
+    contracts: list[dict[str, Any]] = []
+    for item in _list_of_dicts(value)[-80:]:
+        try:
+            contracts.append(normalize_encounter_contract(item, now=_safe_text(item.get("updated_at"), 80)))
+        except ValueError:
+            continue
+    return contracts
+
+
 def _project_pressure_clock_for_brief(clock: dict[str, Any]) -> dict[str, Any]:
     projected = {
         "clock_id": _safe_text(clock.get("clock_id"), 120),
@@ -1197,6 +1433,33 @@ def _normalize_clock_visibility(value: Any) -> str:
     if visibility in {"secret", "private", "dm", "gm", "dm_only", "gm_only"}:
         return "hidden"
     return "public"
+
+
+def _normalize_choice(value: Any, *, allowed: set[str], default: str) -> str:
+    text = str(value or "").strip().lower().replace("-", "_")
+    return text if text in allowed else default
+
+
+def _default_action_economy(decision: str) -> str:
+    if decision in {"strict_turns", "strict_grid"}:
+        return "strict_order"
+    if decision == "soft_turns":
+        return "one_actor_focus"
+    if decision == "pressure_scene":
+        return "one_actor_focus"
+    return "none"
+
+
+def _default_encounter_next_tool(decision: str) -> str:
+    if decision in {"strict_turns", "strict_grid"}:
+        return "turn_control"
+    if decision == "soft_turns":
+        return "turn_control"
+    if decision == "pressure_scene":
+        return "record_story_forge_pressure_clock"
+    if decision == "single_check":
+        return "resolve_check"
+    return "final_response"
 
 
 def _safe_clock_id(value: Any, *, fallback_label: str = "") -> str:

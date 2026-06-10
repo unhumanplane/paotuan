@@ -116,6 +116,7 @@ def test_system_prompt_includes_story_forge_convergence_contract():
         GameMode.NARRATIVE,
         [
             "record_story_forge_convergence",
+            "record_story_forge_encounter_contract",
             "record_story_forge_pressure_clock",
             "advance_story_forge_pressure_clock",
             "update_scene",
@@ -130,6 +131,11 @@ def test_system_prompt_includes_story_forge_convergence_contract():
     assert "叙事 DM 只呈现当下可感知反馈" in prompt
     assert "记录/裁判层先用规则" in prompt
     assert "record_story_forge_convergence" in prompt
+    assert "record_story_forge_encounter_contract" in prompt
+    assert "free_narrative" in prompt
+    assert "soft_turns" in prompt
+    assert "strict_turns" in prompt
+    assert "strict_grid" in prompt
     assert "下一场目标卡" in prompt
     assert "scene_goal" in prompt
     assert "entry_cost" in prompt
