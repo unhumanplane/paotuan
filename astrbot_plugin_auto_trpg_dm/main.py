@@ -24,7 +24,7 @@ from .core.ambient_image import AmbientImageConfig, AmbientImageProvider
 from .core.admin_web import AutoTrpgAdminWeb
 from .core.external_memory import HonchoExternalMemory, HonchoMemoryConfig
 from .core.map_core import load_active_strict_grid_entities
-from .core.map_delivery_cadence import filter_map_pending_outputs_for_delivery
+from .core.map_delivery_cadence import filter_map_pending_outputs_for_delivery, normalize_pending_outputs
 from .core.map_tool_routing import looks_visual_map_request
 from .core.plugin_log import configure_plugin_logging
 from .core.router import IntentRouter
@@ -2993,7 +2993,7 @@ class AutoTrpgDmPlugin(Star):
     def _pop_pending_outputs(self, session_id: str) -> list[dict]:
         try:
             session = self.repository.load_session(session_id)
-            pending = list((session.scene or {}).get("_pending_outputs") or [])
+            pending = normalize_pending_outputs((session.scene or {}).get("_pending_outputs"))
             if not pending:
                 return []
             visible_pending = [item for item in pending if item.get("type") != "ambient_image"]

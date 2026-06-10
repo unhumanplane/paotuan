@@ -7,6 +7,7 @@ from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
+from ..core.map_delivery_cadence import normalize_pending_outputs
 from ..core.models import RuleRef, compact_rules
 from ..storage.json_repository import JsonGameRepository
 from ..rules.python_runtime import PythonRuleRuntime
@@ -360,7 +361,7 @@ class RuleTools:
         }
         try:
             session = self.repository.load_session(self.session_id)
-            pending = list((session.scene or {}).get("_pending_outputs") or [])
+            pending = normalize_pending_outputs((session.scene or {}).get("_pending_outputs"))
             pending.append(record)
             session.scene["_pending_outputs"] = pending[-8:]
             self.repository.save_session(session)

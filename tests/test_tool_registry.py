@@ -186,6 +186,44 @@ def test_tool_registry_treats_terminal_bound_character_as_rejoin_scope():
     assert "cycle_control" not in names
 
 
+def test_tool_registry_keeps_tactical_tools_when_bound_character_killed_enemy():
+    registry = _registry_with_started_session()
+    session = registry.repository.load_session("group")
+    bound = session.characters["pc_bound"]
+    bound.tags.extend(
+        [
+            TagValue(
+                key="最近行动结果",
+                value="潜行大成功，绕到残敌盲侧，大口径手枪连续三发命中，残敌当场击杀。",
+                type="text",
+                source="test",
+                layer="status",
+            ),
+            TagValue(
+                key="位置与姿态",
+                value="B区三号门内侧，残敌尸体旁，低姿警戒。",
+                type="text",
+                source="test",
+                layer="status",
+            ),
+        ]
+    )
+    registry.repository.save_session(session)
+
+    _toolset, names, _executor, _specs = registry.for_mode(
+        GameMode.TACTICAL,
+        "group",
+        actor={"player_id": "bound-player", "display_name": "凯德"},
+        message="立即行动，潜行到门口射击看到的任意敌人，射击完成立刻躲到门里面",
+    )
+
+    assert "resolve_check" in names
+    assert "execute_rule" in names
+    assert "turn_control" in names
+    assert "create_character" not in names
+    assert "bind_player_character" not in names
+
+
 def test_tool_registry_post_game_character_profile_requests_keep_binding_tools():
     registry = _registry_with_started_session()
     session = registry.repository.load_session("group")

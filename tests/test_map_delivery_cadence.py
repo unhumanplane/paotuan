@@ -16,6 +16,7 @@ from astrbot_plugin_auto_trpg_dm.core.map_delivery_cadence import (
     enqueue_map_pending_output,
     filter_map_pending_outputs_for_delivery,
     get_map_delivery_cadence_state,
+    normalize_pending_outputs,
     record_map_delivery_sent,
     set_map_delivery_cadence_state,
 )
@@ -209,6 +210,53 @@ def test_enqueue_pending_output_adds_delivery_metadata_and_marks_sent():
     assert pending["cadence_key"]
 
 
+def test_normalize_pending_outputs_accepts_json_and_drops_fragments():
+    pending = normalize_pending_outputs(
+        [
+            "[",
+            "]",
+            '{"type":"dice_check","reason":"stealth"}',
+            {"type": "svg_map", "path": "map.svg"},
+            "not-json",
+        ]
+    )
+
+    assert pending == [
+        {"type": "dice_check", "reason": "stealth"},
+        {"type": "svg_map", "path": "map.svg"},
+    ]
+
+
+def test_normalize_pending_outputs_accepts_json_encoded_list():
+    pending = normalize_pending_outputs('[{"type":"dice_check","reason":"shoot"}]')
+
+    assert pending == [{"type": "dice_check", "reason": "shoot"}]
+
+
+def test_enqueue_pending_output_recovers_from_polluted_pending_list():
+    scene = {
+        "_pending_outputs": [
+            "[",
+            "]",
+            {"type": "dice_check", "reason": "old-check"},
+        ],
+    }
+    request = MapDeliveryRequest(
+        trigger=MAP_DELIVERY_TRIGGER_PLAYER_REQUEST,
+        render_type=MAP_RENDER_OVERVIEW_TOPOLOGY,
+        map_id="overview-1",
+    )
+
+    decision, _state = enqueue_map_pending_output(
+        scene,
+        {"type": "svg_map", "title": "Gate", "path": "internal.svg"},
+        request,
+    )
+
+    assert decision.should_send is True
+    assert [item["type"] for item in scene["_pending_outputs"]] == ["dice_check", "svg_map"]
+
+
 def test_filter_pending_outputs_records_sent_and_suppresses_duplicates():
     scene = {
         "_pending_outputs": [
@@ -242,6 +290,32 @@ def test_filter_pending_outputs_records_sent_and_suppresses_duplicates():
     assert decisions[1].reason == "duplicate_suppressed"
     assert len(state["sent"]) == 1
     assert scene[MAP_DELIVERY_CADENCE_SCENE_KEY] == state
+
+
+def test_filter_pending_outputs_ignores_non_dict_fragments():
+    scene = {
+        "_pending_outputs": [
+            ".",
+            {
+                "type": "dice_check",
+                "reason": "kept",
+            },
+            {
+                "type": "svg_map",
+                "render_type": MAP_RENDER_OVERVIEW_TOPOLOGY,
+                "map_id": "overview-1",
+                "map_revision": "3",
+                "layout_revision": "layout-1",
+                "delivery_trigger": MAP_DELIVERY_TRIGGER_PLAYER_REQUEST,
+            },
+        ]
+    }
+
+    kept, _state, decisions = filter_map_pending_outputs_for_delivery(scene, scene["_pending_outputs"])
+
+    assert [item["type"] for item in kept] == ["dice_check", "svg_map"]
+    assert len(decisions) == 1
+    assert decisions[0].should_send is True
 
 
 def test_filter_queued_pending_output_keeps_already_enqueued_map_once():
@@ -320,3 +394,17 @@ def test_scene_cadence_state_normalizes_old_or_missing_values():
     assert written["schema_version"] == MAP_DELIVERY_CADENCE_SCHEMA_VERSION
     assert list(written["sent"]) == ["key"]
     assert written["sent"]["key"]["count"] == 2
+
+
+def test_scene_cadence_state_accepts_json_encoded_value():
+    scene = {
+        MAP_DELIVERY_CADENCE_SCENE_KEY: (
+            '{"schema_version":1,"sent":{"map-key":{"trigger":"player_request",'
+            '"render_type":"strict_grid_svg","count":2}}}'
+        )
+    }
+
+    state = get_map_delivery_cadence_state(scene)
+
+    assert list(state["sent"]) == ["map-key"]
+    assert state["sent"]["map-key"]["count"] == 2

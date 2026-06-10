@@ -8,6 +8,7 @@ delivery.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
 from typing import Any
 
 MAP_DELIVERY_CADENCE_SCENE_KEY = "_map_delivery_cadence"
@@ -85,6 +86,10 @@ def default_map_delivery_cadence_state() -> dict[str, Any]:
 
 
 def normalize_map_delivery_cadence_state(value: Any) -> dict[str, Any]:
+    if isinstance(value, str):
+        parsed = _parse_json_scene_value(value)
+        if isinstance(parsed, dict):
+            value = parsed
     if not isinstance(value, dict):
         return default_map_delivery_cadence_state()
     sent = value.get("sent")
@@ -115,6 +120,30 @@ def normalize_map_delivery_cadence_state(value: Any) -> dict[str, Any]:
     }
 
 
+def normalize_pending_outputs(value: Any) -> list[dict[str, Any]]:
+    if isinstance(value, str):
+        parsed = _parse_json_scene_value(value)
+        if parsed is None:
+            return []
+        return normalize_pending_outputs(parsed)
+    if isinstance(value, dict):
+        return [dict(value)]
+    if not isinstance(value, (list, tuple)):
+        return []
+    normalized: list[dict[str, Any]] = []
+    for item in value:
+        if isinstance(item, dict):
+            normalized.append(dict(item))
+            continue
+        if isinstance(item, str):
+            parsed = _parse_json_scene_value(item)
+            if isinstance(parsed, dict):
+                normalized.append(dict(parsed))
+            elif isinstance(parsed, list):
+                normalized.extend(normalize_pending_outputs(parsed))
+    return normalized
+
+
 def get_map_delivery_cadence_state(scene: Any) -> dict[str, Any]:
     if not isinstance(scene, dict):
         return default_map_delivery_cadence_state()
@@ -138,7 +167,7 @@ def enqueue_map_pending_output(
     decision = decide_map_delivery(state, request)
     if decision.should_send:
         output = _normalize_pending_output(pending_output, request, decision)
-        pending = list(scene.get("_pending_outputs") or [])
+        pending = normalize_pending_outputs(scene.get("_pending_outputs"))
         pending.append(output)
         scene["_pending_outputs"] = pending[-max(1, _safe_int(limit, MAP_PENDING_OUTPUT_LIMIT)) :]
         state = record_map_delivery_sent(state, request, decision)
@@ -148,14 +177,14 @@ def enqueue_map_pending_output(
 
 def filter_map_pending_outputs_for_delivery(
     scene: dict[str, Any],
-    pending_outputs: list[dict[str, Any]],
+    pending_outputs: Any,
 ) -> tuple[list[dict[str, Any]], dict[str, Any], list[MapDeliveryDecision]]:
     state = get_map_delivery_cadence_state(scene)
     kept: list[dict[str, Any]] = []
     decisions: list[MapDeliveryDecision] = []
     seen_cadence_keys: set[str] = set()
-    for item in pending_outputs:
-        if not isinstance(item, dict) or item.get("type") != "svg_map":
+    for item in normalize_pending_outputs(pending_outputs):
+        if item.get("type") != "svg_map":
             kept.append(item)
             continue
         request = _request_from_pending_output(item)
@@ -359,6 +388,16 @@ def _safe_text(value: Any, limit: int) -> str:
     if len(text) <= limit:
         return text
     return text[:limit]
+
+
+def _parse_json_scene_value(value: str) -> Any:
+    text = str(value or "").strip()
+    if not text or text[0] not in "[{":
+        return None
+    try:
+        return json.loads(text)
+    except Exception:
+        return None
 
 
 def _safe_int(value: Any, default: int) -> int:

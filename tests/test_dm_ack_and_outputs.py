@@ -279,6 +279,41 @@ def test_quoted_result_does_not_expose_local_svg_path_when_preview_fails():
     assert "gate.svg" in text
 
 
+def test_pop_pending_outputs_tolerates_json_strings_and_fragments():
+    session = GameSession.new("group")
+    session.scene["_pending_outputs"] = [
+        "[",
+        "]",
+        {"type": "ambient_image", "path": "/tmp/skip.png"},
+        {"type": "dice_check", "reason": "stealth"},
+    ]
+    session.scene["_map_delivery_cadence"] = '{"schema_version":1,"sent":{}}'
+    repo = FakeRepository(session)
+    plugin = AutoTrpgDmPlugin.__new__(AutoTrpgDmPlugin)
+    plugin.repository = repo
+    plugin.plugin_logger = FakeLogger()
+
+    pending = plugin._pop_pending_outputs("group")
+
+    assert pending == [{"type": "dice_check", "reason": "stealth"}]
+    assert repo.session.scene["_pending_outputs"] == []
+    assert isinstance(repo.session.scene["_map_delivery_cadence"], dict)
+
+
+def test_pop_pending_outputs_accepts_json_encoded_list():
+    session = GameSession.new("group")
+    session.scene["_pending_outputs"] = '[{"type":"dice_check","reason":"shoot"}]'
+    repo = FakeRepository(session)
+    plugin = AutoTrpgDmPlugin.__new__(AutoTrpgDmPlugin)
+    plugin.repository = repo
+    plugin.plugin_logger = FakeLogger()
+
+    pending = plugin._pop_pending_outputs("group")
+
+    assert pending == [{"type": "dice_check", "reason": "shoot"}]
+    assert repo.session.scene["_pending_outputs"] == []
+
+
 def test_direct_image_text_no_longer_triggers_local_generation():
     session = GameSession.new("group")
     session.world_tags["_background_ready"] = True

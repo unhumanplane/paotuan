@@ -2605,6 +2605,40 @@ TERMINAL_KEY_TERMS = (
     "condition",
 )
 
+TERMINAL_REJOIN_KEY_TERMS = (
+    "生命状态",
+    "退场状态",
+    "退场确认",
+    "死亡状态",
+    "死亡确认",
+    "死亡",
+    "退场",
+    "结局",
+    "当前状态",
+    "角色状态",
+    "status",
+    "state",
+    "condition",
+)
+
+TERMINAL_REJOIN_EXACT_KEYS = {
+    "状态",
+    "当前状态",
+    "status",
+    "state",
+    "condition",
+}
+
+TERMINAL_REJOIN_AMBIGUOUS_TERMS = (
+    "遗体",
+    "尸体",
+    "killed",
+)
+
+TERMINAL_REJOIN_STRONG_TERMS = tuple(
+    term for term in TERMINAL_STATUS_TERMS if term not in TERMINAL_REJOIN_AMBIGUOUS_TERMS
+)
+
 NON_TERMINAL_DEATH_CONTEXT_TERMS = (
     "死亡豁免",
     "死亡豁免失败",
@@ -2710,10 +2744,44 @@ def _character_is_terminal_for_rejoin(session: GameSession, character_id: str) -
         key_text = str(tag.key or "")
         value_text = _flatten_text(tag.value)
         layer = str(tag.layer or infer_tag_layer(key_text)).lower()
-        if layer == "status" or _contains_any_text(key_text, TERMINAL_KEY_TERMS):
-            if _terminal_status_text_match(f"{key_text} {value_text}") or _terminal_status_text_match(value_text):
+        if _character_terminal_rejoin_key_matches(key_text, layer):
+            if _terminal_character_rejoin_text_match(key_text, value_text):
                 return True
     return _battle_entity_is_terminal_for_rejoin(session, character_id)
+
+
+def _character_terminal_rejoin_key_matches(key_text: str, layer: str) -> bool:
+    normalized = str(key_text or "").strip().lower()
+    if normalized in TERMINAL_REJOIN_EXACT_KEYS:
+        return True
+    if _contains_any_text(key_text, TERMINAL_REJOIN_KEY_TERMS):
+        return True
+    return layer == "status" and normalized in TERMINAL_REJOIN_EXACT_KEYS
+
+
+def _terminal_character_rejoin_text_match(key_text: str, value_text: str) -> bool:
+    combined = f"{key_text} {value_text}"
+    if not (_terminal_status_text_match(combined) or _terminal_status_text_match(value_text)):
+        return False
+    key_is_explicit_terminal = _contains_any_text(
+        key_text,
+        (
+            "生命状态",
+            "死亡",
+            "退场",
+            "结局",
+            "death",
+            "dead",
+            "deceased",
+            "retired",
+        ),
+    )
+    if key_is_explicit_terminal:
+        return True
+    lowered = " ".join(str(combined or "").lower().split())
+    if re.search(r"\b(dead|deceased|retired)\b", lowered):
+        return True
+    return _contains_any_text(lowered, TERMINAL_REJOIN_STRONG_TERMS)
 
 
 def _battle_entity_is_terminal_for_rejoin(session: GameSession, character_id: str) -> bool:
