@@ -719,14 +719,13 @@ def test_reset_confirmation_token_accepts_llm_legacy_long_token_without_confirm_
 
 def test_reset_intents_are_classified_before_llm_router():
     assert _looks_like_reset_request("确定重置") is True
+    assert _looks_like_reset_request("结束游戏") is True
+    assert _looks_like_reset_request("终止存档") is True
     assert _looks_like_reset_request("结束归档当前游戏") is True
     assert _looks_like_new_campaign_seed_request("来一个日式jrpg风格的跑团，要严格回合制") is True
 
 
-def test_reset_request_fast_path_creates_real_pending_confirmation():
-    session = GameSession.new("group")
-    session.world_tags["_background_ready"] = True
-    session.scene["_game_started"] = True
+def _plugin_with_session(session):
     repo = FakeRepository(session)
     plugin = AutoTrpgDmPlugin.__new__(AutoTrpgDmPlugin)
     plugin.repository = repo
@@ -737,6 +736,14 @@ def test_reset_request_fast_path_creates_real_pending_confirmation():
         read_enabled=False,
         max_context_chars=0,
     )
+    return plugin, repo
+
+
+def test_reset_request_fast_path_creates_real_pending_confirmation():
+    session = GameSession.new("group")
+    session.world_tags["_background_ready"] = True
+    session.scene["_game_started"] = True
+    plugin, repo = _plugin_with_session(session)
 
     reply = asyncio.run(
         plugin._local_fast_path(
@@ -758,6 +765,34 @@ def test_reset_request_fast_path_creates_real_pending_confirmation():
     )
 
 
+def test_ending_game_phrase_uses_reset_confirmation_fast_path():
+    session = GameSession.new("group")
+    session.world_tags["_background_ready"] = True
+    session.scene["_game_started"] = True
+    session.scene["summary"] = "当前跑团仍在进行。"
+    plugin, repo = _plugin_with_session(session)
+
+    reply = asyncio.run(
+        plugin._local_fast_path(
+            FakeEvent(),
+            "group",
+            {"player_id": "player-a", "display_name": "gali"},
+            "结束游戏",
+        )
+    )
+
+    pending = repo.session.scene["_pending_reset_confirmation"]
+    assert pending["requester_player_id"] == "player-a"
+    assert pending["token"] in reply
+    assert "清空当前跑团存档" in reply
+    assert repo.session.scene["summary"] == "当前跑团仍在进行。"
+    assert any(
+        record.get("tool") == "session_control"
+        and (record.get("input") or {}).get("action") == "reset"
+        for record in repo.audits
+    )
+
+
 def test_legacy_long_reset_confirmation_is_handled_locally_and_does_not_reach_llm():
     session = GameSession.new("group")
     session.world_tags["_background_ready"] = True
@@ -770,16 +805,7 @@ def test_legacy_long_reset_confirmation_is_handled_locally_and_does_not_reach_ll
         "created_at": "2026-05-31T10:52:41+00:00",
         "expires_at": "2999-01-01T00:00:00+00:00",
     }
-    repo = FakeRepository(session)
-    plugin = AutoTrpgDmPlugin.__new__(AutoTrpgDmPlugin)
-    plugin.repository = repo
-    plugin.ambient_image_config = AmbientImageConfig(enabled=False)
-    plugin.plugin_logger = FakeLogger()
-    plugin.honcho_config = types.SimpleNamespace(
-        enabled=False,
-        read_enabled=False,
-        max_context_chars=0,
-    )
+    plugin, repo = _plugin_with_session(session)
 
     reply = asyncio.run(
         plugin._local_fast_path(
@@ -793,6 +819,40 @@ def test_legacy_long_reset_confirmation_is_handled_locally_and_does_not_reach_ll
     assert "当前跑团存档已重置" in reply
     assert repo.session.characters == {}
     assert repo.session.scene.get("_pending_reset_confirmation") is None
+
+
+def test_reset_confirmation_wrong_actor_is_denied_locally():
+    session = GameSession.new("group")
+    session.world_tags["_background_ready"] = True
+    session.scene["_game_started"] = True
+    session.scene["summary"] = "不能被其他人确认清空。"
+    session.scene["_pending_reset_confirmation"] = {
+        "token": "RESET-ABC123",
+        "requester_player_id": "player-a",
+        "requester_display_name": "gali",
+        "reason": "结束游戏",
+        "created_at": "2026-06-11T10:52:41+00:00",
+        "expires_at": "2999-01-01T00:00:00+00:00",
+    }
+    plugin, repo = _plugin_with_session(session)
+
+    reply = asyncio.run(
+        plugin._local_fast_path(
+            FakeEvent(),
+            "group",
+            {"player_id": "player-b", "display_name": "other"},
+            "确认重开 RESET-ABC123",
+        )
+    )
+
+    assert "只有发起重开请求的人" in reply
+    assert repo.session.scene["summary"] == "不能被其他人确认清空。"
+    assert repo.session.scene["_pending_reset_confirmation"]["token"] == "RESET-ABC123"
+    assert any(
+        record.get("tool") == "session_control"
+        and (record.get("result") or {}).get("error") == "reset_confirmation_wrong_actor"
+        for record in repo.audits
+    )
 
 
 def test_visual_map_requests_without_background_reach_tool_chain():

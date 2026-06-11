@@ -60,7 +60,7 @@ from .tools.control_tools import ControlTools
 from .tools.turn_tools import TurnTools
 
 
-PLUGIN_VERSION = "0.1.136"
+PLUGIN_VERSION = "0.1.137"
 
 _HEARTBEAT_OWNER_ATTR = "_auto_trpg_dm_heartbeat_owner_token"
 _HEARTBEAT_TASK_ATTR = "_auto_trpg_dm_heartbeat_task"
@@ -5137,8 +5137,16 @@ def _looks_like_reset_request(text: str) -> bool:
         "结束并归档当前跑团",
         "归档当前游戏",
         "归档当前跑团",
+        "结束游戏",
+        "结束跑团",
         "结束当前游戏",
         "结束当前跑团",
+        "终止存档",
+        "终止游戏",
+        "终止跑团",
+        "终止当前存档",
+        "终止当前游戏",
+        "终止当前跑团",
         "reset save",
         "reset campaign",
         "new campaign",
