@@ -41,6 +41,8 @@ def test_visual_map_guard_does_not_block_ordinary_layout_inquiries():
 
 def test_visual_map_guard_still_routes_explicit_artifact_requests():
     for message in (
+        "查看地图",
+        "看地图",
         "显示现有地图",
         "看一下现在的地图",
         "看看当前地图",
@@ -57,6 +59,17 @@ def test_visual_map_guard_still_routes_explicit_artifact_requests():
         assert guard.visual_map_request is True
         assert guard.renderer_attempt_required is True
         assert guard.preferred_renderer_tools
+
+
+def test_visual_map_guard_routes_route_overview_map_to_topology_renderer():
+    guard = build_map_request_guard(
+        "路线概览地图",
+        available_tool_names=DETERMINISTIC_MAP_RENDERER_TOOLS,
+    )
+
+    assert guard.visual_map_request is True
+    assert guard.renderer_attempt_required is True
+    assert guard.preferred_renderer_tools == ("render_overview_topology_svg",)
 
 
 def test_visual_map_guard_honors_explicit_text_only_override():

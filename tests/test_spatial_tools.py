@@ -86,6 +86,27 @@ def test_place_entity_updates_strict_local_map_and_legacy_mirror():
     assert get_map_record(session.maps, map_id)["grid"]["entities"]["pc"]["y"] == 2
 
 
+def test_strict_map_revision_advances_when_spatial_facts_change():
+    repo = _repo("strict_map_revision")
+    repo.save_session(_ready_session())
+    tools = SpatialTools(repo, "group")
+
+    asyncio.run(tools.create_grid(width=5, height=5))
+    created = repo.load_session("group")
+    map_id = created.battle["map_id"]
+    assert get_map_record(created.maps, map_id)["record_version"] == 1
+
+    asyncio.run(tools.place_entity("pc", "PC", 1, 1, move_points=6))
+    placed = repo.load_session("group")
+    assert get_map_record(placed.maps, map_id)["record_version"] == 2
+
+    result = asyncio.run(tools.move_entity("pc", 2, 1))
+
+    assert result["ok"] is True
+    moved = repo.load_session("group")
+    assert get_map_record(moved.maps, map_id)["record_version"] == 3
+
+
 def test_move_entity_prefers_strict_local_map_over_stale_legacy_mirror():
     repo = _repo("move_entity")
     repo.save_session(_ready_session())

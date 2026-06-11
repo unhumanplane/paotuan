@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 from datetime import datetime, timezone
+import json
 from typing import Any
 
 MAP_SCHEMA_VERSION = 1
@@ -447,7 +448,11 @@ def save_active_strict_grid(
     record["authority"] = _safe_authority(authority)
     if title:
         record["title"] = _short_text(title, 160)
-    record["grid"] = _json_safe(grid)
+    next_grid = _json_safe(grid)
+    previous_grid = record.get("grid") if isinstance(record.get("grid"), dict) else None
+    if previous_grid is not None and _stable_json(previous_grid) != _stable_json(next_grid):
+        record["record_version"] = _safe_int(record.get("record_version"), 1) + 1
+    record["grid"] = next_grid
     record["lifecycle"] = _safe_strict_lifecycle(lifecycle)
     record["lifecycle_updated_at"] = _utc_now_iso()
     record["archive_identity"] = _strict_grid_archive_identity(
@@ -734,6 +739,10 @@ def _safe_confidence(value: Any) -> float:
     except (TypeError, ValueError):
         return 0.0
     return max(0.0, min(1.0, number))
+
+
+def _stable_json(value: Any) -> str:
+    return json.dumps(_json_safe(value), ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
 
 def _normalize_map_record(map_id: Any, value: dict[str, Any]) -> dict[str, Any]:

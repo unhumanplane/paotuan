@@ -45,6 +45,11 @@ EXPLICIT_VISUAL_MAP_ARTIFACT_TERMS = (
     "布局图",
     "俯视图",
     "路线图",
+    "路线地图",
+    "概览地图",
+    "拓扑图",
+    "区域地图",
+    "导览图",
     "格子图",
     "当前地图",
     "现在的地图",
@@ -57,6 +62,14 @@ EXPLICIT_VISUAL_MAP_ARTIFACT_TERMS = (
     "grid map",
     "battle map",
 )
+
+EXACT_VISUAL_MAP_REQUESTS = {
+    "查看地图",
+    "看地图",
+    "显示地图",
+    "打开地图",
+    "调出地图",
+}
 
 OVERVIEW_TOPOLOGY_REQUEST_TERMS = (
     "overview",
@@ -133,6 +146,8 @@ def looks_visual_map_request(message: str) -> bool:
     text = _normalized(message)
     if not text:
         return False
+    if text in EXACT_VISUAL_MAP_REQUESTS:
+        return True
     if _contains_any(text, EXPLICIT_VISUAL_MAP_ARTIFACT_TERMS):
         return True
     return _contains_any(text, VISUAL_REQUEST_ACTION_TERMS) and _contains_any(text, VISUAL_REQUEST_ARTIFACT_TERMS)

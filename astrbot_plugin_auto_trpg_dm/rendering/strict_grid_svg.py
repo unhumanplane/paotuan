@@ -43,7 +43,7 @@ class GridRuleScale:
 class StrictGridLayout:
     margin: int = 24
     header_height: int = 56
-    legend_height: int = 72
+    legend_height: int = 128
     cell_size: int = 48
 
 
@@ -284,6 +284,7 @@ def _draw_grid_lines(root: ET.Element, grid: StrictGridRenderInput, canvas: Stri
                 "stroke-width": "1",
             },
         )
+    _draw_coordinate_labels(root, grid, canvas)
     for y in range(grid.height + 1):
         py = canvas.grid_y + y * grid.layout.cell_size
         ET.SubElement(
@@ -468,6 +469,67 @@ def _draw_legend(root: ET.Element, grid: StrictGridRenderInput, canvas: StrictGr
         )
         _text(root, x=x + 16, y=item_y, text=label, size=10, fill="#334155")
         x += 104
+    _draw_entity_roster(root, grid, canvas, y + 52)
+
+
+def _draw_coordinate_labels(root: ET.Element, grid: StrictGridRenderInput, canvas: StrictGridCanvas) -> None:
+    for x in range(grid.width):
+        cx = canvas.grid_x + x * grid.layout.cell_size + grid.layout.cell_size // 2
+        label = str(x)
+        _text(root, x=cx, y=canvas.grid_y - 6, text=label, size=10, fill="#475569", anchor="middle")
+        _text(
+            root,
+            x=cx,
+            y=canvas.grid_y + canvas.grid_height_px + 14,
+            text=label,
+            size=10,
+            fill="#475569",
+            anchor="middle",
+        )
+    for y in range(grid.height):
+        cy = canvas.grid_y + y * grid.layout.cell_size + grid.layout.cell_size // 2 + 4
+        label = str(y)
+        _text(root, x=canvas.grid_x - 8, y=cy, text=label, size=10, fill="#475569", anchor="end")
+        _text(
+            root,
+            x=canvas.grid_x + canvas.grid_width_px + 8,
+            y=cy,
+            text=label,
+            size=10,
+            fill="#475569",
+        )
+
+
+def _draw_entity_roster(root: ET.Element, grid: StrictGridRenderInput, canvas: StrictGridCanvas, y: int) -> None:
+    entities = tuple(item for item in grid.entities if item.visible)
+    if not entities:
+        _text(root, x=grid.layout.margin + 12, y=y, text="Entities: none visible", size=11, fill="#334155")
+        return
+    _text(root, x=grid.layout.margin + 12, y=y, text="Entities", size=11, weight="700", fill="#0f172a")
+    x = grid.layout.margin + 78
+    line_y = y
+    max_x = grid.layout.margin + canvas.grid_width_px - 120
+    for entity in sorted(entities, key=lambda item: (item.faction, item.y, item.x, item.id))[:10]:
+        fill = FACTION_FILLS.get(entity.faction, FACTION_FILLS["neutral"])
+        label = f"{_token_label(entity)}={_safe_text(entity.name or entity.id, 18)}({entity.x},{entity.y})"
+        width = max(96, min(184, 8 * len(label) + 18))
+        if x + width > max_x and x > grid.layout.margin + 78:
+            x = grid.layout.margin + 78
+            line_y += 18
+        ET.SubElement(
+            root,
+            "rect",
+            {
+                "x": str(x),
+                "y": str(line_y - 11),
+                "width": "9",
+                "height": "9",
+                "rx": "2",
+                "fill": fill,
+            },
+        )
+        _text(root, x=x + 13, y=line_y - 2, text=label, size=10, fill="#334155")
+        x += width
 
 
 def _draw_cell_cross(root: ET.Element, px: int, py: int, size: int, *, stroke: str, width: int) -> None:

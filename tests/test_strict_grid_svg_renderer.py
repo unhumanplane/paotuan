@@ -84,11 +84,13 @@ def test_strict_grid_svg_renders_structured_tactical_layers():
     svg = render_strict_grid_svg(render_input)
     root = _root(svg)
 
-    assert "Hero" not in svg
     assert ">HER<" in svg
+    assert "HER=Hero(1,1)" in svg
     assert ">Exit<" in svg
     assert "movement block" in svg
     assert "LOS block" in svg
+    assert ">0<" in svg
+    assert "Entities" in svg
     assert any(item.attrib.get("fill") == "#bfdbfe" for item in _elements(root, "rect"))
     assert any(item.attrib.get("fill") == "#cbd5e1" for item in _elements(root, "rect"))
     assert any(item.attrib.get("fill") == "#f97316" for item in _elements(root, "polygon"))
