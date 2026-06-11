@@ -491,6 +491,82 @@ def test_location_fact_query_fast_path_returns_authoritative_state():
     assert repo.audits[-1]["action"] == "authoritative_state_check"
 
 
+def test_single_character_hosting_request_creates_pending_confirmation_without_llm():
+    session = GameSession.new("group")
+    session.world_tags["_background_ready"] = True
+    session.scene["_game_started"] = True
+    session.characters["pc_gali"] = Character(id="pc_gali", name="gali", player_id="player-a")
+    session.characters["pc_kaide"] = Character(id="pc_kaide", name="凯德", player_id="player-b")
+    session.player_character_map["player-a"] = "pc_gali"
+    repo = FakeRepository(session)
+    plugin = AutoTrpgDmPlugin.__new__(AutoTrpgDmPlugin)
+    plugin.repository = repo
+    plugin.ambient_image_config = AmbientImageConfig(enabled=False)
+    plugin.plugin_logger = FakeLogger()
+
+    reply = asyncio.run(
+        plugin._local_fast_path(
+            FakeEvent(),
+            "group",
+            {"player_id": "player-a", "display_name": "gali"},
+            "托管，跟随凯德攻击",
+        )
+    )
+
+    pending = repo.session.scene["_pending_control_authority_confirmation"]
+    assert "确认托管" in reply
+    assert pending["actor_id"] == "player-a"
+    assert pending["character_id"] == "pc_gali"
+    assert pending["risk_ceiling"] == "low"
+    assert "凯德" in pending["standing_order"]
+    assert "攻击凯德当前交战的同一目标" in pending["standing_order"]
+    assert not repo.session.control_authority.get("records")
+    assert repo.audits[-1]["action"] == "control_authority_confirmation_requested"
+
+
+def test_single_character_hosting_confirmation_writes_control_authority_record():
+    session = GameSession.new("group")
+    session.world_tags["_background_ready"] = True
+    session.scene["_game_started"] = True
+    session.characters["pc_gali"] = Character(id="pc_gali", name="gali", player_id="player-a")
+    session.characters["pc_kaide"] = Character(id="pc_kaide", name="凯德", player_id="player-b")
+    session.player_character_map["player-a"] = "pc_gali"
+    repo = FakeRepository(session)
+    plugin = AutoTrpgDmPlugin.__new__(AutoTrpgDmPlugin)
+    plugin.repository = repo
+    plugin.ambient_image_config = AmbientImageConfig(enabled=False)
+    plugin.plugin_logger = FakeLogger()
+
+    first_reply = asyncio.run(
+        plugin._local_fast_path(
+            FakeEvent(),
+            "group",
+            {"player_id": "player-a", "display_name": "gali"},
+            "托管，跟随凯德攻击",
+        )
+    )
+    second_reply = asyncio.run(
+        plugin._local_fast_path(
+            FakeEvent(),
+            "group",
+            {"player_id": "player-a", "display_name": "gali"},
+            "确认",
+        )
+    )
+
+    record = repo.session.control_authority["records"]["pc_gali"]
+    assert "确认托管" in first_reply
+    assert "已确认托管" in second_reply
+    assert record["controller_type"] == "system_host"
+    assert record["active_controller_id"] == "__system__"
+    assert record["risk_ceiling"] == "low"
+    assert record["duration_type"] == "until_revoked"
+    assert "凯德" in record["standing_order"]
+    assert "_pending_control_authority_confirmation" not in repo.session.scene
+    assert any(audit.get("tool") == "control_authority" for audit in repo.audits)
+    assert repo.audits[-1]["action"] == "control_authority_confirmed"
+
+
 def test_unbound_post_start_action_is_blocked_before_llm_tools():
     session = GameSession.new("group")
     session.world_tags["_background_ready"] = True

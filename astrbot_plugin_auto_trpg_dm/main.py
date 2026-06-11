@@ -56,13 +56,16 @@ from .tools.diagnostic_tools import DiagnosticTools
 from .tools.memory_tools import MemoryTools, has_campaign_background
 from .core.scene_hooks import format_scene_tracking_status
 from .tools.registry import ToolRegistry
+from .tools.control_tools import ControlTools
 from .tools.turn_tools import TurnTools
 
 
-PLUGIN_VERSION = "0.1.135"
+PLUGIN_VERSION = "0.1.136"
 
 _HEARTBEAT_OWNER_ATTR = "_auto_trpg_dm_heartbeat_owner_token"
 _HEARTBEAT_TASK_ATTR = "_auto_trpg_dm_heartbeat_task"
+PENDING_CONTROL_CONFIRMATION_KEY = "_pending_control_authority_confirmation"
+CONTROL_CONFIRMATION_TTL_SECONDS = 10 * 60
 
 DEFAULT_REASSURANCE_PHRASES = (
     "正在翻找合适的骰子。",
@@ -1117,6 +1120,16 @@ class AutoTrpgDmPlugin(Star):
             )
             return str(result.get("message") or "重开需要二次确认，存档暂未改动。")
 
+        control_confirmation_reply = await self._control_authority_confirmation_fast_path(session_id, session, actor, text)
+        if control_confirmation_reply:
+            return control_confirmation_reply
+        session = self.repository.load_session(session_id)
+
+        control_request_reply = await self._control_authority_request_fast_path(session_id, session, actor, text)
+        if control_request_reply:
+            return control_request_reply
+        session = self.repository.load_session(session_id)
+
         if (
             _looks_like_new_campaign_seed_request(text)
             and _session_has_meaningful_campaign_content(session)
@@ -1444,6 +1457,150 @@ class AutoTrpgDmPlugin(Star):
             )
             return question
         return ""
+
+    async def _control_authority_confirmation_fast_path(
+        self,
+        session_id: str,
+        session,
+        actor: dict[str, str],
+        text: str,
+    ) -> str:
+        pending = _pending_control_authority_confirmation(session)
+        if not pending:
+            return ""
+        actor_id = str((actor or {}).get("player_id") or "").strip()
+        is_confirmation = _looks_like_control_authority_confirmation(text)
+        if _pending_control_authority_expired(pending):
+            scene = session.scene if isinstance(session.scene, dict) else {}
+            scene.pop(PENDING_CONTROL_CONFIRMATION_KEY, None)
+            session.scene = scene
+            self.repository.save_session(session)
+            self.repository.append_audit(
+                session_id,
+                {
+                    "type": "local_fast_path",
+                    "action": "control_authority_confirmation_expired",
+                    "actor": actor,
+                    "character_id": str(pending.get("character_id") or ""),
+                },
+            )
+            if is_confirmation:
+                return "这条托管确认已经过期；请重新发送 `/dm 托管，<你的保守策略>`。"
+            return ""
+        if not is_confirmation:
+            return ""
+        if not _pending_control_confirmation_matches(pending, actor_id):
+            self.repository.append_audit(
+                session_id,
+                {
+                    "type": "local_fast_path",
+                    "action": "control_authority_confirmation_denied",
+                    "actor": actor,
+                    "pending_actor_id": str(pending.get("actor_id") or ""),
+                    "character_id": str(pending.get("character_id") or ""),
+                },
+            )
+            return "这条托管授权只能由最初发起托管的玩家确认。"
+
+        character_id = str(pending.get("character_id") or "").strip()
+        standing_order = str(pending.get("standing_order") or "").strip()
+        audit_ref = str(pending.get("audit_ref") or "").strip() or _control_authority_audit_ref(
+            session_id,
+            actor_id,
+            character_id,
+        )
+        result = await ControlTools(self.repository, session_id, actor=actor).control_authority(
+            action="relinquish_to_system",
+            character_id=character_id,
+            risk_ceiling=str(pending.get("risk_ceiling") or "low"),
+            duration_type=str(pending.get("duration_type") or "until_revoked"),
+            consent_reference=str(pending.get("consent_reference") or "local_control_authority_confirmation"),
+            standing_order=standing_order,
+            audit_ref=audit_ref,
+        )
+        updated_session = self.repository.load_session(session_id)
+        updated_scene = updated_session.scene if isinstance(updated_session.scene, dict) else {}
+        updated_scene.pop(PENDING_CONTROL_CONFIRMATION_KEY, None)
+        updated_session.scene = updated_scene
+        self.repository.save_session(updated_session)
+        self.repository.append_audit(
+            session_id,
+            {
+                "type": "local_fast_path",
+                "action": "control_authority_confirmed",
+                "actor": actor,
+                "character_id": character_id,
+                "result": result,
+            },
+        )
+        if not result.get("ok"):
+            return f"托管授权没有写入成功：{result.get('error') or result.get('reason') or 'unknown_error'}。"
+        character_label = str(pending.get("character_label") or character_id)
+        return (
+            f"已确认托管：{character_label} 由系统按 low 风险上限代管，持续到你撤销。\n"
+            f"常设策略：{standing_order}"
+        )
+
+    async def _control_authority_request_fast_path(
+        self,
+        session_id: str,
+        session,
+        actor: dict[str, str],
+        text: str,
+    ) -> str:
+        if not _looks_like_single_character_hosting_request(text):
+            return ""
+        actor_id = str((actor or {}).get("player_id") or "").strip()
+        character_id = _bound_character_id_for_actor(session, actor_id)
+        if not actor_id or not character_id:
+            self.repository.append_audit(
+                session_id,
+                {
+                    "type": "local_fast_path",
+                    "action": "control_authority_request_unbound",
+                    "actor": actor,
+                    "text": text[:240],
+                },
+            )
+            return "要启用托管，先需要把你绑定到一个玩家角色；请先完成建卡/绑定角色，再重新发送托管策略。"
+
+        character_label = _character_label(session, character_id)
+        standing_order = _standing_order_from_hosting_text(session, text, character_id=character_id)
+        now = datetime.now(timezone.utc)
+        pending = {
+            "schema_version": 1,
+            "action": "relinquish_to_system",
+            "actor_id": actor_id,
+            "character_id": character_id,
+            "character_label": character_label,
+            "risk_ceiling": "low",
+            "duration_type": "until_revoked",
+            "standing_order": standing_order,
+            "consent_reference": "local_control_authority_confirmation",
+            "audit_ref": _control_authority_audit_ref(session_id, actor_id, character_id),
+            "created_at": now.isoformat(),
+            "expires_at": (now + timedelta(seconds=CONTROL_CONFIRMATION_TTL_SECONDS)).isoformat(),
+        }
+        scene = session.scene if isinstance(session.scene, dict) else {}
+        scene[PENDING_CONTROL_CONFIRMATION_KEY] = pending
+        session.scene = scene
+        self.repository.save_session(session)
+        self.repository.append_audit(
+            session_id,
+            {
+                "type": "local_fast_path",
+                "action": "control_authority_confirmation_requested",
+                "actor": actor,
+                "character_id": character_id,
+                "text": text[:240],
+                "standing_order": standing_order,
+            },
+        )
+        return (
+            f"已收到托管请求：{character_label} 将由系统按 low 风险上限代管，直到你撤销。\n"
+            f"常设策略：{standing_order}\n"
+            "请由同一玩家在 10 分钟内发送 `/dm 确认托管` 完成授权。"
+        )
 
     async def _cycle_readonly_fast_path(
         self,
@@ -3609,6 +3766,136 @@ def _clear_pending_campaign_preferences(repository, session_id: str, session) ->
     scene.pop("_pending_campaign_preferences", None)
     session.scene = scene
     repository.save_session(session)
+
+
+def _pending_control_authority_confirmation(session) -> dict:
+    scene = getattr(session, "scene", {}) or {}
+    if not isinstance(scene, dict):
+        return {}
+    pending = scene.get(PENDING_CONTROL_CONFIRMATION_KEY)
+    return dict(pending) if isinstance(pending, dict) else {}
+
+
+def _pending_control_confirmation_matches(pending: dict, actor_id: str) -> bool:
+    owner = str(pending.get("actor_id") or "").strip()
+    current = str(actor_id or "").strip()
+    return bool(owner and current and owner == current)
+
+
+def _pending_control_authority_expired(pending: dict) -> bool:
+    expires_at = _parse_datetime(pending.get("expires_at"))
+    return bool(expires_at and datetime.now(timezone.utc) > expires_at)
+
+
+def _looks_like_single_character_hosting_request(text: str) -> bool:
+    normalized = str(text or "").strip().lower()
+    if not normalized:
+        return False
+    if any(
+        term in normalized
+        for term in (
+            "全权托管",
+            "全员托管",
+            "所有玩家",
+            "全部玩家",
+            "全体玩家",
+            "所有角色",
+            "全部角色",
+            "所有人物",
+            "全部人物",
+            "全队托管",
+            "整队托管",
+        )
+    ):
+        return False
+    return any(term in normalized for term in ("托管", "代管", "挂机", "hosted", "system host", "relinquish"))
+
+
+def _looks_like_control_authority_confirmation(text: str) -> bool:
+    normalized = str(text or "").strip().lower()
+    if not normalized:
+        return False
+    normalized = normalized.strip("。！？!?. ")
+    exact_terms = {
+        "确认",
+        "确认托管",
+        "确认授权",
+        "同意托管",
+        "授权",
+        "可以托管",
+        "ok",
+        "okay",
+        "yes",
+        "y",
+        "confirm",
+        "confirm hosting",
+    }
+    if normalized in exact_terms:
+        return True
+    return "确认" in normalized and any(term in normalized for term in ("托管", "授权", "代管"))
+
+
+def _bound_character_id_for_actor(session, actor_id: str) -> str:
+    actor_id = str(actor_id or "").strip()
+    if not actor_id:
+        return ""
+    bound = str((getattr(session, "player_character_map", {}) or {}).get(actor_id) or "").strip()
+    if bound:
+        return bound
+    for character_id, character in (getattr(session, "characters", {}) or {}).items():
+        if str(getattr(character, "player_id", "") or "").strip() == actor_id:
+            return str(character_id or getattr(character, "id", "") or "").strip()
+    return ""
+
+
+def _character_label(session, character_id: str) -> str:
+    character_id = str(character_id or "").strip()
+    character = (getattr(session, "characters", {}) or {}).get(character_id)
+    name = str(getattr(character, "name", "") or "").strip() if character else ""
+    return name or character_id or "该角色"
+
+
+def _standing_order_from_hosting_text(session, text: str, *, character_id: str = "") -> str:
+    normalized = str(text or "").strip()
+    lowered = normalized.lower()
+    follow_target = _extract_follow_target_label(session, normalized, character_id=character_id)
+    if follow_target:
+        if any(term in lowered for term in ("攻击", "射击", "打", "集火", "火力", "attack", "shoot")):
+            return f"跟随{follow_target}行动；攻击{follow_target}当前交战的同一目标；保持掩护，不主动冒进，不消耗稀缺资源。"
+        return f"跟随{follow_target}行动；保持掩护，防御优先，不主动冒进，不消耗稀缺资源。"
+    if any(term in lowered for term in ("攻击", "射击", "打", "集火", "火力", "attack", "shoot")):
+        return "跟随队伍行动；优先攻击队友已经交战的同一目标；保持掩护，不主动冒进，不消耗稀缺资源。"
+    return "跟随队伍行动；保持掩护，防御优先，不主动冒进，不消耗稀缺资源。"
+
+
+def _extract_follow_target_label(session, text: str, *, character_id: str = "") -> str:
+    normalized = str(text or "").strip()
+    if not normalized:
+        return ""
+    characters = getattr(session, "characters", {}) or {}
+    candidates: list[tuple[str, str]] = []
+    for candidate_id, character in characters.items():
+        safe_id = str(candidate_id or getattr(character, "id", "") or "").strip()
+        if safe_id and safe_id == character_id:
+            continue
+        name = str(getattr(character, "name", "") or "").strip()
+        if name:
+            candidates.append((name, name))
+        if safe_id:
+            candidates.append((safe_id, name or safe_id))
+    for needle, label in sorted(candidates, key=lambda item: len(item[0]), reverse=True):
+        if needle and needle in normalized:
+            return label
+    match = re.search(r"(?:跟随|跟着|跟住|follow)\s*([A-Za-z0-9_\-\u4e00-\u9fff]{1,24})", normalized, flags=re.IGNORECASE)
+    if match:
+        return match.group(1).strip()
+    return ""
+
+
+def _control_authority_audit_ref(session_id: str, actor_id: str, character_id: str) -> str:
+    seed = f"{session_id}|{actor_id}|{character_id}|{_utc_now_iso()}"
+    digest = hashlib.sha1(seed.encode("utf-8", errors="ignore")).hexdigest()[:12]
+    return f"local-hosting-{digest}"
 
 
 def _parse_datetime(value: object) -> datetime | None:
