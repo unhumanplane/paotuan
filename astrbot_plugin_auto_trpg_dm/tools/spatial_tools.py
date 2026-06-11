@@ -56,6 +56,17 @@ class CreateGridArgs(BaseModel):
     )
 
 
+class UpdateCellStateArgs(BaseModel):
+    x: int = Field(..., description="要更新的格子 X 坐标，从 0 开始")
+    y: int = Field(..., description="要更新的格子 Y 坐标，从 0 开始")
+    terrain: Optional[str] = Field(default=None, description="新的地形或对象标签，例如 open_door、smoke、fire、rubble")
+    cost: Optional[int] = Field(default=None, ge=1, le=99, description="新的移动消耗；为空则保留原值")
+    blocks_move: Optional[bool] = Field(default=None, description="是否阻挡移动；开门通常设为 false")
+    blocks_los: Optional[bool] = Field(default=None, description="是否阻挡视线；烟雾或墙体通常设为 true")
+    cover: Optional[int] = Field(default=None, ge=0, le=10, description="掩体等级；为空则保留原值")
+    reason: str = Field(default="", description="公开可见的裁决原因，例如 door_opened、light_destroyed、smoke_spreads")
+
+
 class PlaceEntityArgs(BaseModel):
     entity_id: str = Field(..., description="实体 ID")
     name: str = Field(..., description="实体名称")
@@ -141,6 +152,87 @@ class SpatialTools:
         self.repository.save_session(session)
         result = {"ok": True, "grid": grid_data, "map_id": strict_record["id"]}
         self._audit("create_grid", {"width": width, "height": height, "cells": cells or []}, result)
+        return result
+
+    async def update_cell_state(
+        self,
+        x: int,
+        y: int,
+        terrain: Optional[str] = None,
+        cost: Optional[int] = None,
+        blocks_move: Optional[bool] = None,
+        blocks_los: Optional[bool] = None,
+        cover: Optional[int] = None,
+        reason: str = "",
+    ) -> Dict[str, Any]:
+        session, grid = self._load_grid()
+        point = Point(int(x), int(y))
+        audit_input = {
+            "x": point.x,
+            "y": point.y,
+            "terrain": terrain,
+            "cost": cost,
+            "blocks_move": blocks_move,
+            "blocks_los": blocks_los,
+            "cover": cover,
+            "reason": str(reason or ""),
+        }
+        if not grid.in_bounds(point):
+            result = {"ok": False, "error_code": "out_of_bounds", "x": point.x, "y": point.y}
+            self._audit("update_cell_state", audit_input, result)
+            return result
+        if terrain is None and cost is None and blocks_move is None and blocks_los is None and cover is None:
+            result = {"ok": False, "error_code": "no_cell_update_fields", "x": point.x, "y": point.y}
+            self._audit("update_cell_state", audit_input, result)
+            return result
+
+        current = grid.cell_at(point)
+        previous = _cell_payload(current)
+        cell = Cell(
+            x=point.x,
+            y=point.y,
+            terrain=current.terrain,
+            cost=current.cost,
+            blocks_move=current.blocks_move,
+            blocks_los=current.blocks_los,
+            cover=current.cover,
+        )
+        if terrain is not None:
+            terrain_text = str(terrain or "").strip()
+            if terrain_text:
+                cell.terrain = terrain_text[:80]
+        if cost is not None:
+            cell.cost = max(1, min(99, int(cost)))
+        if blocks_move is not None:
+            cell.blocks_move = bool(blocks_move)
+        if blocks_los is not None:
+            cell.blocks_los = bool(blocks_los)
+        if cover is not None:
+            cell.cover = max(0, min(10, int(cover)))
+
+        grid.cells[(point.x, point.y)] = cell
+        self._save_grid(session, grid)
+        self.repository.save_session(session)
+        result = {
+            "ok": True,
+            "cell": _cell_payload(cell),
+            "previous": previous,
+            "reason": str(reason or ""),
+            "map_id": str((session.battle or {}).get("map_id") or session.maps.get("active_strict_map_id") or ""),
+        }
+        result["auto_map"] = await self._enqueue_spatial_adjudication_map(
+            session,
+            title="Tactical map - cell state",
+            trigger_id=_spatial_trigger_id(
+                "cell",
+                point.x,
+                point.y,
+                str(reason or cell.terrain or "update"),
+                f"move={cell.blocks_move}",
+                f"los={cell.blocks_los}",
+            ),
+        )
+        self._audit("update_cell_state", audit_input, result)
         return result
 
     async def place_entity(
@@ -591,6 +683,18 @@ def _cell_has_non_default_feature(cell: Cell) -> bool:
         or cell.blocks_los
         or cell.cover != 0
     )
+
+
+def _cell_payload(cell: Cell) -> Dict[str, Any]:
+    return {
+        "x": cell.x,
+        "y": cell.y,
+        "terrain": cell.terrain,
+        "cost": cell.cost,
+        "blocks_move": cell.blocks_move,
+        "blocks_los": cell.blocks_los,
+        "cover": cell.cover,
+    }
 
 
 def _safe_int(value: Any) -> int:

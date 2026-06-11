@@ -52,6 +52,7 @@ from .spatial_tools import (
     MoveEntityArgs,
     PlaceEntityArgs,
     SpatialTools,
+    UpdateCellStateArgs,
     UpdateEntityStateArgs,
 )
 from .strict_grid_render_tools import RenderStrictGridSvgArgs, StrictGridRenderTools
@@ -488,6 +489,15 @@ class ToolRegistry:
                 model=PlaceEntityArgs,
                 handler=spatial_tools.place_entity,
             ),
+            "update_cell_state": make_tool(
+                name="update_cell_state",
+                description=(
+                    "更新 strict grid 中单个格子的公开物理状态。用于开门/关门/破门、烟雾或火势蔓延、光源被破坏、掩体变化、"
+                    "地形从阻挡变为可通行或从可见变为遮挡。只写玩家可见或已裁决的格子事实。"
+                ),
+                model=UpdateCellStateArgs,
+                handler=spatial_tools.update_cell_state,
+            ),
             "move_entity": make_tool(
                 name="move_entity",
                 description="移动实体；底层严格校验坐标、障碍、占位、路径和移动力。",
@@ -688,6 +698,7 @@ class ToolRegistry:
                     "start_combat_on_map",
                     "create_grid",
                     "place_entity",
+                    "update_cell_state",
                     "update_entity_state",
                     "move_entity",
                     "check_attack_vector",
@@ -716,6 +727,22 @@ class ToolRegistry:
                     "session_control",
                     "estimate_token_usage",
                 ]
+            if _contains_any(text, MAP_CELL_UPDATE_TERMS):
+                return [
+                    "get_battle_snapshot",
+                    "update_cell_state",
+                    "render_strict_grid_svg",
+                    "turn_control",
+                    "move_entity",
+                    "check_attack_vector",
+                    "resolve_check",
+                    "execute_rule",
+                    "update_entity_state",
+                    "update_scene",
+                    "record_timeline_event",
+                    "session_control",
+                    "estimate_token_usage",
+                ]
             if _contains_any(text, BATTLE_JOIN_TERMS):
                 return [
                     "get_battle_snapshot",
@@ -735,6 +762,7 @@ class ToolRegistry:
                     "query_core_rules",
                     "resolve_check",
                     "execute_rule",
+                    "update_cell_state",
                     "update_entity_state",
                     "update_scene",
                     "update_character_tags",
@@ -760,6 +788,7 @@ class ToolRegistry:
                     "start_combat_on_map",
                     "turn_control",
                     "query_core_rules",
+                    "update_cell_state",
                     "move_entity",
                     "check_attack_vector",
                     "resolve_check",
@@ -1067,6 +1096,35 @@ ENTITY_STATE_UPDATE_HINTS = (
     "npc_",
     "敌人",
     "守卫",
+)
+MAP_CELL_UPDATE_TERMS = (
+    "开门",
+    "推门",
+    "推开",
+    "关门",
+    "闸门",
+    "破门",
+    "撬锁",
+    "门锁",
+    "障碍",
+    "掩体",
+    "烟雾",
+    "浓烟",
+    "火势",
+    "着火",
+    "光源",
+    "灯",
+    "open door",
+    "close door",
+    "unlock",
+    "break door",
+    "gate",
+    "smoke",
+    "fire",
+    "light",
+    "cover",
+    "obstacle",
+    "barricade",
 )
 CHARACTER_PROFILE_TERMS = (
     "人物卡",

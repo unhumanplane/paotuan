@@ -171,6 +171,39 @@ def test_move_entity_blocked_by_door_enqueues_spatial_judgment_map_once():
     assert Path(pending_maps[0]["path"]).exists()
 
 
+def test_update_cell_state_opens_door_and_enqueues_spatial_judgment_map():
+    repo = _repo("update_cell_state_open_door")
+    repo.save_session(_ready_session())
+    tools = SpatialTools(repo, "group")
+    asyncio.run(tools.create_grid(width=4, height=3, cells=[{"x": 1, "y": 1, "terrain": "door", "blocks_move": True, "blocks_los": True}]))
+    asyncio.run(tools.place_entity("pc", "PC", 0, 1, move_points=4))
+
+    opened = asyncio.run(
+        tools.update_cell_state(
+            1,
+            1,
+            terrain="open_door",
+            blocks_move=False,
+            blocks_los=False,
+            reason="door_opened",
+        )
+    )
+    moved = asyncio.run(tools.move_entity("pc", 2, 1))
+
+    saved = repo.load_session("group")
+    cell = next(item for item in saved.battle["grid"]["cells"] if item["x"] == 1 and item["y"] == 1)
+    pending_maps = [item for item in saved.scene.get("_pending_outputs", []) if item.get("type") == "svg_map"]
+    assert opened["ok"] is True
+    assert opened["previous"]["blocks_move"] is True
+    assert opened["cell"]["terrain"] == "open_door"
+    assert opened["cell"]["blocks_move"] is False
+    assert opened["auto_map"]["queued"] is True
+    assert moved["ok"] is True
+    assert cell["blocks_move"] is False
+    assert cell["blocks_los"] is False
+    assert pending_maps[0]["delivery_trigger"] == MAP_DELIVERY_TRIGGER_SPATIAL_ADJUDICATION
+
+
 def test_check_attack_vector_enqueues_spatial_judgment_map():
     repo = _repo("attack_vector_map")
     repo.save_session(_ready_session())

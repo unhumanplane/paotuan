@@ -219,6 +219,7 @@ def test_tool_registry_keeps_tactical_tools_when_bound_character_killed_enemy():
 
     assert "resolve_check" in names
     assert "execute_rule" in names
+    assert "update_cell_state" in names
     assert "update_entity_state" in names
     assert "turn_control" in names
     assert "create_character" not in names
@@ -237,6 +238,21 @@ def test_tool_registry_exposes_entity_state_tool_for_direct_map_state_update():
     assert "update_entity_state" in names
     assert "render_strict_grid_svg" in names
     assert any(spec["name"] == "update_entity_state" for spec in specs)
+
+
+def test_tool_registry_exposes_cell_state_tool_for_door_interaction():
+    registry = _registry_with_started_session()
+    _toolset, names, _executor, specs = registry.for_mode(
+        GameMode.TACTICAL,
+        "group",
+        message="推开冷库的门",
+    )
+
+    assert "get_battle_snapshot" in names
+    assert "update_cell_state" in names
+    assert "move_entity" in names
+    assert "render_strict_grid_svg" in names
+    assert any(spec["name"] == "update_cell_state" for spec in specs)
 
 
 def test_tool_registry_post_game_character_profile_requests_keep_binding_tools():
