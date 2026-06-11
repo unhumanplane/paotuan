@@ -26,7 +26,7 @@ class SpatialEngine:
         path, cost, reason = self.grid.find_path(entity, target)
         if path is None:
             suggestions = self._reachable_suggestions(entity, target)
-            return {
+            failure = {
                 "ok": False,
                 "error_code": reason,
                 "message": f"移动失败：{reason}",
@@ -38,6 +38,8 @@ class SpatialEngine:
                 },
                 "suggestions": suggestions,
             }
+            failure.update(self._movement_failure_affordance(reason, target, suggestions))
+            return failure
         entity.x = target_x
         entity.y = target_y
         return {
@@ -120,3 +122,67 @@ class SpatialEngine:
                 }
             )
         return suggestions
+
+    @staticmethod
+    def _movement_failure_affordance(reason: str, target: Point, suggestions: list[dict]) -> dict:
+        reason_text = str(reason or "")
+        target_cell = {"x": target.x, "y": target.y}
+        if reason_text.startswith("terrain_blocks_move:"):
+            terrain = reason_text.split(":", 1)[1] or "unknown"
+            terrain_lower = terrain.lower()
+            interaction = "bypass_or_clear_obstacle"
+            if "door" in terrain_lower or "gate" in terrain_lower:
+                interaction = "open_unlock_force_or_destroy_door"
+            elif "wall" in terrain_lower:
+                interaction = "find_opening_breach_or_choose_route"
+            return {
+                "adjudication": {
+                    "type": "blocked_movement",
+                    "blocked_by": "terrain",
+                    "terrain": terrain,
+                    "target": target_cell,
+                },
+                "requires_interaction": interaction,
+                "recommended_next": [
+                    "resolve_obstacle_interaction_before_moving",
+                    "choose_one_suggested_reachable_cell" if suggestions else "request_map_or_choose_new_route",
+                ],
+            }
+        if reason_text.startswith("occupied_by:"):
+            occupant_id = reason_text.split(":", 1)[1] or ""
+            return {
+                "adjudication": {
+                    "type": "blocked_movement",
+                    "blocked_by": "entity",
+                    "occupant_id": occupant_id,
+                    "target": target_cell,
+                },
+                "requires_interaction": "clear_wait_push_or_select_adjacent_cell",
+                "recommended_next": [
+                    "resolve_occupant_before_moving",
+                    "choose_one_suggested_reachable_cell" if suggestions else "request_map_or_choose_new_route",
+                ],
+            }
+        if reason_text == "no_path_or_insufficient_move_points":
+            return {
+                "adjudication": {
+                    "type": "blocked_movement",
+                    "blocked_by": "path_or_move_budget",
+                    "target": target_cell,
+                },
+                "requires_interaction": "choose_shorter_route_or_spend_resource",
+                "recommended_next": [
+                    "choose_one_suggested_reachable_cell" if suggestions else "request_map_or_choose_new_route",
+                ],
+            }
+        if reason_text == "out_of_bounds":
+            return {
+                "adjudication": {
+                    "type": "blocked_movement",
+                    "blocked_by": "map_bounds",
+                    "target": target_cell,
+                },
+                "requires_interaction": "choose_cell_inside_current_map",
+                "recommended_next": ["request_map_or_choose_new_route"],
+            }
+        return {}

@@ -5,6 +5,13 @@ from typing import Any, Dict, List, Optional, Tuple
 from pydantic import BaseModel, Field
 
 from ..core.control_authority import owner_player_id_for_entity, resolve_control_authority
+from ..core.map_delivery_cadence import (
+    MAP_DELIVERY_TRIGGER_SPATIAL_ADJUDICATION,
+    MAP_RENDER_STRICT_GRID,
+    MapDeliveryRequest,
+    decide_map_delivery,
+    get_map_delivery_cadence_state,
+)
 from ..core.map_core import (
     DEFAULT_STRICT_LOCAL_MAP_ID,
     MAP_AUTHORITY_SPATIAL,
@@ -22,6 +29,7 @@ from ..spatial.grid import Cell, Entity, GridState, Point
 from ..spatial.map_calculator import MapCalculator
 from ..storage.json_repository import JsonGameRepository
 from .memory_tools import background_required_result
+from .strict_grid_render_tools import StrictGridRenderTools
 
 
 TURN_SEQUENCE_FLEXIBLE = "flexible"
@@ -185,6 +193,19 @@ class SpatialTools:
         if result.get("ok"):
             self._save_grid(session, grid)
             self.repository.save_session(session)
+        if _move_result_needs_map(result):
+            result = dict(result)
+            result["auto_map"] = await self._enqueue_spatial_adjudication_map(
+                session,
+                title="Tactical map - movement judgment",
+                trigger_id=_spatial_trigger_id(
+                    "move",
+                    entity_id,
+                    str(target_x),
+                    str(target_y),
+                    str(result.get("error_code") or result.get("reason") or "ok"),
+                ),
+            )
         self._audit("move_entity", {"entity_id": entity_id, "target_x": target_x, "target_y": target_y}, result)
         return result
 
@@ -196,6 +217,18 @@ class SpatialTools:
             self._audit("check_attack_vector", {"source_id": source_id, "target_id": target_id}, turn_error)
             return turn_error
         result = MapCalculator(grid).check_attack_vector(source_id, target_id)
+        if _attack_vector_result_needs_map(result):
+            result = dict(result)
+            result["auto_map"] = await self._enqueue_spatial_adjudication_map(
+                session,
+                title="Tactical map - attack vector",
+                trigger_id=_spatial_trigger_id(
+                    "attack",
+                    source_id,
+                    target_id,
+                    str(result.get("reason") or result.get("error_code") or "unknown"),
+                ),
+            )
         self._audit("check_attack_vector", {"source_id": source_id, "target_id": target_id}, result)
         return result
 
@@ -266,6 +299,11 @@ class SpatialTools:
             },
             "map_id": str((session.battle or {}).get("map_id") or session.maps.get("active_strict_map_id") or ""),
         }
+        result["auto_map"] = await self._enqueue_spatial_adjudication_map(
+            session,
+            title="Tactical map - entity state",
+            trigger_id=_spatial_trigger_id("state", entity.id, entity_life_state(entity)),
+        )
         self._audit("update_entity_state", audit_input, result)
         return result
 
@@ -284,6 +322,69 @@ class SpatialTools:
                 "legacy_mirror_present": isinstance(battle.get("grid"), dict),
                 "legacy_mirror_authoritative": False,
             },
+        }
+
+    async def _enqueue_spatial_adjudication_map(
+        self,
+        session: Any,
+        *,
+        title: str,
+        trigger_id: str,
+    ) -> Dict[str, Any]:
+        battle = dict((session.battle or {}))
+        turn = dict(battle.get("turn") or {})
+        combat_id = str(battle.get("combat_id") or battle.get("encounter_id") or battle.get("map_id") or "")
+        loaded = load_active_strict_grid(session.maps, battle)
+        map_id = str(loaded.get("map_id") or battle.get("map_id") or session.maps.get("active_strict_map_id") or "")
+        record = dict(loaded.get("record") or {})
+        request = MapDeliveryRequest(
+            trigger=MAP_DELIVERY_TRIGGER_SPATIAL_ADJUDICATION,
+            render_type=MAP_RENDER_STRICT_GRID,
+            map_id=map_id,
+            map_revision=str(record.get("record_version") or ""),
+            trigger_id=trigger_id,
+            combat_id=combat_id,
+            round_number=_safe_int(turn.get("round", 0)),
+        )
+        preflight = decide_map_delivery(get_map_delivery_cadence_state(session.scene), request)
+        if not preflight.should_send:
+            return {
+                "ok": True,
+                "queued": False,
+                "delivery_reason": preflight.reason,
+                "duplicate": bool(preflight.duplicate),
+                "trigger": MAP_DELIVERY_TRIGGER_SPATIAL_ADJUDICATION,
+                "trigger_id": trigger_id,
+                "map_id": map_id,
+                "file_name": "",
+            }
+        try:
+            rendered = await StrictGridRenderTools(self.repository, self.session_id, self.actor).render_strict_grid_svg(
+                title=title,
+                send_to_chat=True,
+                delivery_trigger=MAP_DELIVERY_TRIGGER_SPATIAL_ADJUDICATION,
+                trigger_id=trigger_id,
+                combat_id=combat_id,
+                round_number=_safe_int(turn.get("round", 0)),
+            )
+        except Exception as exc:
+            return {
+                "ok": False,
+                "queued": False,
+                "error": str(exc),
+                "trigger": MAP_DELIVERY_TRIGGER_SPATIAL_ADJUDICATION,
+                "trigger_id": trigger_id,
+            }
+        delivery = dict(rendered.get("delivery") or {}) if isinstance(rendered, dict) else {}
+        return {
+            "ok": bool(isinstance(rendered, dict) and rendered.get("ok")),
+            "queued": bool(delivery.get("should_send")),
+            "delivery_reason": str(delivery.get("reason") or ""),
+            "duplicate": bool(delivery.get("duplicate")),
+            "trigger": MAP_DELIVERY_TRIGGER_SPATIAL_ADJUDICATION,
+            "trigger_id": trigger_id,
+            "map_id": str(rendered.get("map_id") or "") if isinstance(rendered, dict) else "",
+            "file_name": str(rendered.get("file_name") or "") if isinstance(rendered, dict) else "",
         }
 
     def _load_grid(self) -> Tuple[Any, GridState]:
@@ -505,6 +606,36 @@ def _turn_sequence_mode(turn: Dict[str, Any]) -> str:
 
 def _strict_sequence(turn: Dict[str, Any]) -> bool:
     return _turn_sequence_mode(turn) == TURN_SEQUENCE_STRICT
+
+
+def _move_result_needs_map(result: Dict[str, Any]) -> bool:
+    if not isinstance(result, dict):
+        return False
+    if result.get("ok") is True:
+        return True
+    error_code = str(result.get("error_code") or "")
+    return (
+        error_code == "out_of_bounds"
+        or error_code == "no_path_or_insufficient_move_points"
+        or error_code.startswith("terrain_blocks_move:")
+        or error_code.startswith("occupied_by:")
+    )
+
+
+def _attack_vector_result_needs_map(result: Dict[str, Any]) -> bool:
+    if not isinstance(result, dict) or result.get("ok") is not True:
+        return False
+    return "can_attack" in result or bool(result.get("reason"))
+
+
+def _spatial_trigger_id(*pieces: Any) -> str:
+    cleaned: list[str] = []
+    for piece in pieces:
+        text = str(piece or "").strip()
+        if not text:
+            continue
+        cleaned.append(text.replace("|", "_").replace("\n", " ")[:48])
+    return (":".join(cleaned) or "spatial")[:150]
 
 
 def _normalize_life_state(value: Any, *, status: str = "", tags: Dict[str, Any] | None = None) -> str:

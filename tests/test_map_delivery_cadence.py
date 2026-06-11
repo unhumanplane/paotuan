@@ -5,6 +5,7 @@ from astrbot_plugin_auto_trpg_dm.core.map_delivery_cadence import (
     MAP_DELIVERY_TRIGGER_COMBAT_ROUND,
     MAP_DELIVERY_TRIGGER_OVERVIEW_TRANSITION,
     MAP_DELIVERY_TRIGGER_PLAYER_REQUEST,
+    MAP_DELIVERY_TRIGGER_SPATIAL_ADJUDICATION,
     MAP_DELIVERY_TRIGGER_SPATIAL_CHANGE,
     MAP_DELIVERY_TRIGGER_STRICT_EXPLORATION_START,
     MAP_RENDER_LEGACY_LLM_SVG,
@@ -149,6 +150,35 @@ def test_ordinary_spatial_change_does_not_auto_send():
 
     assert decision.should_send is False
     assert decision.reason == "ordinary_spatial_change_not_auto_sent"
+
+
+def test_spatial_adjudication_auto_sends_strict_grid_and_dedupes_by_trigger_id():
+    state = default_map_delivery_cadence_state()
+    request = MapDeliveryRequest(
+        trigger=MAP_DELIVERY_TRIGGER_SPATIAL_ADJUDICATION,
+        map_id="strict-local-map",
+        map_revision="2",
+        trigger_id="move:pc:2:1:terrain_blocks_move:door",
+    )
+
+    first = decide_map_delivery(state, request)
+    state = record_map_delivery_sent(state, request, first)
+    duplicate = decide_map_delivery(state, request)
+    next_judgment = decide_map_delivery(
+        state,
+        MapDeliveryRequest(
+            trigger=MAP_DELIVERY_TRIGGER_SPATIAL_ADJUDICATION,
+            map_id="strict-local-map",
+            map_revision="2",
+            trigger_id="move:pc:3:1:terrain_blocks_move:wall",
+        ),
+    )
+
+    assert first.should_send is True
+    assert first.render_type == MAP_RENDER_STRICT_GRID
+    assert duplicate.should_send is False
+    assert duplicate.reason == "duplicate_suppressed"
+    assert next_judgment.should_send is True
 
 
 def test_renderer_unavailable_requires_explicit_legacy_fallback_permission():

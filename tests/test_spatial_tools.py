@@ -3,6 +3,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from astrbot_plugin_auto_trpg_dm.core.map_core import DEFAULT_STRICT_LOCAL_MAP_ID, MAP_TYPE_STRICT_LOCAL, get_map_record
+from astrbot_plugin_auto_trpg_dm.core.map_delivery_cadence import MAP_DELIVERY_TRIGGER_SPATIAL_ADJUDICATION
 from astrbot_plugin_auto_trpg_dm.core.models import Character, GameMode, GameSession
 from astrbot_plugin_auto_trpg_dm.storage.json_repository import JsonGameRepository
 from astrbot_plugin_auto_trpg_dm.tools.spatial_tools import SpatialTools
@@ -146,6 +147,56 @@ def test_check_attack_vector_prefers_strict_local_map_over_stale_legacy_mirror()
     assert "calculation" not in result
 
 
+def test_move_entity_blocked_by_door_enqueues_spatial_judgment_map_once():
+    repo = _repo("move_entity_blocked_map")
+    repo.save_session(_ready_session())
+    tools = SpatialTools(repo, "group")
+    asyncio.run(tools.create_grid(width=4, height=3, cells=[{"x": 2, "y": 1, "terrain": "door", "blocks_move": True}]))
+    asyncio.run(tools.place_entity("pc", "PC", 1, 1, move_points=4))
+
+    result = asyncio.run(tools.move_entity("pc", 2, 1))
+    repeat = asyncio.run(tools.move_entity("pc", 2, 1))
+
+    saved = repo.load_session("group")
+    pending_maps = [item for item in saved.scene.get("_pending_outputs", []) if item.get("type") == "svg_map"]
+    assert result["ok"] is False
+    assert result["error_code"] == "terrain_blocks_move:door"
+    assert result["requires_interaction"] == "open_unlock_force_or_destroy_door"
+    assert result["auto_map"]["queued"] is True
+    assert repeat["auto_map"]["queued"] is False
+    assert repeat["auto_map"]["delivery_reason"] == "duplicate_suppressed"
+    assert len(pending_maps) == 1
+    assert pending_maps[0]["delivery_trigger"] == MAP_DELIVERY_TRIGGER_SPATIAL_ADJUDICATION
+    assert pending_maps[0]["render_type"] == "strict_grid_svg"
+    assert Path(pending_maps[0]["path"]).exists()
+
+
+def test_check_attack_vector_enqueues_spatial_judgment_map():
+    repo = _repo("attack_vector_map")
+    repo.save_session(_ready_session())
+    tools = SpatialTools(repo, "group")
+    asyncio.run(
+        tools.create_grid(
+            width=6,
+            height=3,
+            cells=[{"x": 2, "y": 1, "terrain": "stone_wall", "blocks_los": True}],
+        )
+    )
+    asyncio.run(tools.place_entity("pc", "PC", 0, 1, attack_range=10))
+    asyncio.run(tools.place_entity("npc", "NPC", 5, 1))
+
+    result = asyncio.run(tools.check_attack_vector("pc", "npc"))
+
+    saved = repo.load_session("group")
+    pending_maps = [item for item in saved.scene.get("_pending_outputs", []) if item.get("type") == "svg_map"]
+    assert result["ok"] is True
+    assert result["can_attack"] is False
+    assert result["reason"] == "line_of_sight_blocked"
+    assert result["auto_map"]["queued"] is True
+    assert len(pending_maps) == 1
+    assert pending_maps[0]["delivery_trigger"] == MAP_DELIVERY_TRIGGER_SPATIAL_ADJUDICATION
+
+
 def test_legacy_battle_grid_is_migrated_on_spatial_tool_load():
     repo = _repo("legacy_migration")
     session = GameSession.new("group")
@@ -254,6 +305,23 @@ def test_update_entity_state_marks_corpse_nonblocking_and_advances_map_revision(
     assert entity["blocks_move"] is False
     assert entity["tags"]["status"] == "shot dead"
     assert get_map_record(session.maps, map_id)["record_version"] == before_version + 2
+
+
+def test_update_entity_state_enqueues_spatial_judgment_map():
+    repo = _repo("update_entity_state_map")
+    repo.save_session(_ready_session())
+    tools = SpatialTools(repo, "group")
+    asyncio.run(tools.create_grid(width=5, height=5))
+    asyncio.run(tools.place_entity("guard", "Guard", 1, 1, blocks_move=True))
+
+    result = asyncio.run(tools.update_entity_state("guard", life_state="incapacitated", status="down"))
+
+    saved = repo.load_session("group")
+    pending_maps = [item for item in saved.scene.get("_pending_outputs", []) if item.get("type") == "svg_map"]
+    assert result["ok"] is True
+    assert result["auto_map"]["queued"] is True
+    assert len(pending_maps) == 1
+    assert pending_maps[0]["delivery_trigger"] == MAP_DELIVERY_TRIGGER_SPATIAL_ADJUDICATION
 
 
 def test_update_entity_state_can_restore_active_over_old_status_text():
