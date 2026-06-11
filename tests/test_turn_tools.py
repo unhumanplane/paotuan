@@ -382,6 +382,42 @@ def test_start_round_derives_order_from_map_store_not_stale_battle_grid():
     assert "stale_enemy" not in result["turn"]["turn_order"]
 
 
+def test_start_round_excludes_corpse_entities_from_turn_order():
+    repo = _runtime_repo("turn_order_excludes_corpse")
+    session = GameSession.new("group")
+    session.world_tags["_background_ready"] = True
+    save_active_strict_grid(
+        session.maps,
+        {
+            "width": 5,
+            "height": 5,
+            "cells": [],
+            "entities": {
+                "pc": {"id": "pc", "name": "PC", "x": 1, "y": 1, "faction": "party", "blocks_move": True},
+                "enemy_alive": {"id": "enemy_alive", "name": "Enemy", "x": 3, "y": 1, "faction": "hostile", "blocks_move": True},
+                "enemy_dead": {
+                    "id": "enemy_dead",
+                    "name": "Dead enemy",
+                    "x": 2,
+                    "y": 1,
+                    "faction": "hostile",
+                    "blocks_move": True,
+                    "tags": {"status": "dead corpse"},
+                },
+            },
+        },
+        map_id=DEFAULT_STRICT_LOCAL_MAP_ID,
+    )
+    session.battle = {"active": True, "map_id": DEFAULT_STRICT_LOCAL_MAP_ID, "turn": {"active": False}}
+    repo.save_session(session)
+
+    result = asyncio.run(TurnTools(repo, "group").turn_control(action="start_round"))
+
+    assert result["ok"] is True
+    assert result["turn"]["turn_order"] == ["pc", "enemy_alive"]
+    assert "enemy_dead" not in result["turn"]["pending_entity_ids"]
+
+
 def test_start_round_without_map_requires_explicit_turn_order():
     repo = _runtime_repo("turn_order_requires_context")
     session = GameSession.new("group")
@@ -751,3 +787,62 @@ def test_delegated_controller_can_record_turn_action_without_becoming_owner():
     assert denied_owner["error"] == "character_control_denied"
     assert denied_owner["owner_player_id"] == "owner"
     assert denied_owner["active_controller_id"] == "delegate"
+
+
+def test_advance_turn_skips_current_entity_that_became_corpse():
+    repo = _runtime_repo("turn_skip_corpse_current")
+    session = GameSession.new("group")
+    session.mode = GameMode.TACTICAL
+    session.battle = {
+        "active": True,
+        "map_id": DEFAULT_STRICT_LOCAL_MAP_ID,
+        "grid": {"width": 5, "height": 5, "cells": [], "entities": {}},
+        "turn_entity_id": "dead_guard",
+        "turn": {
+            "active": True,
+            "round": 1,
+            "phase": "character_turn",
+            "turn_order": ["dead_guard", "live_guard"],
+            "current_index": 0,
+            "current_entity_id": "dead_guard",
+            "actions_this_round": {},
+            "turn_log": [],
+        },
+    }
+    save_active_strict_grid(
+        session.maps,
+        {
+            "width": 5,
+            "height": 5,
+            "cells": [],
+            "entities": {
+                "dead_guard": {
+                    "id": "dead_guard",
+                    "name": "Dead Guard",
+                    "x": 1,
+                    "y": 1,
+                    "faction": "hostile",
+                    "life_state": "corpse",
+                    "blocks_move": False,
+                    "tags": {"status": "dead corpse"},
+                },
+                "live_guard": {
+                    "id": "live_guard",
+                    "name": "Live Guard",
+                    "x": 2,
+                    "y": 1,
+                    "faction": "hostile",
+                    "blocks_move": True,
+                    "tags": {},
+                },
+            },
+        },
+        map_id=DEFAULT_STRICT_LOCAL_MAP_ID,
+    )
+    repo.save_session(session)
+
+    result = asyncio.run(TurnTools(repo, "group").turn_control(action="advance_turn"))
+
+    assert result["ok"] is True
+    assert result["turn"]["current_entity_id"] == "live_guard"
+    assert repo.load_session("group").battle["turn_entity_id"] == "live_guard"

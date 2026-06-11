@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import asdict
 
+from .entity_state import entity_can_take_turn, entity_life_state, is_entity_incapacitated
 from .grid import Entity, GridState, Point
 from .los import check_line_of_sight
 
@@ -14,6 +15,13 @@ class SpatialEngine:
         entity = self.grid.entities.get(entity_id)
         if not entity:
             return {"ok": False, "error_code": "entity_not_found", "entity_id": entity_id}
+        if not entity_can_take_turn(entity):
+            return {
+                "ok": False,
+                "error_code": "entity_cannot_act",
+                "entity_id": entity_id,
+                "life_state": entity_life_state(entity),
+            }
         target = Point(target_x, target_y)
         path, cost, reason = self.grid.find_path(entity, target)
         if path is None:
@@ -49,6 +57,19 @@ class SpatialEngine:
             return {"ok": False, "error_code": "source_not_found", "source_id": source_id}
         if not target:
             return {"ok": False, "error_code": "target_not_found", "target_id": target_id}
+        if is_entity_incapacitated(target):
+            return {
+                "ok": True,
+                "can_attack": False,
+                "reason": "target_incapacitated",
+                "source": asdict(source),
+                "target": asdict(target),
+                "target_life_state": entity_life_state(target),
+                "distance": abs(source.x - target.x) + abs(source.y - target.y),
+                "range": source.attack_range,
+                "los_clear": False,
+                "blocked_by": [],
+            }
         source_point = Point(source.x, source.y)
         target_point = Point(target.x, target.y)
         distance = abs(source.x - target.x) + abs(source.y - target.y)
@@ -99,4 +120,3 @@ class SpatialEngine:
                 }
             )
         return suggestions
-

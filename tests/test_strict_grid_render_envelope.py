@@ -83,6 +83,30 @@ def test_build_strict_grid_render_input_filters_hidden_overlay_layers():
     assert "Secret tunnel" not in svg
 
 
+def test_build_strict_grid_render_input_derives_corpse_state_from_entity_tags():
+    render_input = build_strict_grid_render_input(
+        {
+            "projection": "player_view",
+            "map_id": "strict-room",
+            "grid": {
+                "width": 3,
+                "height": 2,
+                "entities": {
+                    "dead": {
+                        "name": "Dead Guard",
+                        "x": 1,
+                        "y": 0,
+                        "faction": "enemy",
+                        "tags": {"status": "头部中弹阵亡，尸体"},
+                    }
+                },
+            },
+        }
+    )
+
+    assert render_input.entities[0].life_state == "corpse"
+
+
 def test_build_strict_grid_render_input_uses_discovered_areas_for_cell_masking():
     render_input = build_strict_grid_render_input(
         {

@@ -204,6 +204,7 @@ def test_get_battle_snapshot_returns_safe_tactical_summary_not_raw_grid():
             "move_points": 6,
             "attack_range": 1,
             "blocks_move": True,
+            "life_state": "active",
         }
     ]
     assert result["tactical_map"]["terrain_feature_count"] == 1
@@ -220,6 +221,67 @@ def test_get_battle_snapshot_returns_safe_tactical_summary_not_raw_grid():
     ]
     assert result["compatibility"]["legacy_mirror_present"] is True
     assert result["compatibility"]["legacy_mirror_authoritative"] is False
+
+
+def test_update_entity_state_marks_corpse_nonblocking_and_advances_map_revision():
+    repo = _repo("update_entity_state_corpse")
+    repo.save_session(_ready_session())
+    tools = SpatialTools(repo, "group")
+    asyncio.run(tools.create_grid(width=5, height=5))
+    asyncio.run(tools.place_entity("pc", "PC", 0, 1, move_points=4))
+    asyncio.run(tools.place_entity("guard", "Guard", 1, 1, blocks_move=True))
+    session = repo.load_session("group")
+    map_id = session.battle["map_id"]
+    before_version = get_map_record(session.maps, map_id)["record_version"]
+
+    result = asyncio.run(
+        tools.update_entity_state(
+            "guard",
+            life_state="corpse",
+            status="shot dead",
+            tags={"cause": "rifle"},
+        )
+    )
+    move_result = asyncio.run(tools.move_entity("pc", 2, 1))
+
+    assert result["ok"] is True
+    assert result["entity"]["life_state"] == "corpse"
+    assert result["entity"]["blocks_move"] is False
+    assert move_result["ok"] is True
+    session = repo.load_session("group")
+    entity = session.battle["grid"]["entities"]["guard"]
+    assert entity["life_state"] == "corpse"
+    assert entity["blocks_move"] is False
+    assert entity["tags"]["status"] == "shot dead"
+    assert get_map_record(session.maps, map_id)["record_version"] == before_version + 2
+
+
+def test_update_entity_state_can_restore_active_over_old_status_text():
+    repo = _repo("update_entity_state_active")
+    repo.save_session(_ready_session())
+    tools = SpatialTools(repo, "group")
+    asyncio.run(tools.create_grid(width=5, height=5))
+    asyncio.run(tools.place_entity("guard", "Guard", 1, 1, blocks_move=True, tags={"status": "dead corpse"}))
+
+    result = asyncio.run(tools.update_entity_state("guard", life_state="active", status="back on feet"))
+    snapshot = asyncio.run(tools.get_battle_snapshot())
+
+    assert result["ok"] is True
+    assert result["entity"]["life_state"] == "active"
+    assert snapshot["tactical_map"]["entities"][0]["life_state"] == "active"
+
+
+def test_update_entity_state_returns_not_found_without_creating_entity():
+    repo = _repo("update_entity_state_missing")
+    repo.save_session(_ready_session())
+    tools = SpatialTools(repo, "group")
+    asyncio.run(tools.create_grid(width=5, height=5))
+
+    result = asyncio.run(tools.update_entity_state("missing", life_state="corpse"))
+
+    assert result["ok"] is False
+    assert result["error_code"] == "entity_not_found"
+    assert "missing" not in repo.load_session("group").battle["grid"]["entities"]
 
 
 def test_get_battle_snapshot_marks_active_turn_as_active_combat_status():

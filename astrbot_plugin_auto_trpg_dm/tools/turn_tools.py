@@ -10,6 +10,7 @@ from ..core.hosted_action_policy import evaluate_hosted_action_policy
 from ..core.map_core import load_active_strict_grid_entities
 from ..core.models import GameMode, GameSession, utc_now_iso
 from ..core.turn_labels import public_turn_entity_label, turn_actor_kind, turn_entity_owner_id
+from ..spatial.entity_state import entity_can_take_turn
 from ..storage.json_repository import JsonGameRepository
 
 
@@ -584,10 +585,14 @@ class TurnTools:
             def sort_key(item: tuple[str, Dict[str, Any]]) -> tuple[int, str]:
                 entity_id, entity = item
                 faction = str(entity.get("faction", "")).lower()
-                priority = 0 if faction in {"player", "ally", "pc", "heroes"} else 1
+                priority = 0 if faction in {"player", "ally", "pc", "party", "heroes"} else 1
                 return priority, str(entity.get("name") or entity_id)
 
-            return [entity_id for entity_id, _ in sorted(entities.items(), key=sort_key)]
+            return [
+                entity_id
+                for entity_id, entity in sorted(entities.items(), key=sort_key)
+                if entity_can_take_turn(entity)
+            ]
         if not include_bound_characters:
             return []
         bound = [cid for cid in session.player_character_map.values() if cid in session.characters]
@@ -663,6 +668,21 @@ class TurnTools:
             return {"ok": False, "error": "empty_turn_order"}
         index = max(0, min(index, len(order) - 1))
         entity_id = order[index]
+        entities = load_active_strict_grid_entities(session.maps, session.battle)
+        if entity_id in entities and not entity_can_take_turn(entities.get(entity_id, {})):
+            pending = self._pending_entities(session, turn, order)
+            if not pending:
+                turn["round"] = max(1, int(turn.get("round", 1) or 1) + 1)
+                turn["phase"] = "scene_resolution"
+                turn["current_index"] = -1
+                turn["current_entity_id"] = ""
+                turn["actions_this_round"] = {}
+                turn["scene_resolution_done"] = False
+                session.battle["turn_entity_id"] = ""
+                self.repository.save_session(session)
+                return self._status(session)
+            index = order.index(pending[0])
+            entity_id = order[index]
         turn["active"] = True
         turn["phase"] = "character_turn"
         turn["current_index"] = index
@@ -689,7 +709,7 @@ class TurnTools:
         if not order:
             return {"ok": False, "error": "empty_turn_order"}
         turn["turn_order"] = order
-        pending = self._pending_entities(turn, order)
+        pending = self._pending_entities(session, turn, order)
         if not pending:
             turn["round"] = max(1, int(turn.get("round", 1) or 1) + 1)
             turn["phase"] = "scene_resolution"
@@ -707,9 +727,14 @@ class TurnTools:
         index = self._next_pending_index(turn, order, pending)
         return self._set_current_index(session, turn, index)
 
-    def _pending_entities(self, turn: Dict[str, Any], order: List[str]) -> List[str]:
+    def _pending_entities(self, session: GameSession, turn: Dict[str, Any], order: List[str]) -> List[str]:
         actions = dict(turn.get("actions_this_round") or {})
-        return [entity_id for entity_id in order if entity_id not in actions]
+        entities = load_active_strict_grid_entities(session.maps, session.battle)
+        return [
+            entity_id
+            for entity_id in order
+            if entity_id not in actions and (entity_id not in entities or entity_can_take_turn(entities.get(entity_id, {})))
+        ]
 
     def _next_pending_index(self, turn: Dict[str, Any], order: List[str], pending: List[str]) -> int:
         current_id = str(turn.get("current_entity_id", "")).strip()
@@ -1098,7 +1123,7 @@ class TurnTools:
         current_id = str(turn.get("current_entity_id", "") or "")
         order = self._clean_order(list(turn.get("turn_order") or []))
         actions = dict(turn.get("actions_this_round") or {})
-        pending = self._pending_entities(turn, order)
+        pending = self._pending_entities(session, turn, order)
         result = {
             "ok": True,
             "turn": {

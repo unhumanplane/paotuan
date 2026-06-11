@@ -77,6 +77,7 @@ class GridEntityRender:
     x: int
     y: int
     faction: str = "neutral"
+    life_state: str = "active"
     visible: bool = True
 
 
@@ -391,20 +392,29 @@ def _draw_entities(root: ET.Element, grid: StrictGridRenderInput, canvas: Strict
         cx, cy = _cell_center(canvas, grid.layout.cell_size, entity.x, entity.y)
         radius = max(10, grid.layout.cell_size // 3)
         fill = FACTION_FILLS.get(entity.faction, FACTION_FILLS["neutral"])
-        ET.SubElement(
-            root,
-            "circle",
-            {
-                "cx": str(cx),
-                "cy": str(cy),
-                "r": str(radius),
-                "fill": fill,
-                "stroke": "#ffffff",
-                "stroke-width": "3",
-            },
-        )
+        life_state = _life_state(entity.life_state)
+        if life_state == "corpse":
+            _draw_corpse_marker(root, cx, cy, radius, fill)
+        elif life_state == "incapacitated":
+            _draw_incapacitated_marker(root, cx, cy, radius, fill)
+        elif life_state == "prone":
+            _draw_prone_marker(root, cx, cy, radius, fill)
+        else:
+            ET.SubElement(
+                root,
+                "circle",
+                {
+                    "cx": str(cx),
+                    "cy": str(cy),
+                    "r": str(radius),
+                    "fill": fill,
+                    "stroke": "#ffffff",
+                    "stroke-width": "3",
+                },
+            )
         label = _token_label(entity)
-        _text(root, x=cx, y=cy + 4, text=label, size=12, weight="700", fill="#ffffff", anchor="middle")
+        text_fill = "#f8fafc" if life_state != "corpse" else "#111827"
+        _text(root, x=cx, y=cy + 4, text=label, size=12, weight="700", fill=text_fill, anchor="middle")
 
 
 def _draw_labels(root: ET.Element, grid: StrictGridRenderInput, canvas: StrictGridCanvas) -> None:
@@ -511,7 +521,8 @@ def _draw_entity_roster(root: ET.Element, grid: StrictGridRenderInput, canvas: S
     max_x = grid.layout.margin + canvas.grid_width_px - 120
     for entity in sorted(entities, key=lambda item: (item.faction, item.y, item.x, item.id))[:10]:
         fill = FACTION_FILLS.get(entity.faction, FACTION_FILLS["neutral"])
-        label = f"{_token_label(entity)}={_safe_text(entity.name or entity.id, 18)}({entity.x},{entity.y})"
+        state_suffix = _life_state_suffix(entity.life_state)
+        label = f"{_token_label(entity)}={_safe_text(entity.name or entity.id, 18)}({entity.x},{entity.y}){state_suffix}"
         width = max(96, min(184, 8 * len(label) + 18))
         if x + width > max_x and x > grid.layout.margin + 78:
             x = grid.layout.margin + 78
@@ -582,6 +593,85 @@ def _draw_cover_marker(root: ET.Element, px: int, py: int, size: int, cover: int
     )
 
 
+def _draw_corpse_marker(root: ET.Element, cx: int, cy: int, radius: int, fill: str) -> None:
+    width = int(radius * 1.6)
+    height = max(10, int(radius * 0.9))
+    points = [
+        (cx, cy - height // 2),
+        (cx + width // 2, cy),
+        (cx, cy + height // 2),
+        (cx - width // 2, cy),
+    ]
+    ET.SubElement(
+        root,
+        "polygon",
+        {
+            "points": _points(points),
+            "fill": "#e2e8f0",
+            "stroke": fill,
+            "stroke-width": "3",
+            "opacity": "0.92",
+        },
+    )
+    _draw_cross_lines(root, cx, cy, radius, stroke="#111827", width=2, opacity="0.82")
+
+
+def _draw_incapacitated_marker(root: ET.Element, cx: int, cy: int, radius: int, fill: str) -> None:
+    ET.SubElement(
+        root,
+        "circle",
+        {
+            "cx": str(cx),
+            "cy": str(cy),
+            "r": str(radius),
+            "fill": fill,
+            "stroke": "#facc15",
+            "stroke-width": "4",
+            "opacity": "0.80",
+        },
+    )
+    _draw_cross_lines(root, cx, cy, radius, stroke="#fefce8", width=2, opacity="0.95")
+
+
+def _draw_prone_marker(root: ET.Element, cx: int, cy: int, radius: int, fill: str) -> None:
+    ET.SubElement(
+        root,
+        "ellipse",
+        {
+            "cx": str(cx),
+            "cy": str(cy),
+            "rx": str(max(12, int(radius * 1.25))),
+            "ry": str(max(7, int(radius * 0.65))),
+            "fill": fill,
+            "stroke": "#ffffff",
+            "stroke-width": "3",
+            "opacity": "0.88",
+        },
+    )
+
+
+def _draw_cross_lines(root: ET.Element, cx: int, cy: int, radius: int, *, stroke: str, width: int, opacity: str) -> None:
+    pad = max(5, int(radius * 0.62))
+    for x1, y1, x2, y2 in (
+        (cx - pad, cy - pad, cx + pad, cy + pad),
+        (cx + pad, cy - pad, cx - pad, cy + pad),
+    ):
+        ET.SubElement(
+            root,
+            "line",
+            {
+                "x1": str(x1),
+                "y1": str(y1),
+                "x2": str(x2),
+                "y2": str(y2),
+                "stroke": stroke,
+                "stroke-width": str(width),
+                "opacity": opacity,
+                "stroke-linecap": "round",
+            },
+        )
+
+
 def _text(
     root: ET.Element,
     *,
@@ -642,6 +732,28 @@ def _token_label(entity: GridEntityRender) -> str:
     if len(words) == 1:
         return words[0][:3].upper()
     return "".join(part[0] for part in words[:3]).upper()
+
+
+def _life_state(value: object) -> str:
+    text = str(value or "active").strip().lower()
+    if text in {"corpse", "dead", "death", "killed", "slain"}:
+        return "corpse"
+    if text in {"incapacitated", "down", "downed", "unconscious", "disabled", "dying"}:
+        return "incapacitated"
+    if text in {"prone", "crouch", "crouched", "pinned", "suppressed"}:
+        return "prone"
+    return "active"
+
+
+def _life_state_suffix(value: object) -> str:
+    state = _life_state(value)
+    if state == "corpse":
+        return "[corpse]"
+    if state == "incapacitated":
+        return "[down]"
+    if state == "prone":
+        return "[prone]"
+    return ""
 
 
 def _safe_text(value: object, limit: int) -> str:

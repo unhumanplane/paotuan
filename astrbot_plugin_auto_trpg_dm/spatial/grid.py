@@ -4,6 +4,8 @@ from collections import deque
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
+from .entity_state import entity_blocks_movement
+
 
 @dataclass(frozen=True)
 class Point:
@@ -44,6 +46,7 @@ class Entity:
     attack_range: int = 1
     faction: str = "neutral"
     blocks_move: bool = True
+    life_state: str = ""
     tags: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
@@ -57,6 +60,7 @@ class Entity:
             attack_range=int(data.get("attack_range", 1)),
             faction=str(data.get("faction", "neutral")),
             blocks_move=bool(data.get("blocks_move", True)),
+            life_state=str(data.get("life_state", "") or ""),
             tags=dict(data.get("tags", {})),
         )
 
@@ -112,7 +116,7 @@ class GridState:
         if cell.blocks_move:
             return False, f"terrain_blocks_move:{cell.terrain}"
         entity = self.entity_at(point, ignore_id=moving_entity_id)
-        if entity and entity.blocks_move:
+        if entity and entity_blocks_movement(entity):
             return False, f"occupied_by:{entity.id}"
         return True, "ok"
 
@@ -157,4 +161,3 @@ class GridState:
             current = came_from[current]
         path.reverse()
         return path, cost_so_far[target], "ok"
-

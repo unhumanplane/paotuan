@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from ..spatial.entity_state import entity_life_state
 from .strict_grid_svg import (
     GridCellRender,
     GridDoorRender,
@@ -140,6 +141,7 @@ def _entities(
                 x=x,
                 y=y,
                 faction=str(item.get("faction") or "neutral"),
+                life_state=entity_life_state(item),
                 visible=True,
             )
         )

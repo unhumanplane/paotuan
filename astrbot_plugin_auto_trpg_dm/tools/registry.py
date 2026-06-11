@@ -52,6 +52,7 @@ from .spatial_tools import (
     MoveEntityArgs,
     PlaceEntityArgs,
     SpatialTools,
+    UpdateEntityStateArgs,
 )
 from .strict_grid_render_tools import RenderStrictGridSvgArgs, StrictGridRenderTools
 from .strict_lifecycle_tools import (
@@ -499,6 +500,15 @@ class ToolRegistry:
                 model=CheckAttackVectorArgs,
                 handler=spatial_tools.check_attack_vector,
             ),
+            "update_entity_state": make_tool(
+                name="update_entity_state",
+                description=(
+                    "把已裁决的战棋实体状态写回结构化地图。用于死亡、尸体、昏迷、失能、倒地、卧倒或恢复；"
+                    "corpse 会自动不再阻挡移动，也不会进入行动顺序。"
+                ),
+                model=UpdateEntityStateArgs,
+                handler=spatial_tools.update_entity_state,
+            ),
             "get_battle_snapshot": make_tool(
                 name="get_battle_snapshot",
                 description="获取当前战棋状态快照。",
@@ -678,6 +688,7 @@ class ToolRegistry:
                     "start_combat_on_map",
                     "create_grid",
                     "place_entity",
+                    "update_entity_state",
                     "move_entity",
                     "check_attack_vector",
                     "create_character",
@@ -691,6 +702,17 @@ class ToolRegistry:
                     "record_event_card",
                     "clarify_entity_timeline",
                     "record_story_forge_convergence",
+                    "session_control",
+                    "estimate_token_usage",
+                ]
+            if _looks_entity_state_update(text):
+                return [
+                    "get_battle_snapshot",
+                    "update_entity_state",
+                    "render_strict_grid_svg",
+                    "turn_control",
+                    "update_scene",
+                    "record_timeline_event",
                     "session_control",
                     "estimate_token_usage",
                 ]
@@ -713,6 +735,7 @@ class ToolRegistry:
                     "query_core_rules",
                     "resolve_check",
                     "execute_rule",
+                    "update_entity_state",
                     "update_scene",
                     "update_character_tags",
                     "record_timeline_event",
@@ -741,6 +764,7 @@ class ToolRegistry:
                     "check_attack_vector",
                     "resolve_check",
                     "execute_rule",
+                    "update_entity_state",
                     "update_scene",
                     "update_character_tags",
                     "record_timeline_event",
@@ -792,6 +816,7 @@ class ToolRegistry:
                 "turn_control",
                 "resolve_check",
                 "execute_rule",
+                "update_entity_state",
                 "update_scene",
                 "update_character_tags",
                 "record_story_forge_convergence",
@@ -1008,6 +1033,41 @@ CONTROL_AUTHORITY_TERMS = (
     "hosted",
 )
 MAP_SETUP_TERMS = ("创建地图", "重置地图", "生成地图", "放置", "摆放", "开战棋", "布置地图", "设置地图")
+ENTITY_STATE_TERMS = (
+    "尸体",
+    "遗体",
+    "死亡",
+    "阵亡",
+    "已死",
+    "击毙",
+    "毙命",
+    "昏迷",
+    "失能",
+    "倒地",
+    "卧倒",
+    "趴下",
+    "恢复行动",
+    "corpse",
+    "dead",
+    "downed",
+    "incapacitated",
+    "prone",
+)
+ENTITY_STATE_UPDATE_HINTS = (
+    "标记",
+    "设为",
+    "设置为",
+    "改为",
+    "写回",
+    "地图",
+    "实体",
+    "单位",
+    "npc",
+    "pc_",
+    "npc_",
+    "敌人",
+    "守卫",
+)
 CHARACTER_PROFILE_TERMS = (
     "人物卡",
     "角色卡",
@@ -1605,6 +1665,13 @@ ENCOUNTER_TURN_STRUCTURE_TERMS = (
 
 def _contains_any(text: str, terms: tuple[str, ...]) -> bool:
     return any(term in text for term in terms)
+
+
+def _looks_entity_state_update(text: str) -> bool:
+    value = (text or "").strip().lower()
+    if not value:
+        return False
+    return _contains_any(value, ENTITY_STATE_TERMS) and _contains_any(value, ENTITY_STATE_UPDATE_HINTS)
 
 
 def _looks_text_only_request(message: str) -> bool:

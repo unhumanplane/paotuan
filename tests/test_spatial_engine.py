@@ -28,6 +28,41 @@ def test_move_entity_updates_position_when_reachable():
     assert grid.entities["pc"].y == 2
 
 
+def test_corpse_entity_does_not_block_movement_or_take_turn():
+    grid = GridState.empty(width=5, height=5)
+    grid.entities["pc"] = Entity(id="pc", name="PC", x=0, y=1, move_points=4)
+    grid.entities["corpse"] = Entity(
+        id="corpse",
+        name="Fallen guard",
+        x=1,
+        y=1,
+        blocks_move=True,
+        tags={"status": "dead corpse"},
+    )
+
+    result = SpatialEngine(grid).move_entity("pc", 2, 1)
+    corpse_move = SpatialEngine(grid).move_entity("corpse", 2, 2)
+
+    assert result["ok"] is True
+    assert result["path"] == [{"x": 0, "y": 1}, {"x": 1, "y": 1}, {"x": 2, "y": 1}]
+    assert corpse_move["ok"] is False
+    assert corpse_move["error_code"] == "entity_cannot_act"
+    assert corpse_move["life_state"] == "corpse"
+
+
+def test_attack_vector_rejects_incapacitated_target_as_normal_attack():
+    grid = GridState.empty(width=5, height=5)
+    grid.entities["pc"] = Entity(id="pc", name="PC", x=0, y=1, attack_range=5)
+    grid.entities["corpse"] = Entity(id="corpse", name="Fallen guard", x=2, y=1, tags={"status": "阵亡尸体"})
+
+    result = SpatialEngine(grid).check_attack_vector("pc", "corpse")
+
+    assert result["ok"] is True
+    assert result["can_attack"] is False
+    assert result["reason"] == "target_incapacitated"
+    assert result["target_life_state"] == "corpse"
+
+
 def test_attack_vector_blocks_line_of_sight():
     grid = GridState.empty(width=6, height=3)
     grid.cells[(2, 1)] = Cell(x=2, y=1, terrain="stone_wall", blocks_los=True)
@@ -52,4 +87,3 @@ def test_attack_vector_allows_clear_line():
     assert result["ok"] is True
     assert result["can_attack"] is True
     assert result["reason"] == "ok"
-

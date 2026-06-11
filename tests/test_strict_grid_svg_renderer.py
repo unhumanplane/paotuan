@@ -98,6 +98,28 @@ def test_strict_grid_svg_renders_structured_tactical_layers():
     assert any(item.attrib.get("stroke") == "#92400e" and item.attrib.get("stroke-width") == "5" for item in _elements(root, "line"))
 
 
+def test_strict_grid_svg_marks_corpse_entities_as_nonstanding_tokens():
+    render_input = StrictGridRenderInput(
+        map_id="room",
+        title="Room",
+        width=3,
+        height=2,
+        entities=(
+            GridEntityRender(id="dead", name="Dead Guard", x=1, y=0, faction="enemy", life_state="corpse"),
+            GridEntityRender(id="pc", name="Hero", x=0, y=0, faction="ally"),
+        ),
+    )
+
+    svg = render_strict_grid_svg(render_input)
+    root = _root(svg)
+
+    assert "DG=Dead Guard(1,0)[corpse]" in svg
+    corpse_polygons = [item for item in _elements(root, "polygon") if item.attrib.get("stroke") == "#dc2626"]
+    live_tokens = [item for item in _elements(root, "circle") if item.attrib.get("fill") == "#2563eb"]
+    assert corpse_polygons
+    assert live_tokens
+
+
 def test_strict_grid_svg_escapes_text_instead_of_creating_markup():
     render_input = StrictGridRenderInput(
         map_id="escape",

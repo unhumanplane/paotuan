@@ -16,6 +16,7 @@ from ..core.map_core import (
     save_active_strict_grid,
 )
 from ..core.models import GameMode
+from ..spatial.entity_state import ACTIVE_STATE, CORPSE_STATE, entity_life_state
 from ..spatial.engine import SpatialEngine
 from ..spatial.grid import Cell, Entity, GridState, Point
 from ..spatial.map_calculator import MapCalculator
@@ -57,6 +58,20 @@ class PlaceEntityArgs(BaseModel):
     faction: str = Field(default="neutral", description="阵营")
     blocks_move: bool = Field(default=True, description="该实体是否阻挡移动")
     tags: Dict[str, Any] = Field(default_factory=dict, description="额外标签")
+
+
+class UpdateEntityStateArgs(BaseModel):
+    entity_id: str = Field(..., description="战棋地图实体 ID")
+    life_state: str = Field(
+        default=ACTIVE_STATE,
+        description="实体生命/行动状态：active、prone、incapacitated 或 corpse",
+    )
+    status: str = Field(default="", description="可见状态说明，例如：头部中弹阵亡、昏迷倒地、卧倒压制")
+    blocks_move: Optional[bool] = Field(
+        default=None,
+        description="是否继续阻挡移动；corpse 会强制为 false，其余状态未传则保留原值",
+    )
+    tags: Dict[str, Any] = Field(default_factory=dict, description="要合并到实体 tags 的附加状态标签")
 
 
 class SpatialTools:
@@ -182,6 +197,76 @@ class SpatialTools:
             return turn_error
         result = MapCalculator(grid).check_attack_vector(source_id, target_id)
         self._audit("check_attack_vector", {"source_id": source_id, "target_id": target_id}, result)
+        return result
+
+    async def update_entity_state(
+        self,
+        entity_id: str,
+        life_state: str = ACTIVE_STATE,
+        status: str = "",
+        blocks_move: Optional[bool] = None,
+        tags: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """把已裁决的实体状态写回权威 strict grid。"""
+        session, grid = self._load_grid()
+        audit_input = {
+            "entity_id": str(entity_id),
+            "life_state": str(life_state or ""),
+            "status": str(status or ""),
+            "blocks_move": blocks_move,
+            "tags": dict(tags or {}),
+        }
+        entity = grid.entities.get(str(entity_id))
+        if entity is None:
+            result = {"ok": False, "error_code": "entity_not_found", "entity_id": str(entity_id)}
+            self._audit("update_entity_state", audit_input, result)
+            return result
+
+        previous = {
+            "id": entity.id,
+            "name": entity.name,
+            "x": entity.x,
+            "y": entity.y,
+            "move_points": entity.move_points,
+            "attack_range": entity.attack_range,
+            "faction": entity.faction,
+            "blocks_move": entity.blocks_move,
+            "life_state": getattr(entity, "life_state", ACTIVE_STATE),
+            "tags": dict(entity.tags or {}),
+        }
+        incoming_tags = dict(tags or {})
+        normalized_state = _normalize_life_state(life_state, status=status, tags=incoming_tags)
+        merged_tags = dict(entity.tags or {})
+        merged_tags.update(incoming_tags)
+        merged_tags["life_state"] = normalized_state
+        if status:
+            merged_tags["status"] = str(status)
+        entity.tags = merged_tags
+        entity.life_state = normalized_state
+        if normalized_state == CORPSE_STATE:
+            entity.blocks_move = False
+        elif blocks_move is not None:
+            entity.blocks_move = bool(blocks_move)
+
+        self._save_grid(session, grid)
+        self.repository.save_session(session)
+        result = {
+            "ok": True,
+            "entity_id": entity.id,
+            "previous": previous,
+            "entity": {
+                "id": entity.id,
+                "name": entity.name,
+                "x": entity.x,
+                "y": entity.y,
+                "faction": entity.faction,
+                "blocks_move": entity.blocks_move,
+                "life_state": entity_life_state(entity),
+                "tags": dict(entity.tags or {}),
+            },
+            "map_id": str((session.battle or {}).get("map_id") or session.maps.get("active_strict_map_id") or ""),
+        }
+        self._audit("update_entity_state", audit_input, result)
         return result
 
     async def get_battle_snapshot(self) -> Dict[str, Any]:
@@ -368,6 +453,7 @@ def _safe_tactical_map_summary(grid: GridState, *, map_id: str, source: str) -> 
             "move_points": entity.move_points,
             "attack_range": entity.attack_range,
             "blocks_move": entity.blocks_move,
+            "life_state": entity_life_state(entity),
         }
         for entity in sorted(grid.entities.values(), key=lambda item: item.id)
     ]
@@ -419,3 +505,11 @@ def _turn_sequence_mode(turn: Dict[str, Any]) -> str:
 
 def _strict_sequence(turn: Dict[str, Any]) -> bool:
     return _turn_sequence_mode(turn) == TURN_SEQUENCE_STRICT
+
+
+def _normalize_life_state(value: Any, *, status: str = "", tags: Dict[str, Any] | None = None) -> str:
+    candidate = str(value or "").strip().lower()
+    if candidate in {"active", "prone", "incapacitated", "corpse"}:
+        return candidate
+    inferred = entity_life_state({"life_state": candidate, "status": status, "tags": dict(tags or {})})
+    return inferred if inferred in {"active", "prone", "incapacitated", "corpse"} else ACTIVE_STATE

@@ -219,9 +219,24 @@ def test_tool_registry_keeps_tactical_tools_when_bound_character_killed_enemy():
 
     assert "resolve_check" in names
     assert "execute_rule" in names
+    assert "update_entity_state" in names
     assert "turn_control" in names
     assert "create_character" not in names
     assert "bind_player_character" not in names
+
+
+def test_tool_registry_exposes_entity_state_tool_for_direct_map_state_update():
+    registry = _registry_with_started_session()
+    _toolset, names, _executor, specs = registry.for_mode(
+        GameMode.TACTICAL,
+        "group",
+        message="标记 npc_b3_1 为尸体并重新渲染地图",
+    )
+
+    assert "get_battle_snapshot" in names
+    assert "update_entity_state" in names
+    assert "render_strict_grid_svg" in names
+    assert any(spec["name"] == "update_entity_state" for spec in specs)
 
 
 def test_tool_registry_post_game_character_profile_requests_keep_binding_tools():
