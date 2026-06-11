@@ -128,9 +128,19 @@ LLM_USAGE_CONTAINER_FIELDS = (
     "token_usage",
     "usage_metadata",
     "response_metadata",
+    "metadata",
+    "extra",
+    "raw",
+    "raw_completion",
+    "raw_message",
+    "_raw_response",
+    "_response",
+    "_raw",
     "llm_output",
     "raw_response",
     "response",
+    "result",
+    "output",
 )
 LLM_USAGE_DETAIL_FIELDS = {
     "prompt_tokens_details": {"cached_tokens": "cached_tokens"},
@@ -205,7 +215,32 @@ def _as_usage_mapping(value: Any) -> Mapping[str, Any] | None:
                 mapping[field] = getattr(value, field)
         except Exception:
             continue
+    for field in ("__dict__", "model_dump", "dict"):
+        try:
+            if field == "__dict__" and getattr(value, "__dict__", None):
+                for key, item in vars(value).items():
+                    if _usage_key_interesting(str(key)):
+                        mapping[str(key)] = item
+            elif field == "model_dump" and callable(getattr(value, "model_dump", None)):
+                dumped = value.model_dump()
+                if isinstance(dumped, Mapping):
+                    for key, item in dumped.items():
+                        if _usage_key_interesting(str(key)):
+                            mapping[str(key)] = item
+            elif field == "dict" and callable(getattr(value, "dict", None)):
+                dumped = value.dict()
+                if isinstance(dumped, Mapping):
+                    for key, item in dumped.items():
+                        if _usage_key_interesting(str(key)):
+                            mapping[str(key)] = item
+        except Exception:
+            continue
     return mapping or None
+
+
+def _usage_key_interesting(key: str) -> bool:
+    lowered = str(key or "").lower()
+    return any(token in lowered for token in ("usage", "token", "cache", "metadata", "raw", "response", "finish", "model"))
 
 
 def _usage_number(value: Any) -> int | float | None:

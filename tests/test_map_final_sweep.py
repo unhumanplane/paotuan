@@ -376,7 +376,7 @@ def test_heartbeat_silences_consecutive_non_player_fallback_notices():
     ) is True
 
 
-def test_heartbeat_advances_non_player_turn_without_waiting_for_deadline(tmp_path):
+def test_heartbeat_marks_non_player_turn_for_adjudication_without_auto_advance(tmp_path):
     repo = JsonGameRepository(tmp_path / "data")
     session = GameSession.new("group")
     session.mode = GameMode.TACTICAL
@@ -407,10 +407,12 @@ def test_heartbeat_advances_non_player_turn_without_waiting_for_deadline(tmp_pat
     result = asyncio.run(plugin._heartbeat_check_session("group"))
 
     saved = repo.load_session("group")
-    assert result["advanced"] is True
-    assert result["notice"] == ""
-    assert saved.battle["turn"]["current_entity_id"] == "npc_b3_2"
-    assert saved.battle["turn"]["actions_this_round"]["npc_b3_1"]["source"] == "auto"
+    assert result["advanced"] is False
+    assert result["needs_adjudication"] is True
+    assert "待裁决" in result["notice"]
+    assert saved.battle["turn"]["current_entity_id"] == "npc_b3_1"
+    assert saved.battle["turn"]["actions_this_round"] == {}
+    assert saved.battle["turn"]["_needs_dm_adjudication"]["current_entity_id"] == "npc_b3_1"
 
 
 def test_action_pacing_accepts_legacy_json_string_state():

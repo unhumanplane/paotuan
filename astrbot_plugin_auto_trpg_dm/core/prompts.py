@@ -11,7 +11,16 @@ from .map_tool_routing import (
     looks_strict_grid_map_request,
     looks_visual_map_request,
 )
-from .models import CycleState, GameMode, GameSession, infer_tag_layer, project_public_relation_state
+from .models import (
+    CycleState,
+    GameMode,
+    GameSession,
+    _infer_access_state_anchor,
+    _infer_current_location_anchor,
+    _infer_vehicle_status_anchor,
+    infer_tag_layer,
+    project_public_relation_state,
+)
 from .prompt_projection import project_ra_summary_for_dm_prompt
 from .scene_hooks import project_visible_scene_value
 from .timeline import active_player_ids, timeline_advance_requires_sync
@@ -343,7 +352,13 @@ def _project_scene(
         return {}
     projected: dict[str, Any] = {}
     recent_events = _project_recent_events(scene.get("_recent_narrative_events"), recent_limit)
-    continuity_anchor = _project_continuity_anchor(scene, recent_events, profile)
+    continuity_anchor = _project_continuity_anchor(
+        scene,
+        recent_events,
+        profile,
+        demote_legacy_anchor=demote_legacy_anchor,
+    )
+    current_anchor_values = _current_scene_anchor_values(continuity_anchor)
     if continuity_anchor:
         projected["continuity_anchor"] = continuity_anchor
     if recent_events:
@@ -358,12 +373,25 @@ def _project_scene(
             continue
         if demote_legacy_anchor and key in SCENE_LEGACY_ANCHOR_FIELDS:
             continue
+        if (
+            key == "summary"
+            and current_anchor_values
+            and (live_started or demote_legacy_anchor)
+            and _summary_conflicts_with_current_anchors(scene, str(value), current_anchor_values)
+        ):
+            continue
         if key == "last_resolution" and _is_fact_check_resolution(value):
             continue
         projected_value = _project_scene_value(key, value, profile, message=message)
         if projected_value not in ({}, [], "", None):
             projected[key] = projected_value
-    threads = _project_scene_threads(raw_threads, active_thread_id, profile, actor_character_id=actor_character_id)
+    threads = _project_scene_threads(
+        raw_threads,
+        active_thread_id,
+        profile,
+        actor_character_id=actor_character_id,
+        current_anchor_values=current_anchor_values,
+    )
     if threads:
         projected["scene_threads"] = threads
         if active_thread_id:
@@ -441,7 +469,17 @@ def _should_demote_legacy_scene_anchor(
     for thread in raw_threads.values():
         if not isinstance(thread, dict) or _scene_thread_is_closed(thread):
             continue
-        if any(thread.get(key) not in (None, "", [], {}) for key in ("location", "summary", "current_conflict", "current_objective")):
+        if any(
+            thread.get(key) not in (None, "", [], {})
+            for key in (
+                "location",
+                "summary",
+                "current_conflict",
+                "current_objective",
+                "current_vehicle_status",
+                "current_access_state",
+            )
+        ):
             return True
     return False
 
@@ -564,13 +602,25 @@ def _entity_fact_relevance_score(entity_id: str, fact: dict[str, Any], query_tex
     return 0
 
 
-def _project_scene_threads(value: Any, active_thread_id: str, profile: str, *, actor_character_id: str = "") -> Any:
+def _project_scene_threads(
+    value: Any,
+    active_thread_id: str,
+    profile: str,
+    *,
+    actor_character_id: str = "",
+    current_anchor_values: dict[str, Any] | None = None,
+) -> Any:
     if not isinstance(value, dict) or not value:
         return {}
     projected: dict[str, Any] = {}
     active = value.get(active_thread_id) if active_thread_id else None
     if isinstance(active, dict) and not _scene_thread_is_closed(active):
-        projected["active"] = _project_scene_thread(active, profile, active=True)
+        projected["active"] = _project_scene_thread(
+            active,
+            profile,
+            active=True,
+            current_anchor_values=current_anchor_values or {},
+        )
     actor_thread = _project_actor_scene_thread(value, active_thread_id, profile, actor_character_id=actor_character_id)
     if actor_thread:
         projected["actor_current"] = actor_thread
@@ -663,10 +713,19 @@ def _scene_thread_is_older_conflicting_related(thread: dict[str, Any], newer: di
     return False
 
 
-def _project_scene_thread(thread: dict[str, Any], profile: str, *, active: bool) -> dict[str, Any]:
+def _project_scene_thread(
+    thread: dict[str, Any],
+    profile: str,
+    *,
+    active: bool,
+    current_anchor_values: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     keys = (
         "summary",
         "location",
+        "current_location",
+        "current_vehicle_status",
+        "current_access_state",
         "current_conflict",
         "current_objective",
         "stakes",
@@ -683,9 +742,16 @@ def _project_scene_thread(thread: dict[str, Any], profile: str, *, active: bool)
         "updated_at",
     )
     projected: dict[str, Any] = {}
+    current_anchor_values = current_anchor_values or {}
     for key in keys:
         value = thread.get(key)
         if value in (None, "", [], {}):
+            continue
+        if active and key == "summary" and _summary_conflicts_with_current_anchors(
+            thread,
+            str(value),
+            current_anchor_values,
+        ):
             continue
         projected_value = _project_scene_value(key, value, profile)
         if projected_value not in ({}, [], "", None):
@@ -696,6 +762,9 @@ def _project_scene_thread(thread: dict[str, Any], profile: str, *, active: bool)
             for key in (
                 "summary",
                 "location",
+                "current_location",
+                "current_vehicle_status",
+                "current_access_state",
                 "current_objective",
                 "scene_time_label",
                 "scene_time_of_day",
@@ -734,6 +803,8 @@ def _project_continuity_anchor(
     scene: dict[str, Any],
     recent_events: list[dict[str, Any]],
     profile: str,
+    *,
+    demote_legacy_anchor: bool = False,
 ) -> dict[str, Any]:
     anchor: dict[str, Any] = {}
     if recent_events:
@@ -748,6 +819,75 @@ def _project_continuity_anchor(
     threads = scene.get("scene_threads")
     active_thread_id = _effective_active_scene_thread_id(threads, str(scene.get("active_scene_thread_id") or "").strip())
     active_thread = threads.get(active_thread_id) if isinstance(threads, dict) and active_thread_id else None
+    current_location = ""
+    current_vehicle_status = ""
+    current_access_state = ""
+    active_thread_current_vehicle_status = ""
+    active_thread_current_access_state = ""
+    if isinstance(active_thread, dict) and not _scene_thread_is_closed(active_thread):
+        current_location = _project_scene_value("location", active_thread.get("current_location"), profile)
+        if not current_location:
+            current_location = _project_scene_value("location", active_thread.get("location"), profile)
+        active_thread_current_vehicle_status = _project_scene_value(
+            "current_vehicle_status",
+            active_thread.get("current_vehicle_status") or active_thread.get("vehicle_status"),
+            profile,
+        )
+        if active_thread_current_vehicle_status:
+            current_vehicle_status = active_thread_current_vehicle_status
+        active_thread_current_access_state = _project_scene_value(
+            "current_access_state",
+            active_thread.get("current_access_state") or active_thread.get("access_state"),
+            profile,
+        )
+        if active_thread_current_access_state:
+            current_access_state = active_thread_current_access_state
+    if not current_location and recent_events:
+        for candidate in reversed(recent_events):
+            for text_key in ("outcome", "message"):
+                candidate_text = str(candidate.get(text_key) or "").strip()
+                if not candidate_text:
+                    continue
+                inferred = _infer_current_location_anchor(scene, candidate_text)
+                if inferred:
+                    current_location = _short_text(inferred, 220)
+                    break
+            if current_location:
+                break
+    if not current_location and not demote_legacy_anchor:
+        for key in ("current_location", "location"):
+            value = scene.get(key)
+            if value in (None, "", [], {}):
+                continue
+            projected_value = _project_scene_value("location", value, profile)
+            if projected_value not in ({}, [], "", None):
+                current_location = projected_value
+                break
+    if not current_vehicle_status and not demote_legacy_anchor:
+        for key in ("current_vehicle_status", "vehicle_status"):
+            value = scene.get(key)
+            if value in (None, "", [], {}):
+                continue
+            projected_value = _project_scene_value("current_vehicle_status", value, profile)
+            if projected_value not in ({}, [], "", None):
+                current_vehicle_status = projected_value
+                break
+    if not current_access_state and not demote_legacy_anchor:
+        for key in ("current_access_state", "access_state"):
+            value = scene.get(key)
+            if value in (None, "", [], {}):
+                continue
+            projected_value = _project_scene_value("current_access_state", value, profile)
+            if projected_value not in ({}, [], "", None):
+                current_access_state = projected_value
+                break
+    current_anchor_values: dict[str, Any] = {}
+    if current_location:
+        current_anchor_values["current_location"] = current_location
+    if current_vehicle_status:
+        current_anchor_values["current_vehicle_status"] = current_vehicle_status
+    if current_access_state:
+        current_anchor_values["current_access_state"] = current_access_state
     if isinstance(active_thread, dict) and not _scene_thread_is_closed(active_thread):
         for key in (
             "location",
@@ -763,10 +903,130 @@ def _project_continuity_anchor(
             value = active_thread.get(key)
             if value in (None, "", [], {}):
                 continue
+            if (
+                key == "summary"
+                and current_anchor_values
+                and _summary_conflicts_with_current_anchors(active_thread, str(value), current_anchor_values)
+            ):
+                continue
             projected_value = _project_scene_value(key, value, profile)
             if projected_value not in ({}, [], "", None):
                 anchor[f"active_thread_{key}"] = projected_value
+    if current_location:
+        anchor["current_location"] = current_location
+    if current_vehicle_status:
+        anchor["current_vehicle_status"] = current_vehicle_status
+    if current_access_state:
+        anchor["current_access_state"] = current_access_state
+    if active_thread_current_vehicle_status:
+        anchor["active_thread_current_vehicle_status"] = active_thread_current_vehicle_status
+    if active_thread_current_access_state:
+        anchor["active_thread_current_access_state"] = active_thread_current_access_state
     return {key: value for key, value in anchor.items() if value not in ({}, [], "", None)}
+
+
+def _current_scene_anchor_values(continuity_anchor: dict[str, Any]) -> dict[str, Any]:
+    return {
+        key: continuity_anchor.get(key)
+        for key in (
+            "current_location",
+            "current_vehicle_status",
+            "current_access_state",
+        )
+        if continuity_anchor.get(key) not in (None, "", [], {})
+    }
+
+
+def _summary_conflicts_with_current_anchors(
+    scene: dict[str, Any],
+    summary: str,
+    current_anchor_values: dict[str, Any],
+) -> bool:
+    summary = str(summary or "").strip()
+    if not summary or not current_anchor_values:
+        return False
+    anchor_specs = (
+        ("current_location", lambda text: _infer_current_location_anchor(scene, text)),
+        ("current_vehicle_status", _infer_vehicle_status_anchor),
+        ("current_access_state", _infer_access_state_anchor),
+    )
+    for anchor_key, infer_anchor in anchor_specs:
+        current_value = current_anchor_values.get(anchor_key)
+        if current_value in (None, "", [], {}):
+            continue
+        summary_anchor = infer_anchor(summary)
+        if not summary_anchor:
+            continue
+        if anchor_key == "current_location":
+            if not _anchor_text_matches(summary_anchor, current_value):
+                return True
+            continue
+        if not _status_anchor_matches(summary_anchor, current_value):
+            return True
+    return False
+
+
+def _summary_conflicts_with_current_location(scene: dict[str, Any], summary: str, current_location_anchor: str) -> bool:
+    return _summary_conflicts_with_current_anchors(
+        scene,
+        summary,
+        {"current_location": current_location_anchor},
+    )
+
+
+def _location_anchor_matches(left: str, right: str) -> bool:
+    return _anchor_text_matches(left, right)
+
+
+def _location_anchor_fragments(text: str) -> set[str]:
+    return _anchor_text_fragments(text)
+
+
+def _anchor_text_matches(left: str, right: str) -> bool:
+    left_text = _normalized_projection_text(left)
+    right_text = _normalized_projection_text(right)
+    if not left_text or not right_text:
+        return False
+    if left_text == right_text or left_text in right_text or right_text in left_text:
+        return True
+    left_fragments = _anchor_text_fragments(left_text)
+    right_fragments = _anchor_text_fragments(right_text)
+    return bool(left_fragments & right_fragments)
+
+
+def _anchor_text_fragments(text: str) -> set[str]:
+    fragments: set[str] = set()
+    normalized = _normalized_projection_text(text)
+    if not normalized:
+        return fragments
+    fragments.add(normalized)
+    for segment in re.split(r"[\\/|、,，。；;:\s]+", normalized):
+        cleaned = segment.strip()
+        if len(cleaned) >= 3:
+            fragments.add(cleaned)
+            max_size = min(6, len(cleaned))
+            for size in range(3, max_size + 1):
+                for start in range(0, len(cleaned) - size + 1):
+                    fragments.add(cleaned[start : start + size])
+    return {fragment for fragment in fragments if len(fragment) >= 3}
+
+
+def _status_anchor_matches(left: str, right: str) -> bool:
+    left_label = _status_anchor_label(left)
+    right_label = _status_anchor_label(right)
+    if not left_label or not right_label:
+        return False
+    if left_label == right_label or left_label in right_label or right_label in left_label:
+        return True
+    return False
+
+
+def _status_anchor_label(text: str) -> str:
+    normalized = _normalized_projection_text(text)
+    if not normalized:
+        return ""
+    label = re.split(r"[：:\s]+", normalized, maxsplit=1)[0]
+    return label.strip()
 
 
 LIVE_CAMPAIGN_HISTORICAL_WORLD_TAG_KEYS = {

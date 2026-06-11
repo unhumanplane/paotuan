@@ -673,6 +673,113 @@ def test_story_forge_pressure_clock_rejects_hidden_truth_fields():
     assert "hidden_pressure_clock_fields_not_allowed" in result["reason"]
 
 
+def test_story_forge_pressure_clock_dedupes_duplicate_ids_without_regressing_value():
+    session = GameSession.new("group")
+    session.scene[STORY_FORGE_ARCHIVE_KEY] = {
+        "pressure_clocks": [
+            {
+                "clock_id": "clock:alarm",
+                "label": "Alarm",
+                "value": 4,
+                "max": 4,
+                "status": "completed",
+                "visibility": "public",
+                "public_signal": "Alarm reached 4/4.",
+                "stakes": "The party must find a more costly route.",
+                "on_complete": {"failure_forward": "A harder route remains."},
+                "updated_at": "2026-06-11T01:41:04+00:00",
+            },
+            {
+                "clock_id": "clock:alarm",
+                "label": "Alarm",
+                "value": 0,
+                "max": 4,
+                "status": "active",
+                "visibility": "public",
+                "public_signal": "Alarm was 3/4 earlier.",
+                "stakes": "The party must find a more costly route.",
+                "on_complete": {"failure_forward": "A harder route remains."},
+                "updated_at": "2026-06-10T09:19:42+00:00",
+            },
+        ]
+    }
+
+    diagnostics = story_forge_runtime_diagnostics(session)
+    archive = session.scene[STORY_FORGE_ARCHIVE_KEY]
+
+    assert diagnostics["pressure_clock_count"] == 1
+    assert archive["pressure_clocks"][0]["clock_id"] == "clock:alarm"
+    assert archive["pressure_clocks"][0]["value"] == 4
+    assert archive["pressure_clocks"][0]["status"] == "completed"
+
+
+def test_story_forge_player_brief_filters_stale_place_hooks_after_location_shift():
+    repo = _repo("story-forge-stale-hooks")
+    session = GameSession.new("group")
+    session.scene.update(
+        {
+            "location": "地下通道——卷帘门入口，铁轨照明区域",
+            "current_objective": "抢修轨道作业车并带线人撤离。",
+            STORY_FORGE_ARCHIVE_KEY: {
+                "open_threads": [
+                    {"id": "hook_dispatch_door", "text": "调度室半掩铁门，内部有人声", "status": "open"},
+                    {"id": "hook_broken_vehicle", "text": "小型轨道作业车启动电路故障，需要抢修", "status": "open"},
+                ]
+            },
+        }
+    )
+    repo.save_session(session)
+
+    apply_story_forge_turn(
+        repo,
+        "group",
+        player_message="I repair the rail cart.",
+        dm_response="The cart coughs but does not start.",
+    )
+
+    brief = repo.load_session("group").scene[STORY_FORGE_BRIEF_KEY]
+    rendered = json.dumps(brief["open_threads"], ensure_ascii=False)
+    assert "hook_broken_vehicle" in rendered
+    assert "hook_dispatch_door" not in rendered
+
+
+def test_story_forge_encounter_contract_auto_seeds_and_renders_map_when_map_needed():
+    repo = _repo("story-forge-encounter-auto-map")
+    session = GameSession.new("group")
+    session.scene["location"] = "地下通道卷帘门入口"
+    repo.save_session(session)
+
+    result = record_story_forge_encounter_contract(
+        repo,
+        "group",
+        payload={
+            "contract_id": "enc:rail-door",
+            "encounter_decision": "soft_turns",
+            "reason": "Visible enemies and a broken vehicle create a contested space.",
+            "scene_goal": "Cross the rail door area and extract the informant.",
+            "stakes": "Delay lets pursuers close the exit.",
+            "participants": ["pc_kaide", "enemy_b3_2", "informant"],
+            "pressure_vectors": ["time", "space", "danger"],
+            "action_economy": "one_actor_focus",
+            "map_need": "sketch",
+            "turn_order_source": "derived_scene",
+            "recommended_next_tool": "turn_control",
+            "player_visible_brief": "The rail door area is now contested.",
+        },
+    )
+
+    saved = repo.load_session("group")
+    archive = saved.scene[STORY_FORGE_ARCHIVE_KEY]
+    brief = saved.scene[STORY_FORGE_BRIEF_KEY]
+
+    assert result["ok"] is True
+    assert result["auto_map_seeded"] is True
+    assert result["auto_map_rendered"]["file_name"].endswith(".svg")
+    assert archive["convergence_actions"][0]["map_grid_seed"]["map_id"].startswith("sf-enc:rail-door")
+    assert archive["rendered_map_refs"][0]["file_name"].endswith(".svg")
+    assert brief["rendered_maps"][0]["file_name"].endswith(".svg")
+
+
 def test_story_grid_render_envelope_adapts_model_type_fields_without_hidden_entities():
     envelope = build_story_grid_render_envelope(
         {

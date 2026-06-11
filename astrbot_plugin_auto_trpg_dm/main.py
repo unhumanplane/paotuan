@@ -283,6 +283,7 @@ class AutoTrpgDmPlugin(Star):
             archive_enabled=self._config_bool("story_forge_archive_enabled", True),
             map_seed_render_enabled=self._config_bool("story_forge_map_seed_render_enabled", True),
             render_send_to_chat=self._config_bool("story_forge_map_seed_send_to_chat", True),
+            auto_map_seed_from_encounter=self._config_bool("story_forge_auto_map_seed_from_encounter", True),
             max_turns=max(1, self._config_int("story_forge_archive_max_turns", 80)),
             max_turn_text_chars=max(1000, self._config_int("story_forge_turn_text_max_chars", 12000)),
             max_open_threads=max(1, self._config_int("story_forge_max_open_threads", 24)),
@@ -2262,6 +2263,55 @@ class AutoTrpgDmPlugin(Star):
 
         waiting_since = _parse_datetime(turn.get("waiting_since_at")) or deadline
         elapsed = max(0, int((now - waiting_since).total_seconds()))
+        if actor_kind != "player":
+            result = {
+                "ok": False,
+                "needs_adjudication": True,
+                "reason": "non_player_turn_requires_dm_adjudication",
+                "current_entity_id": current_id,
+                "current_label": current_label,
+                "actor_kind": actor_kind or "npc",
+                "elapsed_seconds": elapsed,
+                "message": "非玩家行动者的回合需要由叙事 DM 或裁决 agent 决定；本地心跳只保留待裁决状态，不自动跳过或代行动。",
+            }
+            turn["_needs_dm_adjudication"] = {
+                "current_entity_id": current_id,
+                "current_label": current_label,
+                "actor_kind": actor_kind or "npc",
+                "elapsed_seconds": elapsed,
+                "deadline_at": deadline.isoformat(),
+                "created_at": _utc_now_iso(),
+                "source": "turn_heartbeat",
+            }
+            battle["turn"] = turn
+            session.battle = battle
+            self.repository.save_session(session)
+            self.repository.append_audit(
+                session_id,
+                {
+                    "type": "turn_heartbeat_adjudication_required",
+                    "current_entity_id": current_id,
+                    "current_label": current_label,
+                    "actor_kind": actor_kind or "npc",
+                    "deadline_at": deadline.isoformat(),
+                    "elapsed_seconds": elapsed,
+                    "result": result,
+                },
+            )
+            self.plugin_logger.info(
+                "turn_heartbeat_adjudication_required session=%s current=%s actor_kind=%s elapsed=%s",
+                session_id,
+                current_id,
+                actor_kind or "npc",
+                elapsed,
+            )
+            notice = self._format_heartbeat_adjudication_notice(
+                current_label,
+                elapsed,
+                session,
+                actor_kind=actor_kind or "npc",
+            )
+            return {"active": True, "needs_adjudication": True, "advanced": False, "phase": phase, "notice": notice}
         if actor_kind == "player":
             summary = f"{current_label}超过 120 秒未响应，本地心跳采取保守行动：防御、保持掩体或跟随队伍，不消耗稀缺资源。"
         elif actor_kind == "enemy":
@@ -2568,6 +2618,30 @@ class AutoTrpgDmPlugin(Star):
         else:
             lines.append(self._format_turn_destination(updated_session))
         return "\n".join(line for line in lines if line)
+
+    def _format_heartbeat_adjudication_notice(
+        self,
+        current_label: str,
+        elapsed: int,
+        updated_session,
+        *,
+        actor_kind: str = "npc",
+    ) -> str:
+        if actor_kind == "enemy":
+            first_line = f"轮次待裁决：{current_label}的敌方回合已到，但本地心跳不会替敌方决定战术或自动跳过。"
+        else:
+            first_line = f"轮次待裁决：{current_label}的回合已到，但本地心跳不会替 NPC 决定行动或自动跳过。"
+        if elapsed >= 120:
+            first_line += f" 当前已等待约 {elapsed} 秒。"
+        return "\n".join(
+            line
+            for line in (
+                first_line,
+                "请由叙事 DM/裁决 agent 结算该实体行动；若只是无效行动，可显式调用 turn_control 记录防御、撤退或等待。",
+                self._format_turn_destination(updated_session),
+            )
+            if line
+        )
 
     def _should_send_heartbeat_timeout_notice(
         self,

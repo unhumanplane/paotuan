@@ -7,9 +7,6 @@ import json
 import os
 import re
 import sys
-import time
-import urllib.error
-import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -19,10 +16,14 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-DEFAULT_BASE_URL = "https://api.deepseek.com"
-DEFAULT_MODEL = "deepseek-v4-flash"
+from astrbot_plugin_auto_trpg_dm.core.deepseek_v4_flash import (
+    DEFAULT_DEEPSEEK_API_KEY_ENV as DEFAULT_API_KEY_ENV,
+    DEFAULT_DEEPSEEK_BASE_URL as DEFAULT_BASE_URL,
+    DEFAULT_DEEPSEEK_MODEL as DEFAULT_MODEL,
+    call_chat_completion_or_raise as _deepseek_call_chat_completion,
+)
+
 DEFAULT_OUTPUT_DIR = ".story-forge-runs"
-DEFAULT_API_KEY_ENV = "DEEPSEEK_API_KEY"
 DEFAULT_MAX_TOKENS = 8192
 DEFAULT_JUDGE_MAX_TOKENS = 4096
 REPAIR_POLICY_ALWAYS = "always"
@@ -1262,55 +1263,25 @@ def call_chat_completion(
     json_mode: bool = True,
     thinking: str = "disabled",
 ) -> dict[str, Any]:
-    payload: dict[str, Any] = {
-        "model": model,
-        "messages": messages,
-        "temperature": temperature,
-        "max_tokens": max_tokens,
-    }
-    if thinking != "auto":
-        payload["thinking"] = {"type": thinking}
-    if json_mode:
-        payload["response_format"] = {"type": "json_object"}
-    started = time.monotonic()
-    raw, request_fallbacks = _post_chat_with_fallbacks(
-        _join_url(base_url, "/chat/completions"),
-        payload,
+    result = _deepseek_call_chat_completion(
         api_key=api_key,
+        base_url=base_url,
+        model=model,
+        messages=messages,
+        max_tokens=max_tokens,
+        temperature=temperature,
         timeout=timeout,
+        json_mode=json_mode,
+        thinking=thinking,
     )
-    elapsed_ms = round((time.monotonic() - started) * 1000)
-    text = response_text(raw)
+    text = str(result.get("text") or "")
     parsed_payload, format_error, json_repaired = parse_json_object(text)
     return {
-        "ok": True,
-        "model": raw.get("model") or model,
-        "elapsed_ms": elapsed_ms,
-        "usage": raw.get("usage") or {},
-        "text": text,
+        **result,
         "payload": parsed_payload,
-        "finish_reason": _finish_reason(raw),
         "format_error": format_error,
         "json_repaired": json_repaired,
-        "request_fallbacks": request_fallbacks,
-        "raw_response": raw,
     }
-
-
-def response_text(response: dict[str, Any]) -> str:
-    choices = response.get("choices")
-    if not isinstance(choices, list) or not choices:
-        return ""
-    first = choices[0]
-    if not isinstance(first, dict):
-        return ""
-    message = first.get("message")
-    if isinstance(message, dict):
-        return str(message.get("content") or "")
-    delta = first.get("delta")
-    if isinstance(delta, dict):
-        return str(delta.get("content") or "")
-    return ""
 
 
 def parse_json_object(text: str) -> tuple[dict[str, Any] | None, str, bool]:
@@ -3171,78 +3142,6 @@ def _unique_run_dir(parent: Path, name: str) -> Path:
     raise RuntimeError(f"Could not create unique run directory for {name!r}.")
 
 
-def _post_chat_with_fallbacks(
-    url: str,
-    payload: dict[str, Any],
-    *,
-    api_key: str,
-    timeout: int,
-) -> tuple[dict[str, Any], list[str]]:
-    variants: list[tuple[str, dict[str, Any]]] = [("original", dict(payload))]
-    if "thinking" in payload:
-        without_thinking = dict(payload)
-        without_thinking.pop("thinking", None)
-        variants.append(("without_thinking", without_thinking))
-    if "response_format" in payload:
-        without_json_mode = dict(payload)
-        without_json_mode.pop("response_format", None)
-        variants.append(("without_json_mode", without_json_mode))
-    if "thinking" in payload and "response_format" in payload:
-        minimal = dict(payload)
-        minimal.pop("thinking", None)
-        minimal.pop("response_format", None)
-        variants.append(("without_thinking_or_json_mode", minimal))
-
-    seen: set[str] = set()
-    errors: list[str] = []
-    for label, candidate in variants:
-        signature = json.dumps(candidate, ensure_ascii=False, sort_keys=True)
-        if signature in seen:
-            continue
-        seen.add(signature)
-        try:
-            raw = _post_json(url, candidate, api_key=api_key, timeout=timeout)
-            fallbacks = [] if label == "original" else [label]
-            return raw, fallbacks
-        except urllib.error.HTTPError as exc:
-            body = _safe_error_body(exc)
-            errors.append(f"{label}: HTTP {exc.code} {body[:240]}")
-            if exc.code not in {400, 422}:
-                raise RuntimeError(f"DeepSeek HTTP {exc.code}: {body[:500]}") from exc
-    raise RuntimeError("DeepSeek request failed after fallback attempts: " + " | ".join(errors))
-
-
-def _post_json(url: str, payload: dict[str, Any], *, api_key: str, timeout: int) -> dict[str, Any]:
-    request = urllib.request.Request(
-        url,
-        data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
-        headers={
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json",
-            "Accept": "application/json",
-            "User-Agent": "paotuan-story-forge-compare",
-        },
-        method="POST",
-    )
-    with urllib.request.urlopen(request, timeout=timeout) as response:
-        raw = response.read().decode("utf-8", errors="replace")
-    data = json.loads(raw)
-    if not isinstance(data, dict):
-        raise RuntimeError("DeepSeek response is not a JSON object.")
-    return data
-
-
-def _finish_reason(response: dict[str, Any]) -> str | None:
-    choices = response.get("choices")
-    if not isinstance(choices, list) or not choices:
-        return None
-    first = choices[0]
-    if not isinstance(first, dict):
-        return None
-    value = first.get("finish_reason")
-    return str(value) if value is not None else None
-
-
 def _response_diagnostics(result: dict[str, Any] | None) -> dict[str, Any]:
     if not isinstance(result, dict):
         return {}
@@ -3256,17 +3155,6 @@ def _response_diagnostics(result: dict[str, Any] | None) -> dict[str, Any]:
         "json_repaired": bool(result.get("json_repaired")),
         "request_fallbacks": result.get("request_fallbacks") or [],
     }
-
-
-def _join_url(base_url: str, path: str) -> str:
-    return str(base_url or DEFAULT_BASE_URL).rstrip("/") + "/" + path.lstrip("/")
-
-
-def _safe_error_body(exc: urllib.error.HTTPError) -> str:
-    try:
-        return exc.read().decode("utf-8", errors="replace")
-    except Exception:
-        return ""
 
 
 def _read_seed(args: argparse.Namespace) -> str:

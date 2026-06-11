@@ -416,6 +416,32 @@ def test_update_scene_terminal_wording_does_not_close_thread_without_explicit_st
     assert saved.scene["location"] == "酒馆"
 
 
+def test_update_scene_syncs_current_location_into_scene_thread(tmp_path):
+    repository = JsonGameRepository(tmp_path / "data")
+    session = GameSession.new("group")
+    session.world_tags["_background_ready"] = True
+    session.characters["pc_gali"] = Character(id="pc_gali", name="Gali", player_id="p1")
+    session.player_character_map["p1"] = "pc_gali"
+    repository.save_session(session)
+
+    tools = MemoryTools(repository, "group", actor={"player_id": "p1"}, message="撤离到仓库")
+    result = asyncio.run(
+        tools.update_scene(
+            {
+                "scene_thread_id": "character:pc_gali",
+                "location": "北区旧仓库B区三号门内侧/装卸区入口",
+                "summary": "队伍转入北区旧仓库B区三号门内侧，开始重整。",
+            }
+        )
+    )
+
+    assert result["ok"] is True
+    saved = repository.load_session("group")
+    thread = saved.scene["scene_threads"]["character:pc_gali"]
+    assert thread["location"] == "北区旧仓库B区三号门内侧/装卸区入口"
+    assert thread["current_location"] == "北区旧仓库B区三号门内侧/装卸区入口"
+
+
 def test_update_scene_explicit_closed_status_closes_thread_without_mirroring(tmp_path):
     repository = JsonGameRepository(tmp_path / "data")
     session = GameSession.new("group")
@@ -712,7 +738,21 @@ def test_scene_tracking_status_projection_hides_dm_only_records():
     assert "镜中实体" not in status
 
 
+def test_scene_tracking_status_projection_includes_vehicle_and_access_states():
+    scene = {
+        "current_vehicle_status": "已停稳：装甲车靠边停在装卸区外侧",
+        "current_access_state": "门已锁/不可通行：三号门已被封条锁死",
+    }
+
+    status = format_scene_tracking_status(scene)
+
+    assert "装甲车靠边停在装卸区外侧" in status
+    assert "三号门已被封条锁死" in status
+    assert "当前还没有" not in status
+
+
 def test_preview_latest_backup_returns_story_summary_without_restoring(tmp_path):
+
     repository = JsonGameRepository(tmp_path / "data")
     backup_session = GameSession.new("group")
     backup_session.title = "旧剧院失踪案"

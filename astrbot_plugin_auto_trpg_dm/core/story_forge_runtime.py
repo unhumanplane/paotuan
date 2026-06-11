@@ -55,6 +55,7 @@ class StoryForgeRuntimeConfig:
     archive_enabled: bool = True
     map_seed_render_enabled: bool = True
     render_send_to_chat: bool = True
+    auto_map_seed_from_encounter: bool = True
     max_turns: int = 80
     max_turn_text_chars: int = 12000
     max_open_threads: int = 24
@@ -109,6 +110,7 @@ def story_forge_runtime_diagnostics(session: GameSession | dict[str, Any]) -> di
     archive = normalize_story_forge_archive(scene.get(STORY_FORGE_ARCHIVE_KEY) if isinstance(scene, dict) else {})
     if isinstance(scene, dict):
         _bootstrap_scene_pressure_clock(scene, archive, now=_safe_text(archive.get("updated_at"), 80) or utc_now_iso())
+        scene[STORY_FORGE_ARCHIVE_KEY] = archive
     actions = _list_of_dicts(archive.get("convergence_actions"))
     action_with_map_seed = [action for action in actions if isinstance(action.get("map_grid_seed"), dict)]
     action_with_render = [action for action in actions if isinstance(action.get("rendered_map_ref"), dict)]
@@ -205,7 +207,7 @@ def normalize_story_forge_archive(value: Any) -> dict[str, Any]:
         "clue_ledger": _list_of_dicts(archive.get("clue_ledger"))[-300:],
         "convergence_actions": _list_of_dicts(archive.get("convergence_actions"))[-120:],
         "encounter_contracts": _normalize_encounter_contracts(archive.get("encounter_contracts")),
-        "pressure_clocks": _normalize_pressure_clocks(archive.get("pressure_clocks")),
+        "pressure_clocks": _dedupe_pressure_clocks(archive.get("pressure_clocks")),
         "clock_events": _normalize_clock_events(archive.get("clock_events")),
         "rendered_map_refs": _list_of_dicts(archive.get("rendered_map_refs"))[-120:],
         "updated_at": _safe_text(archive.get("updated_at"), 80),
@@ -506,6 +508,26 @@ def record_story_forge_encounter_contract(
     if not replaced:
         merged.append(contract)
     archive["encounter_contracts"] = merged[-max(1, runtime_config.max_encounter_contracts) :]
+    auto_map_action: dict[str, Any] | None = None
+    auto_map_render: dict[str, Any] = {}
+    if runtime_config.auto_map_seed_from_encounter and runtime_config.map_seed_render_enabled:
+        auto_map_action = _maybe_create_runtime_map_seed_for_encounter(
+            archive,
+            contract,
+            scene,
+            action_limit=runtime_config.max_convergence_actions,
+        )
+        if auto_map_action is not None:
+            auto_map_render = render_story_forge_map_seed(
+                session,
+                repository,
+                session_id,
+                auto_map_action,
+                send_to_chat=runtime_config.render_send_to_chat,
+            )
+            if auto_map_render.get("ok"):
+                _attach_render_ref_to_action(auto_map_action, auto_map_render)
+                _upsert_render_ref(archive, auto_map_render)
     archive["updated_at"] = utc_now_iso()
     scene[STORY_FORGE_ARCHIVE_KEY] = archive
     _write_story_forge_player_brief(scene, archive, config=runtime_config)
@@ -518,6 +540,8 @@ def record_story_forge_encounter_contract(
         "map_need": contract.get("map_need", ""),
         "recommended_next_tool": contract.get("recommended_next_tool", ""),
         "replaced": replaced,
+        "auto_map_seeded": bool(auto_map_action),
+        "auto_map_rendered": _public_render_result(auto_map_render),
         "message": "Story Forge encounter contract recorded.",
     }
     _append_story_forge_audit(repository, session_id, "record_story_forge_encounter_contract", result)
@@ -563,7 +587,7 @@ def record_story_forge_pressure_clock(
             merged.append(existing)
     if not replaced:
         merged.append(normalized)
-    archive["pressure_clocks"] = merged[-60:]
+    archive["pressure_clocks"] = _dedupe_pressure_clocks(merged)[-60:]
     archive["updated_at"] = utc_now_iso()
     scene[STORY_FORGE_ARCHIVE_KEY] = archive
     _write_story_forge_player_brief(scene, archive, config=runtime_config)
@@ -666,7 +690,7 @@ def advance_story_forge_pressure_clock(
     clocks[clock_index] = clock
     events = _list_of_dicts(archive.get("clock_events"))
     events.append(event)
-    archive["pressure_clocks"] = clocks[-60:]
+    archive["pressure_clocks"] = _dedupe_pressure_clocks(clocks)[-60:]
     archive["clock_events"] = events[-200:]
     archive["updated_at"] = clock["updated_at"]
     scene[STORY_FORGE_ARCHIVE_KEY] = archive
@@ -1003,6 +1027,133 @@ def _merge_convergence_action(
     return selected, replaced
 
 
+def _maybe_create_runtime_map_seed_for_encounter(
+    archive: dict[str, Any],
+    contract: dict[str, Any],
+    scene: dict[str, Any],
+    *,
+    action_limit: int,
+) -> dict[str, Any] | None:
+    map_need = str(contract.get("map_need") or "").strip().lower()
+    if map_need not in {"sketch", "strict_grid"}:
+        return None
+    if _archive_has_active_map_seed(archive):
+        return None
+    seed = _default_map_grid_seed_for_encounter(contract, scene, strict=map_need == "strict_grid")
+    if not seed:
+        return None
+    payload = {
+        "action_id": "mapseed:" + str(contract.get("contract_id") or _stable_hash(contract))[:80],
+        "thread_id": str(contract.get("contract_id") or ""),
+        "action_type": "map_seed",
+        "available_action": _safe_text(contract.get("player_visible_brief") or contract.get("scene_goal"), 360),
+        "scene_goal": contract.get("scene_goal") or "Clarify the contested area.",
+        "entry_cost": contract.get("stakes") or "Entering the area commits the party to a positional risk.",
+        "success_signal": "The party can reference visible positions, exits, hazards, and participants on a shared grid.",
+        "failure_forward": contract.get("stakes") or "If positioning goes poorly, pressure increases but play continues.",
+        "evidence": _safe_text_list(contract.get("evidence"), limit=8, item_limit=240),
+        "map_grid_seed": seed,
+        "created_at": utc_now_iso(),
+    }
+    try:
+        action = normalize_convergence_action(payload, actor={"player_id": "__runtime__", "display_name": "Story Forge Runtime"}, now=utc_now_iso())
+    except ValueError:
+        return None
+    selected, _replaced = _merge_convergence_action(archive, action, limit=action_limit)
+    return selected
+
+
+def _archive_has_active_map_seed(archive: dict[str, Any]) -> bool:
+    for action in archive.get("convergence_actions") or []:
+        if isinstance(action, dict) and isinstance(action.get("map_grid_seed"), dict) and action.get("map_grid_seed"):
+            return True
+    return False
+
+
+def _default_map_grid_seed_for_encounter(contract: dict[str, Any], scene: dict[str, Any], *, strict: bool) -> dict[str, Any]:
+    width = 7 if strict else 5
+    height = 5 if strict else 4
+    map_id = "sf-" + _safe_id(contract.get("contract_id") or _stable_hash(contract))[:40]
+    title = _safe_text(
+        scene.get("location")
+        or scene.get("current_location")
+        or contract.get("player_visible_brief")
+        or contract.get("scene_goal")
+        or "Contested area",
+        80,
+    )
+    participants = _safe_text_list(contract.get("participants"), limit=8, item_limit=80)
+    cells = _default_map_cells(width, height)
+    labels = [
+        {"id": "label-entry", "x": 0, "y": max(0, height - 1), "text": "entry", "visibility": "player"},
+        {"id": "label-focus", "x": width // 2, "y": height // 2, "text": "focus", "visibility": "player"},
+        {"id": "label-exit", "x": width - 1, "y": 0, "text": "exit", "visibility": "player"},
+    ]
+    entities = _default_map_entities(participants, width=width, height=height)
+    return {
+        "map_id": map_id,
+        "title": title,
+        "width": width,
+        "height": height,
+        "grid": {
+            "width": width,
+            "height": height,
+            "cells": cells,
+            "entities": entities,
+            "rule_scale": {"distance_per_cell": 5, "unit": "ft"},
+        },
+        "labels": labels,
+        "visibility": "player",
+    }
+
+
+def _default_map_cells(width: int, height: int) -> list[dict[str, Any]]:
+    cells: list[dict[str, Any]] = []
+    for y in range(height):
+        for x in range(width):
+            edge = x in {0, width - 1} or y in {0, height - 1}
+            cells.append(
+                {
+                    "x": x,
+                    "y": y,
+                    "terrain": "stone" if edge else "floor",
+                    "visibility": "player",
+                }
+            )
+    return cells
+
+
+def _default_map_entities(participants: list[str], *, width: int, height: int) -> list[dict[str, Any]]:
+    entities: list[dict[str, Any]] = []
+    if not participants:
+        return entities
+    slots = [
+        (1, max(1, height - 2), "ally"),
+        (max(1, width - 2), 1, "enemy"),
+        (1, 1, "neutral"),
+        (max(1, width - 2), max(1, height - 2), "neutral"),
+        (width // 2, height // 2, "npc"),
+    ]
+    for index, name in enumerate(participants[: len(slots)]):
+        x, y, faction = slots[index]
+        lower = name.lower()
+        if lower.startswith(("pc_", "pc-", "player", "ally")):
+            faction = "ally"
+        elif lower.startswith(("enemy", "npc_b", "hostile", "foe")):
+            faction = "enemy"
+        entities.append(
+            {
+                "id": _safe_id(name) or f"participant-{index + 1}",
+                "name": _safe_text(name, 40),
+                "x": min(max(0, x), width - 1),
+                "y": min(max(0, y), height - 1),
+                "faction": faction,
+                "visibility": "player",
+            }
+        )
+    return entities
+
+
 def _bootstrap_scene_pressure_clock(
     scene: dict[str, Any],
     archive: dict[str, Any],
@@ -1025,7 +1176,7 @@ def _bootstrap_scene_pressure_clock(
         clock = normalize_pressure_clock(payload, actor=actor or {}, now=now or utc_now_iso())
     except ValueError:
         return False
-    archive["pressure_clocks"] = (existing + [clock])[-60:]
+    archive["pressure_clocks"] = _dedupe_pressure_clocks(existing + [clock])[-60:]
     archive["updated_at"] = _safe_text(now or utc_now_iso(), 80)
     return True
 
@@ -1092,16 +1243,72 @@ def _active_pressure_clocks(clocks: list[dict[str, Any]]) -> list[dict[str, Any]
     return [clock for clock in clocks if str(clock.get("status") or "active").lower() == "active"]
 
 
+def _dedupe_pressure_clocks(value: Any) -> list[dict[str, Any]]:
+    clocks = _normalize_pressure_clocks(value)
+    by_id: dict[str, dict[str, Any]] = {}
+    order: list[str] = []
+    for clock in clocks:
+        clock_id = str(clock.get("clock_id") or "")
+        if not clock_id:
+            continue
+        if clock_id not in by_id:
+            by_id[clock_id] = clock
+            order.append(clock_id)
+            continue
+        by_id[clock_id] = _merge_pressure_clock_records(by_id[clock_id], clock)
+    return [by_id[clock_id] for clock_id in order if clock_id in by_id]
+
+
+def _merge_pressure_clock_records(left: dict[str, Any], right: dict[str, Any]) -> dict[str, Any]:
+    winner, older = _select_newer_pressure_clock(left, right)
+    merged = {**older, **winner}
+    left_value = _safe_int(left.get("value"), 0)
+    right_value = _safe_int(right.get("value"), 0)
+    merged["value"] = max(left_value, right_value)
+    merged["max"] = max(1, max(_safe_int(left.get("max"), 4), _safe_int(right.get("max"), 4)))
+    if _clock_status_rank(left.get("status")) > _clock_status_rank(right.get("status")):
+        merged["status"] = str(left.get("status") or "active")
+    elif _clock_status_rank(right.get("status")) > _clock_status_rank(left.get("status")):
+        merged["status"] = str(right.get("status") or "active")
+    if not str(merged.get("public_signal") or "").strip():
+        merged["public_signal"] = str(left.get("public_signal") or right.get("public_signal") or "")
+    return normalize_pressure_clock(merged, now=_safe_text(merged.get("updated_at"), 80))
+
+
+def _select_newer_pressure_clock(left: dict[str, Any], right: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+    left_time = str(left.get("updated_at") or left.get("created_at") or "")
+    right_time = str(right.get("updated_at") or right.get("created_at") or "")
+    if right_time >= left_time:
+        return right, left
+    return left, right
+
+
+def _clock_status_rank(value: Any) -> int:
+    text = str(value or "active").strip().lower()
+    if text in {"completed", "complete", "resolved"}:
+        return 3
+    if text in {"active", "open"}:
+        return 2
+    if text in {"paused", "partial"}:
+        return 1
+    return 0
+
+
 def _write_story_forge_player_brief(
     scene: dict[str, Any],
     archive: dict[str, Any],
     *,
     config: StoryForgeRuntimeConfig,
 ) -> None:
+    open_threads = _filter_open_threads_for_current_scene(
+        archive.get("open_threads"),
+        scene,
+        limit=config.max_open_threads,
+    )
     scene[STORY_FORGE_BRIEF_KEY] = {
         "schema_version": STORY_FORGE_SCHEMA_VERSION,
         "updated_at": _safe_text(archive.get("updated_at"), 80),
-        "open_threads": _project_records_for_brief(archive.get("open_threads"), limit=config.max_open_threads),
+        "open_threads": _project_records_for_brief(open_threads, limit=config.max_open_threads),
         "clue_ledger": _project_records_for_brief(archive.get("clue_ledger"), limit=config.max_clue_ledger),
         "convergence_actions": [
             _project_action_for_brief(action)
@@ -1124,7 +1331,7 @@ def _write_story_forge_player_brief(
             if isinstance(event, dict) and event.get("player_visible", True)
         ],
         "rendered_maps": [
-            _safe_render_ref(ref)
+            _safe_render_ref({"ok": True, **ref})
             for ref in (archive.get("rendered_map_refs") or [])[-max(1, config.max_convergence_actions) :]
             if isinstance(ref, dict)
         ],
@@ -1163,6 +1370,110 @@ def _merge_open_threads(value: Any, visible_tracking: dict[str, Any], *, limit: 
                 "updated_at": utc_now_iso(),
             }
     return [item for item in by_id.values() if item.get("text")][-max(1, limit) :]
+
+
+def _filter_open_threads_for_current_scene(value: Any, scene: dict[str, Any], *, limit: int) -> list[dict[str, Any]]:
+    records = _list_of_dicts(value)
+    if not records:
+        return []
+    current_text = _current_scene_anchor_text(scene)
+    active_ids = _active_thread_ids(scene)
+    scored: list[tuple[int, int, dict[str, Any]]] = []
+    for index, record in enumerate(records):
+        status = str(record.get("status") or "open").strip().lower()
+        if status in {"resolved", "closed", "archived", "retired", "inactive", "completed", "complete", "done", "cancelled", "canceled"}:
+            continue
+        thread_id = str(record.get("id") or record.get("thread_id") or "")
+        text = _safe_text(record.get("text") or record.get("summary"), 500)
+        if not text:
+            continue
+        score = _thread_scene_relevance_score(record, current_text, active_ids)
+        if score < 0:
+            continue
+        scored.append((score, index, record))
+    scored.sort(key=lambda item: (item[0], item[1]))
+    return [record for _score, _index, record in scored[-max(1, limit) :]]
+
+
+def _current_scene_anchor_text(scene: dict[str, Any]) -> str:
+    parts: list[str] = []
+    for key in (
+        "location",
+        "current_location",
+        "current_objective",
+        "current_conflict",
+        "summary",
+        "stakes",
+    ):
+        value = scene.get(key)
+        if isinstance(value, str) and value.strip():
+            parts.append(value.strip())
+    active_id = str(scene.get("active_scene_thread_id") or "")
+    threads = scene.get("scene_threads") if isinstance(scene.get("scene_threads"), dict) else {}
+    active_thread = threads.get(active_id) if isinstance(threads, dict) else None
+    if isinstance(active_thread, dict):
+        for key in ("location", "current_objective", "current_conflict", "summary", "stakes"):
+            value = active_thread.get(key)
+            if isinstance(value, str) and value.strip():
+                parts.append(value.strip())
+    return " ".join(parts).lower()
+
+
+def _active_thread_ids(scene: dict[str, Any]) -> set[str]:
+    ids = {str(scene.get("active_scene_thread_id") or "").strip()}
+    threads = scene.get("scene_threads") if isinstance(scene.get("scene_threads"), dict) else {}
+    if isinstance(threads, dict):
+        for thread_id, thread in threads.items():
+            if not isinstance(thread, dict):
+                continue
+            status = str(thread.get("status") or "active").strip().lower()
+            if status not in {"resolved", "closed", "archived", "retired", "inactive", "completed", "complete", "done"}:
+                ids.add(str(thread_id))
+    return {item for item in ids if item}
+
+
+def _thread_scene_relevance_score(record: dict[str, Any], current_text: str, active_ids: set[str]) -> int:
+    thread_id = str(record.get("id") or record.get("thread_id") or "")
+    text = _safe_text(record.get("text") or record.get("summary"), 500).lower()
+    if thread_id and thread_id in active_ids:
+        return 100
+    tokens = _salient_scene_tokens(text)
+    if not tokens:
+        return 15
+    hits = sum(1 for token in tokens if token in current_text)
+    if hits:
+        return 30 + hits
+    if _looks_like_stale_place_thread(text, current_text):
+        return -1
+    return 8
+
+
+def _salient_scene_tokens(text: str) -> list[str]:
+    raw = re.split(r"[^0-9A-Za-z_\u4e00-\u9fff]+", str(text or "").lower())
+    blocked = {
+        "open",
+        "hook",
+        "thread",
+        "status",
+        "player",
+        "visibility",
+        "是否",
+        "可以",
+        "已经",
+        "正在",
+        "可能",
+        "当前",
+        "线索",
+    }
+    return [item for item in raw if len(item) >= 2 and item not in blocked][:12]
+
+
+def _looks_like_stale_place_thread(text: str, current_text: str) -> bool:
+    place_markers = ("调度室", "控制室", "值班室", "仓库", "过道", "通道", "卷帘门", "作业车", "铁轨", "地下", "站台", "冷藏库")
+    mentioned = [marker for marker in place_markers if marker in text]
+    if not mentioned:
+        return False
+    return not any(marker in current_text for marker in mentioned)
 
 
 def _merge_clue_ledger(value: Any, visible_tracking: dict[str, Any], *, limit: int) -> list[dict[str, Any]]:

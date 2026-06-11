@@ -45,6 +45,7 @@ def test_system_prompt_includes_shared_cycle_contract():
     assert "不能为了圆场临时新增未记录的设备能力" in prompt
     assert "场景定位锚点" in prompt
     assert "location/current_location/current_vehicle_status" in prompt
+    assert "current_access_state" in prompt
     assert "停稳、即将启动、正在行驶、已驶离" in prompt
     assert "只是历史剧本脚手架" in prompt
     assert "完整 `GameSession`" in prompt
@@ -1920,7 +1921,105 @@ def test_prompt_snapshot_projection_demotes_unverified_legacy_location_anchor():
     assert "scene_anchor_note" not in scene
 
 
+def test_prompt_snapshot_projection_drops_stale_summary_when_current_location_shifted():
+    session = GameSession.new("group")
+    session.scene.update(
+        {
+            "_game_started": True,
+            "summary": "队伍仍在调度室外侧。",
+            "current_conflict": "敌人已经离开调度室，转入仓库。",
+            "current_location": "车站调度室",
+            "location": "车站调度室",
+            "scene_anchor_note": "legacy_backfill_from_visible_scene_text; verify/update with update_scene on next location, vehicle, or access change",
+            "_recent_narrative_events": [
+                {
+                    "at": "2026-06-10T09:02:50+00:00",
+                    "player_id": "gali",
+                    "character_id": "pc_gali",
+                    "message": "撤离调度室，转向仓库。",
+                    "outcome": "队伍已经转入北区旧仓库B区三号门内侧，残敌被挡在门外。",
+                }
+            ],
+            "active_scene_thread_id": "character:pc_gali",
+            "scene_threads": {
+                "character:pc_gali": {
+                    "summary": "队伍仍在调度室外侧。",
+                    "location": "北区旧仓库B区三号门内侧/装卸区入口",
+                    "participants": ["pc_gali"],
+                    "active_character_id": "pc_gali",
+                    "updated_at": "2026-06-10T09:03:10+00:00",
+                }
+            },
+        }
+    )
+
+    projected_snapshot, _stats = prompt_snapshot_data(
+        session,
+        GameMode.TACTICAL,
+        "继续推进",
+        snapshot_projection_enabled=True,
+    )
+
+    scene = projected_snapshot["scene"]
+    assert scene["continuity_anchor"]["current_location"] == "北区旧仓库B区三号门内侧/装卸区入口"
+    assert "调度室" not in scene.get("summary", "")
+    assert "调度室" not in scene["scene_threads"]["active"].get("summary", "")
+    assert scene["scene_threads"]["active"]["location"] == "北区旧仓库B区三号门内侧/装卸区入口"
+
+def test_prompt_snapshot_projection_drops_stale_summary_when_current_vehicle_and_access_shifted():
+    session = GameSession.new("group")
+    session.scene.update(
+        {
+            "_game_started": True,
+            "summary": "队伍仍在行驶中的装甲车里，三号门还开着，准备直接冲进装卸区。",
+            "current_conflict": "局势已经转入仓库装卸区，不能再按旧车况继续写。",
+            "current_location": "北区旧仓库B区三号门内侧/装卸区入口",
+            "location": "北区旧仓库B区三号门内侧/装卸区入口",
+            "current_vehicle_status": "已停稳：装甲车靠边停在装卸区外侧",
+            "current_access_state": "门已锁/不可通行：三号门已被封条锁死",
+            "scene_anchor_note": "legacy_backfill_from_visible_scene_text; verify/update with update_scene on next location, vehicle, or access change",
+            "_recent_narrative_events": [
+                {
+                    "at": "2026-06-10T09:12:50+00:00",
+                    "player_id": "gali",
+                    "character_id": "pc_gali",
+                    "message": "我们停稳装甲车，封住三号门。",
+                    "outcome": "队伍已经在北区旧仓库B区三号门内侧落位，车已停稳，门已封死。",
+                }
+            ],
+            "active_scene_thread_id": "character:pc_gali",
+            "scene_threads": {
+                "character:pc_gali": {
+                    "summary": "队伍仍在行驶中的装甲车里，三号门还开着，准备直接冲进装卸区。",
+                    "current_location": "北区旧仓库B区三号门内侧/装卸区入口",
+                    "current_vehicle_status": "已停稳：装甲车靠边停在装卸区外侧",
+                    "current_access_state": "门已锁/不可通行：三号门已被封条锁死",
+                    "participants": ["pc_gali"],
+                    "active_character_id": "pc_gali",
+                    "updated_at": "2026-06-10T09:13:10+00:00",
+                }
+            },
+        }
+    )
+
+    projected_snapshot, _stats = prompt_snapshot_data(
+        session,
+        GameMode.TACTICAL,
+        "继续推进",
+        snapshot_projection_enabled=True,
+    )
+
+    scene = projected_snapshot["scene"]
+    anchor = scene["continuity_anchor"]
+    assert anchor["current_location"] == "北区旧仓库B区三号门内侧/装卸区入口"
+    assert "装甲车靠边停在装卸区外侧" in anchor["current_vehicle_status"]
+    assert "三号门已被封条锁死" in anchor["current_access_state"]
+    assert "summary" not in scene
+    assert "summary" not in scene["scene_threads"]["active"]
+
+
 def test_compact_snapshot_uses_map_store_entities_before_stale_battle_grid():
+
     session = GameSession.new("group")
     session.characters["pc_owner"] = Character(id="pc_owner", name="MapStore Owner", player_id="owner")
     session.battle = {

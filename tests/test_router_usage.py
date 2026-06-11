@@ -251,6 +251,28 @@ def test_extract_llm_usage_summary_reads_anthropic_cache_fields():
     assert summary["cache_hit_ratio_pct"] == 75.0
 
 
+def test_extract_llm_usage_summary_reads_nested_provider_raw_response_object():
+    class Raw:
+        usage = {
+            "prompt_tokens": 300,
+            "completion_tokens": 50,
+            "prompt_tokens_details": {"cached_tokens": 240},
+        }
+
+    class Metadata:
+        raw_response = Raw()
+
+    class Response:
+        response_metadata = Metadata()
+
+    summary = _extract_llm_usage_summary(Response())
+
+    assert summary["prompt_tokens"] == 300
+    assert summary["completion_tokens"] == 50
+    assert summary["cached_tokens"] == 240
+    assert summary["cache_hit_ratio_pct"] == 80.0
+
+
 def test_start_game_arg_repair_coerces_json_string_outline():
     repaired = IntentRouter._repair_tool_args(
         "start_game",

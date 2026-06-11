@@ -337,6 +337,12 @@
     "hint": "true",
     "default": true
   },
+  "story_forge_auto_map_seed_from_encounter": {
+    "description": "When an encounter contract asks for sketch/strict_grid but no map_grid_seed exists, create a conservative player-visible grid seed and render it.",
+    "type": "bool",
+    "hint": "true",
+    "default": true
+  },
   "story_forge_archive_max_turns": {
     "description": "Maximum Story Forge turn records retained per session.",
     "type": "int",

@@ -9,10 +9,14 @@ SCENE_TRACKING_KEYS = TRACKING_LIST_KEYS | {
     "current_objective",
     "stakes",
     "pressure_clock",
+    "current_vehicle_status",
+    "current_access_state",
 }
 AUTHORITATIVE_SCENE_KEYS = (
     "summary",
     "location",
+    "current_vehicle_status",
+    "current_access_state",
     "current_objective",
     "current_conflict",
     "stakes",
@@ -132,6 +136,7 @@ def normalize_scene_tracking_patch(
             normalized[key] = normalize_scene_records(normalized.get(key), key)
     if "pressure_clock" in normalized:
         normalized["pressure_clock"] = normalize_pressure_clock(normalized.get("pressure_clock"))
+    _sync_location_anchor_fields(normalized)
     if fill_opening:
         ensure_opening_tracking_fields(
             normalized,
@@ -188,6 +193,18 @@ def normalize_pressure_clock(value: Any) -> Any:
         "text": _short_text(value, 240),
         "visibility": "player",
     }
+
+
+def _sync_location_anchor_fields(scene_patch: dict[str, Any]) -> None:
+    """Keep location/current_location in sync when only one side is supplied."""
+    if not isinstance(scene_patch, dict) or not scene_patch:
+        return
+    location = _first_text(scene_patch.get("location"))
+    current_location = _first_text(scene_patch.get("current_location"))
+    if location and not current_location:
+        scene_patch["current_location"] = location
+    elif current_location and not location:
+        scene_patch["location"] = current_location
 
 
 def ensure_opening_tracking_fields(
@@ -346,18 +363,24 @@ def format_scene_tracking_status(scene: dict[str, Any]) -> str:
     objective = _record_display_text(visible.get("current_objective"))
     stakes = _record_display_text(visible.get("stakes"))
     pressure = _record_display_text(visible.get("pressure_clock"))
+    vehicle_status = _record_display_text(visible.get("current_vehicle_status"))
+    access_state = _record_display_text(visible.get("current_access_state"))
     hooks = _visible_record_lines(visible.get("open_hooks"))
     clues = _visible_record_lines(visible.get("clues"))
     mysteries = _visible_record_lines(visible.get("mysteries"))
 
-    if not any([objective, stakes, pressure, hooks, clues, mysteries]):
-        return "当前还没有记录可见目标、线索或任务；下一次开场、调查或场景推进后会写入状态。"
+    if not any([objective, stakes, pressure, vehicle_status, access_state, hooks, clues, mysteries]):
+        return "当前还没有可见目标、压力、车况、通行状态、线索或任务；下一次开场、调查或场景推进后会写入状态。"
 
     lines: list[str] = []
     if objective:
         lines.append(f"当前目标：{objective}")
     if pressure:
         lines.append(f"当前压力：{pressure}")
+    if vehicle_status:
+        lines.append(f"车况状态：{vehicle_status}")
+    if access_state:
+        lines.append(f"通行状态：{access_state}")
     if stakes:
         lines.append(f"利害关系：{stakes}")
     if clues:

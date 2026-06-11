@@ -711,8 +711,9 @@ def _scene_audit_view(scene: dict[str, Any]) -> dict[str, Any]:
         "stakes": _short_text(scene.get("stakes"), 500),
         "pressure_clock": _compact_json_value(scene.get("pressure_clock"), depth=3, text_limit=360),
         "open_hooks": _compact_json_value(scene.get("open_hooks"), depth=3),
-        "entity_facts": _compact_json_value(scene.get("entity_facts"), depth=4, text_limit=360, item_limit=16),
-        "event_timeline": _compact_json_value(scene.get("event_timeline"), depth=4, text_limit=360, item_limit=16),
+        "entity_facts": _compact_entity_facts_for_audit(scene.get("entity_facts")),
+        "event_timeline": _compact_event_timeline_for_audit(scene.get("event_timeline")),
+        "story_forge_player_brief": _compact_story_forge_brief_for_audit(scene.get("story_forge_player_brief")),
         "active_scene_thread_id": scene.get("active_scene_thread_id", ""),
         "last_resolution": _compact_json_value(scene.get("last_resolution"), depth=3),
         "recent_events": [
@@ -786,6 +787,72 @@ def _compact_tool_results(tool_results: list[dict[str, Any]]) -> list[dict[str, 
             }
         )
     return compacted
+
+
+def _compact_entity_facts_for_audit(value: Any) -> Any:
+    if not isinstance(value, dict):
+        return _compact_json_value(value, depth=3, text_limit=240, item_limit=8)
+    items = list(value.items())[-12:]
+    result: dict[str, Any] = {}
+    for entity_id, facts in items:
+        if not isinstance(facts, dict):
+            result[str(entity_id)] = _short_text(facts, 220)
+            continue
+        result[str(entity_id)] = {
+            "entity_type": _short_text(facts.get("entity_type"), 60),
+            "name": _short_text(facts.get("name"), 80),
+            "current_status": _short_text(facts.get("current_status"), 260),
+            "current_location": _short_text(facts.get("current_location") or facts.get("location"), 180),
+            "historical_facts": _compact_json_value(facts.get("historical_facts"), depth=2, text_limit=180, item_limit=4),
+            "unknowns": _compact_json_value(facts.get("unknowns"), depth=2, text_limit=160, item_limit=4),
+            "updated_at": _short_text(facts.get("updated_at"), 80),
+        }
+    return {
+        entity_id: {key: item for key, item in facts.items() if item not in ("", None, [], {})}
+        for entity_id, facts in result.items()
+        if isinstance(facts, dict)
+    }
+
+
+def _compact_event_timeline_for_audit(value: Any) -> Any:
+    if not isinstance(value, list):
+        return _compact_json_value(value, depth=3, text_limit=220, item_limit=8)
+    events = [item for item in value if isinstance(item, dict)][-12:]
+    return [
+        {
+            key: item
+            for key, item in {
+                "id": _short_text(event.get("id"), 80),
+                "order": event.get("order"),
+                "event_type": _short_text(event.get("event_type"), 80),
+                "status": _short_text(event.get("status"), 60),
+                "summary": _short_text(event.get("summary"), 260),
+                "entities": _compact_json_value(event.get("entities"), depth=1, text_limit=80, item_limit=6),
+                "unknowns": _compact_json_value(event.get("unknowns"), depth=1, text_limit=120, item_limit=4),
+                "evidence": _compact_json_value(event.get("evidence"), depth=1, text_limit=120, item_limit=4),
+            }.items()
+            if item not in ("", None, [], {})
+        }
+        for event in events
+    ]
+
+
+def _compact_story_forge_brief_for_audit(value: Any) -> Any:
+    if not isinstance(value, dict):
+        return {}
+    return {
+        key: item
+        for key, item in {
+            "updated_at": _short_text(value.get("updated_at"), 80),
+            "open_threads": _compact_json_value(value.get("open_threads"), depth=3, text_limit=180, item_limit=8),
+            "convergence_actions": _compact_json_value(value.get("convergence_actions"), depth=3, text_limit=180, item_limit=4),
+            "encounter_contracts": _compact_json_value(value.get("encounter_contracts"), depth=3, text_limit=180, item_limit=4),
+            "visible_pressure_clocks": _compact_json_value(value.get("visible_pressure_clocks"), depth=3, text_limit=180, item_limit=4),
+            "recent_clock_events": _compact_json_value(value.get("recent_clock_events"), depth=3, text_limit=160, item_limit=4),
+            "rendered_maps": _compact_json_value(value.get("rendered_maps"), depth=2, text_limit=120, item_limit=4),
+        }.items()
+        if item not in ("", None, [], {})
+    }
 
 
 def _compact_recent_event(event: dict[str, Any]) -> dict[str, Any]:
