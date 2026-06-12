@@ -857,6 +857,35 @@ def test_normalize_entity_anchor_continuity_retires_stale_informant_hooks():
     assert thread["npcs"][0]["custody"] == "with_party"
 
 
+def test_normalize_entity_anchor_continuity_retires_plain_transfer_risk():
+    session = GameSession.new("group")
+    session.scene.update(
+        {
+            "stakes": "南端防火门后的敌人在持续搬运/通话——时间可能意味着证据被转移、线人被转移或增援呼叫。",
+            "entity_facts": {
+                "npc_informant": {
+                    "entity_type": "npc",
+                    "name": "失踪线人",
+                    "current_status": "已救出；随队抵达 B-07 冷藏库区域，仍需护送撤离。",
+                    "current_location": "B-07 冷藏库区域，靠近小型轨道作业车/冷库外掩体",
+                    "criticality": "critical",
+                    "custody": "with_party",
+                    "aliases": ["线人"],
+                    "unknowns": ["撤离路线仍需确认"],
+                    "authoritative_events": ["event_informant_escorted_to_b07"],
+                }
+            },
+        }
+    )
+
+    result = normalize_entity_anchor_continuity(session)
+
+    assert result["changed"] is True
+    assert "已过期" in session.scene["stakes"]
+    assert "线人被转移" not in session.scene["stakes"]
+    assert "已救出" in session.scene["stakes"]
+
+
 def test_normalize_entity_anchor_continuity_handles_item_and_door_anchors():
     session = GameSession.new("group")
     session.scene.update(
