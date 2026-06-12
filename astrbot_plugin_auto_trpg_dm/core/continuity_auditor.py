@@ -4,6 +4,13 @@ import json
 import re
 from typing import Any, Awaitable, Callable
 
+from .entity_anchors import (
+    entity_anchor_replacement,
+    is_entity_anchor_fact,
+    normalized_anchor_text,
+    select_anchor_entity_facts,
+    text_contradicts_entity_anchor,
+)
 from .models import Character, GameMode, GameSession, infer_tag_layer, utc_now_iso
 from .timeline import timeline_view
 
@@ -22,6 +29,7 @@ CONTINUITY_AUDITOR_SYSTEM_PROMPT = """你是独立上下文的跑团连续性审
 - 单个玩家退场是否错误地把整个团切到建卡模式。
 - scene.summary/current_conflict/current_objective/open_hooks 是否和 scene_threads、last_resolution、角色 status tag 冲突。
 - event_timeline/entity_facts 中的较新权威事件是否被旧 summary、旧 known_facts 或 DM 回复降级、否认或误读。
+- 若 entity_facts 已确认关键 NPC/物品/证据/门/地点/阵营状态，则旧 summary、open_hooks、stakes、known_facts 不得重新打开“是否还活着/是否还在门后/是否拿到/是否开启”等已解决问题；只能保留明确未知项。
 - NPC known_facts 中“站在某地/持有某物/正在做某事”等旧描述，跨过爆炸、沉船、转场、检定或较新状态写入后，是否缺少“曾经/当时/爆炸前”等时间限定，导致被误读为当前事实。
 - 状态查询、核对、抱怨类消息不应被当成新的剧情事实。
 - 不要只因为出现“退休/退场/被捕/死亡”等字样就判定退场；背景经历、假设规则、条件说明、抱怨、询问、复述旧设定都不能当作新事实。
@@ -193,6 +201,9 @@ TOOL_FACT_TOOLS = {
     "cycle_control",
     "turn_control",
     "session_control",
+    "record_timeline_event",
+    "record_event_card",
+    "clarify_entity_timeline",
 }
 SCENE_MIRROR_KEYS = (
     "summary",
@@ -372,6 +383,9 @@ def apply_deterministic_continuity_repairs(
     stale_result = normalize_resolved_combat_continuity(session)
     if stale_result.get("changed"):
         result["applied"].append(stale_result)
+    anchor_result = normalize_entity_anchor_continuity(session)
+    if anchor_result.get("changed"):
+        result["applied"].append(anchor_result)
     return result
 
 
@@ -533,6 +547,9 @@ def apply_continuity_audit_patches(
     stale_result = normalize_resolved_combat_continuity(session)
     if stale_result.get("changed"):
         result["applied"].append(stale_result)
+    anchor_result = normalize_entity_anchor_continuity(session)
+    if anchor_result.get("changed"):
+        result["applied"].append(anchor_result)
     return result
 
 
@@ -590,6 +607,73 @@ def normalize_resolved_combat_continuity(session: GameSession) -> dict[str, Any]
         "scene_keys": sorted(set(changed_scene_keys)),
         "thread_ids": changed_threads,
         "character_tags": changed_tags[:16],
+    }
+
+
+def normalize_entity_anchor_continuity(session: GameSession) -> dict[str, Any]:
+    scene = session.scene if isinstance(session.scene, dict) else {}
+    anchor_facts = select_anchor_entity_facts(scene.get("entity_facts"), message="", limit=12)
+    anchor_map = {
+        entity_id: fact
+        for entity_id, fact, _score in anchor_facts
+        if is_entity_anchor_fact(entity_id, fact)
+    }
+    if not anchor_map:
+        return {"type": "entity_anchor_continuity_normalized", "changed": False}
+
+    changed_scene_keys: list[str] = []
+    for key in ("summary", "current_conflict", "current_objective", "stakes"):
+        value = scene.get(key)
+        rewritten = _rewrite_entity_anchor_value(value, anchor_map)
+        if rewritten is not None and rewritten != value:
+            scene[key] = rewritten
+            changed_scene_keys.append(key)
+    if _rewrite_entity_anchor_hooks(scene.get("open_hooks"), anchor_map):
+        changed_scene_keys.append("open_hooks")
+    if _rewrite_entity_anchor_npcs(scene.get("npcs"), anchor_map):
+        changed_scene_keys.append("npcs")
+
+    changed_threads: list[dict[str, Any]] = []
+    for thread_id, thread in _scene_threads(scene).items():
+        if not isinstance(thread, dict) or _scene_thread_is_closed(thread):
+            continue
+        thread_changed: list[str] = []
+        for key in ("summary", "current_conflict", "current_objective", "stakes"):
+            value = thread.get(key)
+            rewritten = _rewrite_entity_anchor_value(value, anchor_map)
+            if rewritten is not None and rewritten != value:
+                thread[key] = rewritten
+                thread_changed.append(key)
+        if _rewrite_entity_anchor_hooks(thread.get("open_hooks"), anchor_map):
+            thread_changed.append("open_hooks")
+        if _rewrite_entity_anchor_npcs(thread.get("npcs"), anchor_map):
+            thread_changed.append("npcs")
+        if thread_changed:
+            thread["updated_at"] = utc_now_iso()
+            changed_threads.append({"thread_id": str(thread_id), "keys": sorted(set(thread_changed))})
+
+    changed_tags: list[dict[str, Any]] = []
+    for character_id, character in session.characters.items():
+        for tag in character.tags or []:
+            value = tag.value
+            if not isinstance(value, str):
+                continue
+            rewritten = _rewrite_entity_anchor_value(value, anchor_map)
+            if rewritten is None or rewritten == value:
+                continue
+            tag.value = rewritten
+            tag.source = "continuity_deterministic_repair"
+            tag.layer = tag.layer or infer_tag_layer(tag.key)
+            changed_tags.append({"character_id": character_id, "key": tag.key})
+
+    changed = bool(changed_scene_keys or changed_threads or changed_tags)
+    return {
+        "type": "entity_anchor_continuity_normalized",
+        "changed": changed,
+        "scene_keys": sorted(set(changed_scene_keys)),
+        "thread_ids": changed_threads,
+        "character_tags": changed_tags[:16],
+        "entity_ids": sorted(anchor_map.keys()),
     }
 
 
@@ -1442,6 +1526,139 @@ def _rewrite_stale_combat_hooks(value: Any, locations: set[str]) -> bool:
                 changed = True
         return changed
     return False
+
+
+def _rewrite_entity_anchor_value(value: Any, anchor_map: dict[str, dict[str, Any]]) -> Any:
+    if isinstance(value, str):
+        return _rewrite_entity_anchor_text(value, anchor_map)
+    if isinstance(value, dict):
+        changed = False
+        patched: dict[str, Any] = {}
+        for key, raw in value.items():
+            rewritten = _rewrite_entity_anchor_value(raw, anchor_map)
+            if rewritten != raw:
+                changed = True
+            patched[key] = rewritten
+        return patched if changed else value
+    if isinstance(value, list):
+        changed = False
+        items: list[Any] = []
+        for raw in value:
+            rewritten = _rewrite_entity_anchor_value(raw, anchor_map)
+            if rewritten != raw:
+                changed = True
+            items.append(rewritten)
+        return items if changed else value
+    return value
+
+
+def _rewrite_entity_anchor_text(text: Any, anchor_map: dict[str, dict[str, Any]]) -> Any:
+    if not isinstance(text, str) or not text.strip() or not anchor_map:
+        return text
+    rewritten = text
+    for entity_id, fact in anchor_map.items():
+        if not text_contradicts_entity_anchor(rewritten, entity_id, fact):
+            continue
+        replacement = entity_anchor_replacement(entity_id, fact)
+        if _text_mentions_anchor_alias(rewritten, entity_id, fact):
+            rewritten = replacement
+        else:
+            rewritten = f"【已过期】{rewritten}"
+    return rewritten
+
+
+def _text_mentions_anchor_alias(text: str, entity_id: str, fact: dict[str, Any]) -> bool:
+    normalized = normalized_anchor_text(text)
+    if not normalized:
+        return False
+    names = [str(entity_id or "").strip(), str(fact.get("name") or "").strip()]
+    aliases = fact.get("aliases") or fact.get("alias") or []
+    if isinstance(aliases, str):
+        names.append(aliases)
+    elif isinstance(aliases, list):
+        names.extend(str(item) for item in aliases)
+    for candidate in names:
+        candidate_norm = normalized_anchor_text(candidate)
+        if candidate_norm and candidate_norm in normalized:
+            return True
+    return False
+
+
+def _rewrite_entity_anchor_hooks(value: Any, anchor_map: dict[str, dict[str, Any]]) -> bool:
+    if isinstance(value, list):
+        changed = False
+        for index, item in enumerate(value):
+            if isinstance(item, dict):
+                item_changed = False
+                for key, raw in list(item.items()):
+                    rewritten = _rewrite_entity_anchor_value(raw, anchor_map)
+                    if rewritten != raw:
+                        item[key] = rewritten
+                        item_changed = True
+                if item_changed:
+                    item["status"] = "resolved"
+                    changed = True
+                continue
+            if isinstance(item, str):
+                rewritten = _rewrite_entity_anchor_value(item, anchor_map)
+                if rewritten != item:
+                    value[index] = rewritten
+                    changed = True
+        return changed
+    if isinstance(value, dict):
+        changed = False
+        for key, raw in list(value.items()):
+            rewritten = _rewrite_entity_anchor_value(raw, anchor_map)
+            if rewritten != raw:
+                value[key] = rewritten
+                changed = True
+        return changed
+    return False
+
+
+def _rewrite_entity_anchor_npcs(value: Any, anchor_map: dict[str, dict[str, Any]]) -> bool:
+    if not isinstance(value, list):
+        return False
+    changed = False
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        entity_id = str(item.get("id") or "").strip()
+        if not entity_id or entity_id not in anchor_map:
+            continue
+        fact = anchor_map[entity_id]
+        status = str(fact.get("current_status") or "").strip()
+        current_location = str(fact.get("current_location") or fact.get("location") or "").strip()
+        custody = str(fact.get("custody") or "").strip()
+        holder = str(fact.get("holder") or fact.get("owner") or "").strip()
+        if status and item.get("status") != status:
+            item["status"] = status
+            changed = True
+        if current_location and item.get("location") != current_location:
+            item["location"] = current_location
+            changed = True
+        if custody and item.get("custody") != custody:
+            item["custody"] = custody
+            changed = True
+        if holder and item.get("holder") != holder:
+            item["holder"] = holder
+            changed = True
+        if fact.get("historical_facts"):
+            known_facts = list(fact.get("historical_facts") or [])[:12]
+            if item.get("known_facts") != known_facts:
+                item["known_facts"] = known_facts
+                changed = True
+        if fact.get("unknowns"):
+            unknowns = list(fact.get("unknowns") or [])[:8]
+            if item.get("unknowns") != unknowns:
+                item["unknowns"] = unknowns
+                changed = True
+        if fact.get("authoritative_events"):
+            events = list(fact.get("authoritative_events") or [])[:12]
+            if item.get("authoritative_events") != events:
+                item["authoritative_events"] = events
+                changed = True
+    return changed
 
 
 def _scene_thread_is_open_character_thread(thread_id: str, thread: dict[str, Any]) -> bool:

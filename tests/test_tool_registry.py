@@ -305,6 +305,22 @@ def test_tool_registry_exposes_timeline_fact_tools_for_narrative():
     assert any(spec["name"] == "clarify_entity_timeline" for spec in specs)
 
 
+def test_tool_registry_exposes_fact_anchor_tools_for_tactical_state_query():
+    registry = _registry_with_started_session()
+    _toolset, names, _executor, specs = registry.for_mode(
+        GameMode.TACTICAL,
+        "group",
+        message="线人现在在哪里，黑曜圣匣有没有拿到，北侧防火门是否打开？",
+    )
+
+    assert "get_battle_snapshot" in names
+    assert "record_timeline_event" in names
+    assert "record_event_card" in names
+    assert "clarify_entity_timeline" in names
+    assert any(spec["name"] == "record_event_card" for spec in specs)
+    assert any(spec["name"] == "clarify_entity_timeline" for spec in specs)
+
+
 def test_tool_registry_exposes_story_forge_convergence_when_enabled():
     registry = _registry_with_ready_session()
     _toolset, names, _executor, specs = registry.for_mode(

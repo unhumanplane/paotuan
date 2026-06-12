@@ -24,6 +24,12 @@ from .models import (
 from .prompt_projection import project_ra_summary_for_dm_prompt
 from .scene_hooks import project_visible_scene_value
 from .timeline import active_player_ids, timeline_advance_requires_sync
+from .entity_anchors import (
+    authoritative_event_ids_for_facts,
+    entity_fact_relevance_score as anchor_entity_fact_relevance_score,
+    select_anchor_entity_facts,
+    timeline_event_anchor_score,
+)
 
 
 DEFAULT_ADJUDICATION_PROFILE = {
@@ -338,6 +344,7 @@ def _project_scene(
 ) -> Any:
     if not isinstance(scene, dict):
         return scene
+    raw_scene = scene
     active_thread_id = str(scene.get("active_scene_thread_id") or "").strip()
     raw_threads = scene.get("scene_threads")
     active_thread_id = _effective_active_scene_thread_id(raw_threads, active_thread_id)
@@ -382,7 +389,13 @@ def _project_scene(
             continue
         if key == "last_resolution" and _is_fact_check_resolution(value):
             continue
-        projected_value = _project_scene_value(key, value, profile, message=message)
+        projected_value = _project_scene_value(
+            key,
+            value,
+            profile,
+            message=message,
+            scene_context=raw_scene,
+        )
         if projected_value not in ({}, [], "", None):
             projected[key] = projected_value
     threads = _project_scene_threads(
@@ -484,7 +497,14 @@ def _should_demote_legacy_scene_anchor(
     return False
 
 
-def _project_scene_value(key: str, value: Any, profile: str, *, message: str = "") -> Any:
+def _project_scene_value(
+    key: str,
+    value: Any,
+    profile: str,
+    *,
+    message: str = "",
+    scene_context: dict[str, Any] | None = None,
+) -> Any:
     if key in {"open_hooks", "clues", "mysteries", "pressure_clock"}:
         value = _filter_obsolete_scene_value(value)
         if value in (None, "", [], {}):
@@ -504,9 +524,16 @@ def _project_scene_value(key: str, value: Any, profile: str, *, message: str = "
             item_limit=12,
         )
     if key == "event_timeline":
-        return _project_event_timeline_for_prompt(value, profile)
+        raw_event_timeline = (scene_context or {}).get("event_timeline", value)
+        return _project_event_timeline_for_prompt(
+            raw_event_timeline,
+            profile,
+            entity_facts=(scene_context or {}).get("entity_facts"),
+            message=message,
+        )
     if key == "entity_facts":
-        return _project_entity_facts_for_prompt(value, profile, message=message)
+        raw_entity_facts = (scene_context or {}).get("entity_facts", value)
+        return _project_entity_facts_for_prompt(raw_entity_facts, profile, message=message)
     if isinstance(value, dict):
         return _project_mapping(value, depth=2, text_limit=360, item_limit=16)
     if isinstance(value, list):
@@ -539,13 +566,53 @@ def _scene_record_is_obsolete(value: Any) -> bool:
     return status in OBSOLETE_SCENE_STATUSES
 
 
-def _project_event_timeline_for_prompt(value: Any, profile: str) -> Any:
+def _project_event_timeline_for_prompt(
+    value: Any,
+    profile: str,
+    *,
+    entity_facts: Any = None,
+    message: str = "",
+) -> Any:
     if not isinstance(value, list):
         return value
     limit = 6 if profile in {"state_query", "character_profile"} else 10
+    cap = limit + (2 if profile in {"state_query", "character_profile"} else 4)
     events = [item for item in value if isinstance(item, dict)]
+    anchor_facts = select_anchor_entity_facts(
+        entity_facts,
+        message=message,
+        limit=4 if profile in {"state_query", "character_profile"} else 6,
+    )
+    anchor_entity_ids = {entity_id for entity_id, _fact, _score in anchor_facts}
+    authoritative_event_ids = authoritative_event_ids_for_facts(anchor_facts)
+    selected: dict[int, tuple[dict[str, Any], int]] = {}
+    recent_start = max(0, len(events) - limit)
+    for index, item in enumerate(events):
+        score = timeline_event_anchor_score(
+            item,
+            anchor_entity_ids=anchor_entity_ids,
+            authoritative_event_ids=authoritative_event_ids,
+        )
+        if index >= recent_start:
+            score += 10
+        if score > 0:
+            selected[index] = (item, score)
+    ranked = sorted(selected.items(), key=lambda pair: (pair[1][1], pair[0]), reverse=True)
+    chosen_indices: list[int] = []
+    for index, (_item, _score) in ranked:
+        if index not in chosen_indices:
+            chosen_indices.append(index)
+        if len(chosen_indices) >= cap:
+            break
+    if len(chosen_indices) < limit:
+        for index in range(len(events) - limit, len(events)):
+            if index >= 0 and index not in chosen_indices:
+                chosen_indices.append(index)
+            if len(chosen_indices) >= cap:
+                break
     projected: list[dict[str, Any]] = []
-    for item in events[-limit:]:
+    for index in sorted(chosen_indices):
+        item = events[index]
         record: dict[str, Any] = {}
         for key in ("id", "order", "event_type", "status", "summary", "entities", "unknowns", "source", "evidence"):
             if key not in item:
@@ -582,24 +649,7 @@ def _project_entity_facts_for_prompt(value: Any, profile: str, *, message: str =
 
 
 def _entity_fact_relevance_score(entity_id: str, fact: dict[str, Any], query_text: str) -> int:
-    if not query_text:
-        return 0
-    candidates = [entity_id, fact.get("name", "")]
-    aliases = fact.get("aliases") or fact.get("alias") or []
-    if isinstance(aliases, str):
-        candidates.append(aliases)
-    elif isinstance(aliases, list):
-        candidates.extend(str(item) for item in aliases)
-    for candidate in candidates:
-        normalized = _normalized_projection_text(candidate)
-        if normalized and normalized in query_text:
-            return 2
-    compact_fact_text = _normalized_projection_text(
-        " ".join(str(fact.get(key) or "") for key in ("current_status", "historical_facts", "unknowns"))
-    )
-    if compact_fact_text and any(token for token in query_text.split() if len(token) >= 3 and token in compact_fact_text):
-        return 1
-    return 0
+    return anchor_entity_fact_relevance_score(entity_id, fact, query_text)
 
 
 def _project_scene_threads(
@@ -1710,6 +1760,8 @@ BASE_RULES = """共享基础规则：
 - 场景定位锚点必须结构化维护：只要剧情涉及移动载具、站台/房间/楼层、门锁/闸门、队伍分离或会影响行动可行性的地点变化，必须在 update_scene patch 中维护 location/current_location/current_vehicle_status/current_access_state 等可见字段之一或对应 scene_thread 字段，明确“停稳、即将启动、正在行驶、已驶离、门已锁/可通行”等状态；不要只把位置和载具状态藏在 summary/current_objective 的自然语言里。
 - 第二人称“你”和第一人称“我”只指当前发言人绑定的 `actor_character`；回答装备、能力、状态、位置或物品时，必须优先使用 `actor_character`/`actor_character_id` 对应角色卡和 tag。`characters.roster`、其他 scene thread、队友摘要只能当队友参考，不能把其他角色的装备、能力、持物或位置转移给当前发言人。
 - `event_timeline` 是权威剧情事实时间线，优先级高于旧 summary、旧 known_facts 和模型回忆。`record_timeline_event` 用于记录已由工具、审计或明确场内结果支持的事件；`clarify_entity_timeline` 用于把实体当前状态、历史事实、未知项和证据来源分开落盘。
+- 关键实体事实必须结构化落盘：NPC/人质/线人/宝物/证据/钥匙/门/机关/载具/阵营等一旦出现“发现、确认、救出、解绑、带走、上车、护送、安置、失散、死亡、被俘、获得、交付、消耗、丢失、开启、关闭、摧毁、修复”等会改变后续玩法的状态，优先用 `record_event_card` 同时写 `event_timeline` 和 `entity_clarifications`；不要只用 `update_scene` 的 summary/stakes/open_hooks 或 final_response 自然语言记忆。
+- `entity_facts` 是当前关键实体事实锚点，适用于 NPC、物品、地点、门、机关、阵营和证据，不只是 NPC。若已写入 criticality/current_status/current_location/custody/holder/owner/authoritative_events，后续摘要、钩子和叙事不得重新打开已解决的问题；只能把剩余未知项写成 unknowns 或新的开放钩子。
 - 旧 `known_facts` 中的地点、持物、状态描述跨过爆炸、沉船、转场、检定或后续状态写入后，只能当历史事实，除非有较新的权威事件证明它仍是当前事实。不要把“曾在某地”误读成“当前仍在那里”。
 - 未知项不能反推成否定事实：例如“附近没看到某 NPC”只能说明当前附近不可见或所在未知，不能推翻已确认生还、已确认逃生、已确认持有/消耗等工具事实。需要澄清时调用 `clarify_entity_timeline`，不要在叙事里临时摇摆。
 - RA 只读取 `ra_cycle_input` 过滤投影和清洗后的权威字段快照，不读取完整 `GameSession`、原始玩家输入、prompt、诊断字段或 raw audit。

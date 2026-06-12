@@ -337,6 +337,74 @@ def test_prompt_projection_prefers_recent_entity_facts_over_stale_long_term_nois
     assert "npc_stale_0" not in projected_facts
 
 
+def test_prompt_projection_keeps_anchor_entity_facts_and_related_timeline_events():
+    session = GameSession.new("group")
+    session.scene["entity_facts"] = {
+        "npc_informant": {
+            "entity_type": "npc",
+            "name": "失踪线人",
+            "current_status": "已救出；随队撤离",
+            "current_location": "B-07 冷藏库外侧",
+            "criticality": "critical",
+            "custody": "with_party",
+            "aliases": ["线人"],
+            "authoritative_events": ["event_informant_rescued", "event_informant_escorted"],
+            "historical_facts": ["曾在值班室被看守。"],
+            "unknowns": ["后续撤离路线待确认"],
+            "updated_at": "2026-06-12T03:20:00+00:00",
+        }
+    }
+    session.scene["event_timeline"] = [
+        {
+            "id": "event_informant_rescued",
+            "order": 10,
+            "event_type": "npc_status_confirmed",
+            "status": "confirmed",
+            "summary": "线人已从值班室救出。",
+            "entities": ["npc_informant"],
+            "unknowns": ["后续撤离路线待确认"],
+        },
+        {
+            "id": "event_informant_escorted",
+            "order": 20,
+            "event_type": "npc_escorted",
+            "status": "confirmed",
+            "summary": "线人随队撤离到 B-07 冷藏库外侧。",
+            "entities": ["npc_informant"],
+            "unknowns": ["是否继续转移未知"],
+        },
+    ]
+    session.scene["event_timeline"].extend(
+        {
+            "id": f"event_combat_noise_{index}",
+            "order": 100 + index,
+            "event_type": "combat_turn",
+            "status": "confirmed",
+            "summary": f"第{index}轮战斗噪声。",
+            "entities": [f"npc_enemy_{index}"],
+        }
+        for index in range(12)
+    )
+
+    snapshot, _stats = prompt_snapshot_data(
+        session,
+        GameMode.NARRATIVE,
+        message="复盘线人现在到底在哪里？",
+        actor={"player_id": "player-1"},
+    )
+
+    projected_facts = snapshot["scene"]["entity_facts"]
+    projected_events = snapshot["scene"]["event_timeline"]
+    rendered = json.dumps(snapshot["scene"], ensure_ascii=False)
+    assert "npc_informant" in projected_facts
+    assert projected_facts["npc_informant"]["criticality"] == "critical"
+    assert projected_facts["npc_informant"]["custody"] == "with_party"
+    assert any(item["id"] == "event_informant_rescued" for item in projected_events)
+    assert any(item["id"] == "event_informant_escorted" for item in projected_events)
+    assert "event_combat_noise_0" in rendered
+    assert "线人" in rendered
+
+
 def test_system_prompt_prefers_overview_topology_renderer_before_llm_svg_fallback():
     session = GameSession.new("group")
 

@@ -7,6 +7,7 @@ from astrbot_plugin_auto_trpg_dm.core.continuity_auditor import (
     apply_deterministic_continuity_repairs,
     continuity_audit_should_run,
     normalize_active_scene_thread,
+    normalize_entity_anchor_continuity,
     normalize_resolved_combat_continuity,
 )
 from astrbot_plugin_auto_trpg_dm.core.models import Character, GameMode, GameSession
@@ -806,6 +807,95 @@ def test_audit_scene_patch_can_time_qualify_npc_known_fact_with_tool_evidence():
     assert any(item.get("type") == "scene" for item in result["applied"])
     assert thread["npcs"][0]["known_facts"] == ["曾在中央控制室观察ROV操作，时间点早于C4爆炸。"]
     assert "是否随船沉没" not in thread["open_hooks"][0]["text"]
+
+
+def test_normalize_entity_anchor_continuity_retires_stale_informant_hooks():
+    session = GameSession.new("group")
+    session.scene.update(
+        {
+            "summary": "队伍抵达 B-07，但线人不在这个区域，下落仍然悬着。",
+            "stakes": "再拖一轮，敌人可能把线人从南端防火门后转移走。",
+            "open_hooks": [
+                {"id": "hook_informant_missing", "text": "线人可能还在南端防火门后。", "status": "open"}
+            ],
+            "entity_facts": {
+                "npc_informant": {
+                    "entity_type": "npc",
+                    "name": "失踪线人",
+                    "current_status": "已救出；随队抵达 B-07 冷藏库区域",
+                    "current_location": "B-07 冷藏库外侧作业车旁",
+                    "criticality": "critical",
+                    "custody": "with_party",
+                    "aliases": ["线人"],
+                    "historical_facts": ["凯德在值班室解绑线人。"],
+                    "unknowns": ["撤离路线仍需确认"],
+                    "authoritative_events": ["event_informant_rescued", "event_informant_escorted"],
+                }
+            },
+            "scene_threads": {
+                "character:pc_kade": {
+                    "summary": "凯德在冷藏库外，线人下落不明，可能还在门后。",
+                    "npcs": [{"id": "npc_informant", "name": "失踪线人", "known_facts": ["可能还在门后"]}],
+                    "open_hooks": [{"id": "hook_informant_missing", "text": "线人是否还在门后？", "status": "open"}],
+                }
+            },
+        }
+    )
+
+    result = normalize_entity_anchor_continuity(session)
+
+    assert result["changed"] is True
+    assert "已过期" in session.scene["summary"]
+    assert "已过期" in session.scene["stakes"]
+    assert session.scene["open_hooks"][0]["status"] == "resolved"
+    assert "已过期" in session.scene["open_hooks"][0]["text"]
+    thread = session.scene["scene_threads"]["character:pc_kade"]
+    assert "已过期" in thread["summary"]
+    assert thread["open_hooks"][0]["status"] == "resolved"
+    assert thread["npcs"][0]["status"] == "已救出；随队抵达 B-07 冷藏库区域"
+    assert thread["npcs"][0]["location"] == "B-07 冷藏库外侧作业车旁"
+    assert thread["npcs"][0]["custody"] == "with_party"
+
+
+def test_normalize_entity_anchor_continuity_handles_item_and_door_anchors():
+    session = GameSession.new("group")
+    session.scene.update(
+        {
+            "current_objective": "先确认黑曜圣匣是否还在祭坛上，再决定是否开门。",
+            "open_hooks": [
+                {"id": "hook_relic", "text": "黑曜圣匣是否还没拿到？", "status": "open"},
+                {"id": "hook_door", "text": "北侧防火门是否仍然关闭？", "status": "open"},
+            ],
+            "entity_facts": {
+                "item_relic": {
+                    "entity_type": "item",
+                    "name": "黑曜圣匣",
+                    "current_status": "已获得并交由凯德保管",
+                    "criticality": "critical",
+                    "holder": "pc_kade",
+                    "aliases": ["圣匣"],
+                    "authoritative_events": ["event_relic_acquired"],
+                },
+                "door_north_fire": {
+                    "entity_type": "door",
+                    "name": "北侧防火门",
+                    "current_status": "已打开；可通行",
+                    "criticality": "key",
+                    "aliases": ["防火门"],
+                    "authoritative_events": ["event_north_door_opened"],
+                },
+            },
+        }
+    )
+
+    result = normalize_entity_anchor_continuity(session)
+
+    assert result["changed"] is True
+    assert "已过期" in session.scene["current_objective"]
+    assert session.scene["open_hooks"][0]["status"] == "resolved"
+    assert session.scene["open_hooks"][1]["status"] == "resolved"
+    assert "已获得并交由凯德保管" in session.scene["open_hooks"][0]["text"]
+    assert "已打开；可通行" in session.scene["open_hooks"][1]["text"]
 
 
 def test_audit_scene_patch_projects_pressure_clock_and_stakes_to_thread():

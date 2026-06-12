@@ -1351,6 +1351,52 @@ def test_clarify_entity_timeline_time_qualifies_stale_npc_fact(tmp_path):
     assert "已确认生还" in hook["text"]
 
 
+def test_clarify_entity_timeline_stores_durable_anchor_fields(tmp_path):
+    repository = JsonGameRepository(tmp_path / "data")
+    session = GameSession.new("group")
+    session.world_tags["_background_ready"] = True
+    session.scene["active_scene_thread_id"] = "character:pc_kade"
+    session.scene["scene_threads"] = {"character:pc_kade": {"npcs": []}}
+    repository.save_session(session)
+
+    tools = MemoryTools(repository, "group", actor={"player_id": "p1"}, message="/dm 带上线人撤离")
+    result = asyncio.run(
+        tools.clarify_entity_timeline(
+            entity_id="npc_informant",
+            entity_type="npc",
+            name="失踪线人",
+            current_status="已救出；随队抵达 B-07 冷藏库外侧",
+            current_location="B-07 冷藏库外侧作业车旁",
+            criticality="critical",
+            custody="with_party",
+            protected_by="pc_kade,pc_gali",
+            aliases=["线人", "失踪线人"],
+            continuity_tags=["rescued", "with_party", "escort_required"],
+            historical_facts=["凯德在值班室解绑线人。"],
+            unknowns=["撤离路线仍需确认"],
+            authoritative_events=["event_informant_rescued"],
+            evidence=["DM confirmed rescue"],
+            scene_thread_id="character:pc_kade",
+            replace_conflicting_current_fact=True,
+        )
+    )
+
+    saved = repository.load_session("group")
+    fact = saved.scene["entity_facts"]["npc_informant"]
+    npc = saved.scene["scene_threads"]["character:pc_kade"]["npcs"][0]
+
+    assert result["ok"] is True
+    assert fact["criticality"] == "critical"
+    assert fact["current_location"] == "B-07 冷藏库外侧作业车旁"
+    assert fact["custody"] == "with_party"
+    assert fact["protected_by"] == "pc_kade,pc_gali"
+    assert fact["aliases"] == ["线人", "失踪线人"]
+    assert fact["continuity_tags"] == ["rescued", "with_party", "escort_required"]
+    assert npc["status"] == "已救出；随队抵达 B-07 冷藏库外侧"
+    assert npc["location"] == "B-07 冷藏库外侧作业车旁"
+    assert npc["custody"] == "with_party"
+
+
 def test_record_event_card_can_batch_event_scene_and_character_updates(tmp_path):
     repository = JsonGameRepository(tmp_path / "data")
     session = GameSession.new("group")
@@ -1445,3 +1491,54 @@ def test_record_event_card_can_batch_event_scene_and_character_updates(tmp_path)
     assert saved.scene["entity_facts"]["npc_shidong"]["current_status"] == "已确认生还；当前所在不明"
     assert npc["status"] == "已确认生还；当前所在不明"
     assert npc["unknowns"] == ["当前所在未知"]
+
+
+def test_record_event_card_preserves_existing_entity_anchor_fields(tmp_path):
+    repository = JsonGameRepository(tmp_path / "data")
+    session = GameSession.new("group")
+    session.world_tags["_background_ready"] = True
+    session.scene["entity_facts"] = {
+        "item_relic": {
+            "entity_id": "item_relic",
+            "entity_type": "item",
+            "name": "黑曜圣匣",
+            "current_status": "已获得并交由凯德保管",
+            "criticality": "critical",
+            "holder": "pc_kade",
+            "aliases": ["圣匣"],
+            "authoritative_events": ["event_relic_acquired"],
+            "updated_at": "2026-06-12T03:20:00+00:00",
+        }
+    }
+    repository.save_session(session)
+
+    tools = MemoryTools(repository, "group", actor={"player_id": "p1"}, message="/dm 补充圣匣未知项")
+    result = asyncio.run(
+        tools.record_event_card(
+            event_id="event_relic_checked",
+            event_type="item_status_checked",
+            summary="队伍确认圣匣仍由凯德保管，但内部封印用途未知。",
+            entities=["item_relic"],
+            entity_clarifications=[
+                {
+                    "entity_id": "item_relic",
+                    "entity_type": "item",
+                    "name": "黑曜圣匣",
+                    "unknowns": ["封印用途未知"],
+                    "authoritative_events": ["event_relic_checked"],
+                    "evidence": ["party inventory check"],
+                }
+            ],
+        )
+    )
+
+    saved = repository.load_session("group")
+    fact = saved.scene["entity_facts"]["item_relic"]
+
+    assert result["ok"] is True
+    assert fact["current_status"] == "已获得并交由凯德保管"
+    assert fact["criticality"] == "critical"
+    assert fact["holder"] == "pc_kade"
+    assert fact["aliases"] == ["圣匣"]
+    assert fact["unknowns"] == ["封印用途未知"]
+    assert fact["authoritative_events"] == ["event_relic_checked"]

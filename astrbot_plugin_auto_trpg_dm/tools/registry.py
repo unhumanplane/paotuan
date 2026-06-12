@@ -724,6 +724,8 @@ class ToolRegistry:
                     "turn_control",
                     "update_scene",
                     "record_timeline_event",
+                    "record_event_card",
+                    "clarify_entity_timeline",
                     "session_control",
                     "estimate_token_usage",
                 ]
@@ -740,6 +742,8 @@ class ToolRegistry:
                     "update_entity_state",
                     "update_scene",
                     "record_timeline_event",
+                    "record_event_card",
+                    "clarify_entity_timeline",
                     "session_control",
                     "estimate_token_usage",
                 ]
@@ -819,6 +823,9 @@ class ToolRegistry:
             if _contains_any(text, STATE_QUERY_TERMS):
                 return [
                     "get_battle_snapshot",
+                    "record_timeline_event",
+                    "record_event_card",
+                    "clarify_entity_timeline",
                     "session_control",
                     "estimate_token_usage",
                 ]
@@ -935,6 +942,10 @@ class ToolRegistry:
             selected.append("search_external_memory")
         if text and _contains_any(text, CONTROL_AUTHORITY_TERMS):
             selected.append("control_authority")
+        if _looks_fact_anchor_update_or_query(text):
+            for name in ("record_timeline_event", "record_event_card", "clarify_entity_timeline"):
+                if name not in selected:
+                    selected.append(name)
         if message and _looks_text_only_request(message):
             return list(dict.fromkeys(selected))
         strict_grid_visual_request = looks_strict_grid_map_request(message or text)
@@ -1265,6 +1276,70 @@ STATE_QUERY_TERMS = (
     "轮到谁",
     "当前位置",
     "还在不在",
+    "下落",
+    "在哪",
+    "还在吗",
+    "拿到了吗",
+    "有没有拿到",
+    "门开了吗",
+    "是否打开",
+)
+FACT_ANCHOR_ENTITY_TERMS = (
+    "线人",
+    "npc",
+    "人质",
+    "俘虏",
+    "幸存者",
+    "宝物",
+    "圣匣",
+    "遗物",
+    "钥匙",
+    "证据",
+    "文件",
+    "线索",
+    "门",
+    "闸门",
+    "防火门",
+    "载具",
+    "作业车",
+    "阵营",
+    "声望",
+    "关系",
+)
+FACT_ANCHOR_STATE_TERMS = (
+    "救出",
+    "解绑",
+    "带上",
+    "带走",
+    "护送",
+    "随队",
+    "安置",
+    "藏好",
+    "失散",
+    "被俘",
+    "死亡",
+    "确认",
+    "获得",
+    "拿到",
+    "拾取",
+    "持有",
+    "交付",
+    "移交",
+    "消耗",
+    "丢失",
+    "遗失",
+    "打开",
+    "关闭",
+    "开启",
+    "解锁",
+    "锁上",
+    "摧毁",
+    "修复",
+    "激活",
+    "下落",
+    "还在",
+    "在哪",
+    "是否",
 )
 RULE_QUERY_TERMS = (
     "规则列表",
@@ -1744,6 +1819,13 @@ def _looks_entity_state_update(text: str) -> bool:
     if not value:
         return False
     return _contains_any(value, ENTITY_STATE_TERMS) and _contains_any(value, ENTITY_STATE_UPDATE_HINTS)
+
+
+def _looks_fact_anchor_update_or_query(text: str) -> bool:
+    value = (text or "").strip().lower()
+    if not value:
+        return False
+    return _contains_any(value, FACT_ANCHOR_ENTITY_TERMS) and _contains_any(value, FACT_ANCHOR_STATE_TERMS)
 
 
 def _looks_text_only_request(message: str) -> bool:

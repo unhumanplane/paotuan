@@ -37,6 +37,7 @@ from ..core.scene_hooks import (
     opening_has_initial_hook,
     project_visible_scene_value,
 )
+from ..core.entity_anchors import merge_entity_fact_preserving_anchors
 from ..core.session_titles import ensure_session_title
 from ..storage.json_repository import JsonGameRepository
 
@@ -103,6 +104,15 @@ class ClarifyEntityTimelineArgs(BaseModel):
     entity_type: str = Field(default="npc", description="npc, character, item, location, faction, or other.")
     name: str = Field(default="", description="Human-readable entity name.")
     current_status: str = Field(default="", description="Current authoritative status. Keep unknowns explicit.")
+    current_location: str = Field(default="", description="Current known location or placement, if confirmed.")
+    criticality: str = Field(default="", description="Optional importance marker: key, critical, major, anchor, or blank.")
+    custody: str = Field(default="", description="Custody/escort state such as with_party, hidden_safe, captured, handed_to_npc.")
+    holder: str = Field(default="", description="Current holder/controller for items, evidence, treasures, keys, or resources.")
+    owner: str = Field(default="", description="Current owner/claimant for items, locations, or obligations when distinct from holder.")
+    protected_by: str = Field(default="", description="Who is protecting/guarding this entity, if confirmed.")
+    last_confirmed_at: str = Field(default="", description="Optional timestamp or scene label for the latest confirmation.")
+    aliases: List[str] = Field(default_factory=list, description="Names players may use for the same entity.")
+    continuity_tags: List[str] = Field(default_factory=list, description="Compact durable fact facets such as rescued, held, door_open.")
     historical_facts: List[str] = Field(default_factory=list, description="Time-qualified past facts, e.g. '曾在...'.")
     unknowns: List[str] = Field(default_factory=list, description="Facts that remain unknown and must not be guessed.")
     authoritative_events: List[str] = Field(default_factory=list, description="Timeline event ids supporting this clarification.")
@@ -803,6 +813,15 @@ class MemoryTools:
         entity_type: str = "npc",
         name: str = "",
         current_status: str = "",
+        current_location: str = "",
+        criticality: str = "",
+        custody: str = "",
+        holder: str = "",
+        owner: str = "",
+        protected_by: str = "",
+        last_confirmed_at: str = "",
+        aliases: Optional[List[str]] = None,
+        continuity_tags: Optional[List[str]] = None,
         historical_facts: Optional[List[str]] = None,
         unknowns: Optional[List[str]] = None,
         authoritative_events: Optional[List[str]] = None,
@@ -827,6 +846,15 @@ class MemoryTools:
             entity_type=entity_type,
             name=name,
             current_status=current_status,
+            current_location=current_location,
+            criticality=criticality,
+            custody=custody,
+            holder=holder,
+            owner=owner,
+            protected_by=protected_by,
+            last_confirmed_at=last_confirmed_at,
+            aliases=aliases or [],
+            continuity_tags=continuity_tags or [],
             historical_facts=historical_facts or [],
             unknowns=unknowns or [],
             authoritative_events=authoritative_events or [],
@@ -834,6 +862,7 @@ class MemoryTools:
         )
         entity_facts = _entity_facts(session.scene)
         previous = dict(entity_facts.get(safe_entity_id) or {})
+        fact = merge_entity_fact_preserving_anchors(previous, fact)
         entity_facts[safe_entity_id] = fact
         applied = [{"type": "entity_fact", "entity_id": safe_entity_id, "previous": previous, "current": fact}]
 
@@ -875,6 +904,15 @@ class MemoryTools:
                 "entity_type": entity_type,
                 "name": name,
                 "current_status": current_status,
+                "current_location": current_location,
+                "criticality": criticality,
+                "custody": custody,
+                "holder": holder,
+                "owner": owner,
+                "protected_by": protected_by,
+                "last_confirmed_at": last_confirmed_at,
+                "aliases": aliases or [],
+                "continuity_tags": continuity_tags or [],
                 "historical_facts": historical_facts or [],
                 "unknowns": unknowns or [],
                 "authoritative_events": authoritative_events or [],
@@ -1107,11 +1145,36 @@ class MemoryTools:
                 result = {"ok": False, "error": "invalid_entity_id"}
                 self._audit("record_event_card", {"event_id": event_id, "entity_clarification": item}, result)
                 return result
+            raw_aliases = item.get("aliases")
+            if isinstance(raw_aliases, str):
+                aliases = [raw_aliases]
+            elif isinstance(raw_aliases, list):
+                aliases = list(raw_aliases)
+            elif item.get("alias"):
+                aliases = [item.get("alias")]
+            else:
+                aliases = []
+            raw_continuity_tags = item.get("continuity_tags")
+            if isinstance(raw_continuity_tags, str):
+                continuity_tags = [raw_continuity_tags]
+            elif isinstance(raw_continuity_tags, list):
+                continuity_tags = list(raw_continuity_tags)
+            else:
+                continuity_tags = []
             fact = _build_entity_fact(
                 entity_id=safe_entity_id,
                 entity_type=str(item.get("entity_type") or "npc"),
                 name=str(item.get("name") or ""),
                 current_status=str(item.get("current_status") or ""),
+                current_location=str(item.get("current_location") or item.get("location") or ""),
+                criticality=str(item.get("criticality") or ""),
+                custody=str(item.get("custody") or ""),
+                holder=str(item.get("holder") or ""),
+                owner=str(item.get("owner") or ""),
+                protected_by=str(item.get("protected_by") or ""),
+                last_confirmed_at=str(item.get("last_confirmed_at") or ""),
+                aliases=aliases,
+                continuity_tags=continuity_tags,
                 historical_facts=list(item.get("historical_facts") or []),
                 unknowns=list(item.get("unknowns") or []),
                 authoritative_events=list(item.get("authoritative_events") or []),
@@ -1119,6 +1182,7 @@ class MemoryTools:
             )
             entity_facts = _entity_facts(session.scene)
             previous = dict(entity_facts.get(safe_entity_id) or {})
+            fact = merge_entity_fact_preserving_anchors(previous, fact)
             entity_facts[safe_entity_id] = fact
             entity_result: dict[str, Any] = {"entity_id": safe_entity_id, "entity_fact": fact, "previous": previous}
             thread_id = str(item.get("scene_thread_id") or "").strip()
@@ -4486,10 +4550,19 @@ def _build_entity_fact(
     entity_type: str,
     name: str,
     current_status: str,
-    historical_facts: List[str],
-    unknowns: List[str],
-    authoritative_events: List[str],
-    evidence: List[str],
+    current_location: str = "",
+    criticality: str = "",
+    custody: str = "",
+    holder: str = "",
+    owner: str = "",
+    protected_by: str = "",
+    last_confirmed_at: str = "",
+    aliases: List[str] | None = None,
+    continuity_tags: List[str] | None = None,
+    historical_facts: List[str] | None = None,
+    unknowns: List[str] | None = None,
+    authoritative_events: List[str] | None = None,
+    evidence: List[str] | None = None,
 ) -> Dict[str, Any]:
     fact: Dict[str, Any] = {
         "entity_id": entity_id,
@@ -4499,6 +4572,26 @@ def _build_entity_fact(
     }
     if current_status:
         fact["current_status"] = _short_tag_value(current_status, 300)
+    if current_location:
+        fact["current_location"] = _short_tag_value(current_location, 180)
+    if criticality:
+        fact["criticality"] = _short_tag_value(criticality, 40)
+    if custody:
+        fact["custody"] = _short_tag_value(custody, 80)
+    if holder:
+        fact["holder"] = _short_tag_value(holder, 120)
+    if owner:
+        fact["owner"] = _short_tag_value(owner, 120)
+    if protected_by:
+        fact["protected_by"] = _short_tag_value(protected_by, 120)
+    if last_confirmed_at:
+        fact["last_confirmed_at"] = _short_tag_value(last_confirmed_at, 120)
+    normalized_aliases = [_short_tag_value(item, 80) for item in (aliases or []) if str(item).strip()]
+    if normalized_aliases:
+        fact["aliases"] = list(dict.fromkeys(normalized_aliases))[:12]
+    normalized_tags = [_short_tag_value(item, 80) for item in (continuity_tags or []) if str(item).strip()]
+    if normalized_tags:
+        fact["continuity_tags"] = list(dict.fromkeys(normalized_tags))[:12]
     if historical_facts:
         fact["historical_facts"] = [_short_tag_value(item, 240) for item in historical_facts if str(item).strip()][:12]
     if unknowns:
@@ -4539,6 +4632,16 @@ def _clarify_entity_in_scene_thread(thread: Dict[str, Any], fact: Dict[str, Any]
         target["name"] = name
     if fact.get("current_status"):
         target["status"] = fact["current_status"]
+    if fact.get("current_location"):
+        target["location"] = fact["current_location"]
+    if fact.get("custody"):
+        target["custody"] = fact["custody"]
+    if fact.get("holder"):
+        target["holder"] = fact["holder"]
+    if fact.get("owner"):
+        target["owner"] = fact["owner"]
+    if fact.get("protected_by"):
+        target["protected_by"] = fact["protected_by"]
     if fact.get("historical_facts"):
         target["known_facts"] = list(fact.get("historical_facts") or [])[:12]
     if fact.get("unknowns"):
