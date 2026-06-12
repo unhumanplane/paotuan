@@ -255,6 +255,21 @@ def test_tool_registry_exposes_cell_state_tool_for_door_interaction():
     assert any(spec["name"] == "update_cell_state" for spec in specs)
 
 
+def test_tool_registry_exposes_spatial_tools_for_rendezvous_movement():
+    registry = _registry_with_started_session()
+    _toolset, names, _executor, _specs = registry.for_mode(
+        GameMode.TACTICAL,
+        "group",
+        message="与凯德会合",
+    )
+
+    assert "get_battle_snapshot" in names
+    assert "move_entity" in names
+    assert "check_attack_vector" in names
+    assert "turn_control" in names
+    assert "update_character_tags" in names
+
+
 def test_tool_registry_post_game_character_profile_requests_keep_binding_tools():
     registry = _registry_with_started_session()
     session = registry.repository.load_session("group")

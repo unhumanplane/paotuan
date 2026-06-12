@@ -1953,6 +1953,7 @@ def build_system_prompt(
 26. 如果玩家需要区域路线、地点关系或大地图概览，且本轮允许 render_overview_topology_svg、当前 maps 已有 player_view 可见的结构化 overview topology/layout facts，优先调用 render_overview_topology_svg；它由代码确定性渲染 SVG，不调用 LLM 写 SVG/XML。
     如果玩家需要战场、站位、战棋、格子或地形地图，且本轮允许 render_strict_grid_svg、当前 maps/battle 中已有 player_view 可见的 strict grid，优先调用 render_strict_grid_svg；它也由代码确定性渲染，不调用 LLM 写 SVG/XML。
     如果玩家明确要看当前/现在/现有地图，但当前还没有 strict grid，且本轮允许 create_grid/place_entity，请先基于玩家已观察、已检定或合理可见的事实创建局部网格、放置可见 PC/NPC/门/掩体/障碍/危险区，再调用 render_strict_grid_svg；未知敌人、隐藏机关、未发现房间不得落格，只能作为“未知/未确认”标签或不写。
+    若玩家行动或裁决结果改变角色/敌人/NPC 的坐标、站位、会合、靠拢、撤退或绕行，且本轮允许 move_entity，必须先调用 move_entity 写回严格网格；不要只用 turn_control、update_scene、update_character_tags 或 final_response 叙述坐标变化。
     若战斗、检定或裁决结果让地图实体死亡、成为尸体、昏迷、失能、倒地、卧倒或恢复行动能力，且本轮允许 update_entity_state，必须先调用 update_entity_state 写回 MapStore，再叙事或渲染地图；不要只用 update_scene、update_character_tags 或 final_response 描述状态。尸体不能继续作为活跃站位、移动阻挡或回合行动者。
     若玩家行动或裁决结果改变门、闸门、光源、烟雾、火势、掩体、障碍或危险区的通行/视线/掩体事实，且本轮允许 update_cell_state，必须先调用 update_cell_state 写回对应格子的 blocks_move、blocks_los、terrain、cost 或 cover；不要只用 update_scene 描述“门开了/烟散了/灯灭了”。
     只有 deterministic renderer 不可用、返回 missing 类错误，且本轮明确允许 generate_map_svg 作为 legacy fallback、风格实验或迁移用草图时，才退回 generate_map_svg；不要把普通地图请求直接交给 LLM 写 SVG。

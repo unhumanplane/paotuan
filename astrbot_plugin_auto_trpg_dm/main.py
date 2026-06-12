@@ -60,7 +60,7 @@ from .tools.control_tools import ControlTools
 from .tools.turn_tools import TurnTools
 
 
-PLUGIN_VERSION = "0.1.141"
+PLUGIN_VERSION = "0.1.142"
 
 _HEARTBEAT_OWNER_ATTR = "_auto_trpg_dm_heartbeat_owner_token"
 _HEARTBEAT_TASK_ATTR = "_auto_trpg_dm_heartbeat_task"
@@ -2518,7 +2518,8 @@ class AutoTrpgDmPlugin(Star):
             current_id,
             elapsed,
             result.get("ok"),
-            (result.get("turn") or {}).get("current_entity_id", ""),
+            (result.get("turn") or {}).get("current_entity_id", "")
+            or (result.get("turn") or {}).get("phase", ""),
         )
         notice = ""
         if result.get("ok"):
@@ -2643,11 +2644,16 @@ class AutoTrpgDmPlugin(Star):
         updated_turn = updated_battle.get("turn")
         changed = False
         should_pause = bool(counter.get("should_pause"))
+        updated_phase = ""
         if isinstance(updated_turn, dict):
+            updated_phase = str(updated_turn.get("phase") or "")
             updated_round = _int_or_default(updated_turn.get("round"), int(counter["round"]))
             if updated_round == int(counter["round"]) or should_pause:
                 self._store_turn_timeout_counter(updated_turn, counter)
                 changed = True
+        if should_pause and updated_phase and updated_phase != "character_turn":
+            info["pause_suppressed_reason"] = updated_phase
+            should_pause = False
 
         if should_pause:
             scene = dict(updated_session.scene or {})

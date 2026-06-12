@@ -189,6 +189,21 @@ def test_system_prompt_mentions_strict_turn_sequence_mode():
     assert "只能针对 current_entity_id" in prompt
 
 
+def test_system_prompt_requires_move_entity_for_grid_position_changes():
+    session = GameSession.new("group")
+
+    prompt = build_system_prompt(
+        session,
+        GameMode.TACTICAL,
+        ["turn_control", "move_entity", "update_character_tags"],
+        actor={"player_id": "player-1"},
+    )
+
+    assert "改变角色/敌人/NPC 的坐标、站位、会合、靠拢、撤退或绕行" in prompt
+    assert "必须先调用 move_entity 写回严格网格" in prompt
+    assert "不要只用 turn_control、update_scene、update_character_tags 或 final_response" in prompt
+
+
 def test_system_prompt_allows_owner_confirmed_hosting_standing_order():
     session = GameSession.new("group")
 

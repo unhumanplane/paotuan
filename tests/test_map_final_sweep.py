@@ -415,6 +415,59 @@ def test_heartbeat_marks_non_player_turn_for_adjudication_without_auto_advance(t
     assert saved.battle["turn"]["_needs_dm_adjudication"]["current_entity_id"] == "npc_b3_1"
 
 
+def test_timeout_pause_is_suppressed_after_round_enters_scene_resolution():
+    repo = _repo("timeout_pause_scene_resolution")
+    session = GameSession.new("group")
+    session.mode = GameMode.TACTICAL
+    session.characters["pc_gali"] = Character(id="pc_gali", name="gali", player_id="gali-owner")
+    session.characters["pc_kaide"] = Character(id="pc_kaide", name="凯德", player_id="kaide-owner")
+    session.battle = {
+        "active": True,
+        "turn_entity_id": "",
+        "turn": {
+            "active": True,
+            "round": 15,
+            "phase": "scene_resolution",
+            "turn_order": ["pc_gali", "pc_kaide"],
+            "current_index": -1,
+            "current_entity_id": "",
+            "actions_this_round": {},
+        },
+    }
+    repo.save_session(session)
+    before_turn = {
+        "active": True,
+        "round": 15,
+        "phase": "character_turn",
+        "turn_order": ["pc_gali", "pc_kaide"],
+        "current_index": 1,
+        "current_entity_id": "pc_kaide",
+        "actions_this_round": {"pc_gali": {"source": "player"}},
+    }
+    plugin = object.__new__(AutoTrpgDmPlugin)
+    plugin.repository = repo
+    plugin.plugin_logger = type("Logger", (), {"info": lambda *args, **kwargs: None})()
+
+    result = plugin._apply_turn_timeout_pause_if_needed(
+        "group",
+        session,
+        before_turn,
+        "pc_kaide",
+        {},
+        {"ok": True, "turn": {"phase": "scene_resolution", "current_entity_id": ""}},
+        source="heartbeat_timeout",
+        actor={"player_id": "__heartbeat__", "display_name": "本地心跳"},
+    )
+
+    saved = repo.load_session("group")
+    assert result["auto_paused"] is False
+    assert result["pause_suppressed_reason"] == "scene_resolution"
+    assert not saved.scene.get("_dm_paused")
+    assert saved.battle["turn"]["phase"] == "scene_resolution"
+    assert saved.battle["turn"]["_timeout_tracker_count"] == 1
+    assert saved.battle["turn"]["_timeout_tracker_total"] == 2
+
+
 def test_action_pacing_accepts_legacy_json_string_state():
     repo = _repo("action_pacing_json_state")
     session = GameSession.new("group")
