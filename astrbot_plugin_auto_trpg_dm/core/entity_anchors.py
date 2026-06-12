@@ -232,6 +232,17 @@ def normalized_anchor_text(value: Any) -> str:
     return re.sub(r"\s+", "", raw).lower()
 
 
+def _anchor_raw_text(value: Any) -> str:
+    if value in (None, "", [], {}):
+        return ""
+    if isinstance(value, str):
+        return value
+    try:
+        return json.dumps(value, ensure_ascii=False, sort_keys=True)
+    except Exception:
+        return str(value)
+
+
 def contains_any_text(text: str, terms: tuple[str, ...] | set[str]) -> bool:
     if not text:
         return False
@@ -427,14 +438,38 @@ def text_contradicts_entity_anchor(text: Any, entity_id: str, fact: dict[str, An
     kinds = entity_fact_resolution_kinds(fact)
     if not kinds:
         return False
-    if "life" in kinds and contains_any_text(normalized_text, LIFE_UNCERTAINTY_TERMS):
+    if "life" in kinds and _entity_scoped_contains_any_text(text, entity_id, fact, LIFE_UNCERTAINTY_TERMS):
         return True
-    if "location" in kinds and contains_any_text(normalized_text, LOCATION_UNCERTAINTY_TERMS):
+    if "location" in kinds and _entity_scoped_contains_any_text(text, entity_id, fact, LOCATION_UNCERTAINTY_TERMS):
         return True
-    if "possession" in kinds and contains_any_text(normalized_text, POSSESSION_UNCERTAINTY_TERMS):
+    if "possession" in kinds and _entity_scoped_contains_any_text(text, entity_id, fact, POSSESSION_UNCERTAINTY_TERMS):
         return True
-    if "state" in kinds and contains_any_text(normalized_text, STATE_UNCERTAINTY_TERMS):
+    if "state" in kinds and _entity_scoped_contains_any_text(text, entity_id, fact, STATE_UNCERTAINTY_TERMS):
         return True
+    return False
+
+
+def _entity_scoped_contains_any_text(text: Any, entity_id: str, fact: dict[str, Any], terms: tuple[str, ...]) -> bool:
+    aliases = [
+        normalized_anchor_text(alias)
+        for alias in entity_aliases(entity_id, fact)
+        if normalized_anchor_text(alias)
+    ]
+    if not aliases:
+        return False
+    term_values = [normalized_anchor_text(term) for term in terms if normalized_anchor_text(term)]
+    if not term_values:
+        return False
+    raw = _anchor_raw_text(text)
+    # Keep "证据被转移；线人已救出" from becoming a false contradiction while still
+    # catching "线人被转移" or "线人可能还在门后" in the same local clause.
+    clauses = re.split(r"[。！？!?；;,，、\n\r]+", raw)
+    for clause in clauses:
+        normalized_clause = normalized_anchor_text(clause)
+        if not normalized_clause:
+            continue
+        if any(alias in normalized_clause for alias in aliases) and any(term in normalized_clause for term in term_values):
+            return True
     return False
 
 

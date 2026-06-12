@@ -60,7 +60,7 @@ from .tools.control_tools import ControlTools
 from .tools.turn_tools import TurnTools
 
 
-PLUGIN_VERSION = "0.1.144"
+PLUGIN_VERSION = "0.1.145"
 
 _HEARTBEAT_OWNER_ATTR = "_auto_trpg_dm_heartbeat_owner_token"
 _HEARTBEAT_TASK_ATTR = "_auto_trpg_dm_heartbeat_task"

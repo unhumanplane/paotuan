@@ -886,6 +886,33 @@ def test_normalize_entity_anchor_continuity_retires_plain_transfer_risk():
     assert "已救出" in session.scene["stakes"]
 
 
+def test_normalize_entity_anchor_continuity_keeps_unrelated_transfer_pressure():
+    session = GameSession.new("group")
+    session.scene.update(
+        {
+            "stakes": "南端防火门后的敌人在持续搬运/通话——时间可能意味着证据被转移，线人已救出并随队但撤离窗口收窄。",
+            "entity_facts": {
+                "npc_informant": {
+                    "entity_type": "npc",
+                    "name": "失踪线人",
+                    "current_status": "已救出；随队抵达 B-07 冷藏库区域，仍需护送撤离。",
+                    "current_location": "B-07 冷藏库区域",
+                    "criticality": "critical",
+                    "custody": "with_party",
+                    "aliases": ["线人"],
+                    "authoritative_events": ["event_informant_escorted_to_b07"],
+                }
+            },
+        }
+    )
+
+    result = normalize_entity_anchor_continuity(session)
+
+    assert result["changed"] is False
+    assert "证据被转移" in session.scene["stakes"]
+    assert "已过期" not in session.scene["stakes"]
+
+
 def test_normalize_entity_anchor_continuity_handles_item_and_door_anchors():
     session = GameSession.new("group")
     session.scene.update(
