@@ -4,6 +4,7 @@ from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
+from ..core.combat_lifecycle import ended_turn_state
 from ..core.map_core import (
     DEFAULT_STRICT_LOCAL_MAP_ID,
     MAP_AUTHORITY_SPATIAL,
@@ -174,7 +175,7 @@ class StrictLifecycleTools:
         if isinstance(record.get("grid"), dict):
             battle["grid"] = record["grid"]
         battle["turn_entity_id"] = ""
-        battle["turn"] = _ended_turn_state(battle.get("turn"), summary=summary, reason=reason)
+        battle["turn"] = ended_turn_state(battle.get("turn"), summary=summary, reason=reason)
         session.battle = battle
         session.mode = GameMode.NARRATIVE
         self.repository.save_session(session)

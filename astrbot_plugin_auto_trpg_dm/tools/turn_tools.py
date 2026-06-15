@@ -5,6 +5,7 @@ from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
+from ..core.combat_lifecycle import close_combat_lifecycle
 from ..core.control_authority import owner_player_id_for_entity, resolve_control_authority
 from ..core.hosted_action_policy import evaluate_hosted_action_policy
 from ..core.map_core import load_active_strict_grid_entities
@@ -277,15 +278,13 @@ class TurnTools:
                     "current_entity_id": str(turn.get("current_entity_id", "")),
                 }
             else:
-                turn["active"] = False
-                turn["phase"] = "ended"
-                turn["current_entity_id"] = ""
-                session.battle["turn_entity_id"] = ""
-                session.battle["active"] = False
-                session.mode = GameMode.NARRATIVE
+                close_combat_lifecycle(
+                    session,
+                    summary=summary,
+                    reason=reason,
+                    source="turn_control_end_encounter",
+                )
                 _clear_stale_turn_timeout_pause(session.scene)
-                if summary:
-                    self._append_turn_log(session, "encounter_end", summary, reason)
                 self.repository.save_session(session)
                 result = self._status(session)
         else:

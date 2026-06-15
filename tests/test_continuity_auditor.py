@@ -9,6 +9,12 @@ from astrbot_plugin_auto_trpg_dm.core.continuity_auditor import (
     normalize_active_scene_thread,
     normalize_resolved_combat_continuity,
 )
+from astrbot_plugin_auto_trpg_dm.core.map_core import (
+    DEFAULT_STRICT_LOCAL_MAP_ID,
+    MAP_LIFECYCLE_ACTIVE_EXPLORATION,
+    get_strict_map_lifecycle,
+    save_active_strict_grid,
+)
 from astrbot_plugin_auto_trpg_dm.core.models import Character, GameMode, GameSession
 
 
@@ -66,6 +72,54 @@ def test_deterministic_repair_does_not_mark_terminal_without_llm_audit():
     assert "status" not in session.scene["scene_threads"]["character:pc_latatos"]
     assert session.scene["active_scene_thread_id"] == "character:pc_latatos"
     assert not session.characters["pc_latatos"].tags
+
+
+
+
+def test_deterministic_repair_closes_stale_battle_when_scene_has_moved_to_exploration():
+    session = GameSession.new("group")
+    session.mode = GameMode.TACTICAL
+    session.scene["summary"] = "轨道作业车已经驶离冷库，队伍抵达北向隧道继续探索。"
+    session.scene["last_resolution"] = "冷库战斗已结束，残敌已肃清，队伍撤离冷库。"
+    session.battle = {
+        "active": True,
+        "map_id": DEFAULT_STRICT_LOCAL_MAP_ID,
+        "turn_entity_id": "npc_b3_2",
+        "grid": {"width": 6, "height": 6, "cells": [], "entities": {}},
+        "turn": {
+            "active": True,
+            "phase": "character_turn",
+            "turn_order": ["pc_owner", "npc_b3_2"],
+            "current_entity_id": "npc_b3_2",
+            "current_index": 1,
+        },
+    }
+    save_active_strict_grid(
+        session.maps,
+        session.battle["grid"],
+        map_id=DEFAULT_STRICT_LOCAL_MAP_ID,
+        title="North Tunnel",
+        lifecycle=MAP_LIFECYCLE_ACTIVE_EXPLORATION,
+    )
+
+    result = apply_deterministic_continuity_repairs(
+        session,
+        actor={"player_id": "p1"},
+        player_message="继续探索北向隧道。",
+        completion="轨道作业车停在北向隧道入口，前方可继续探索。",
+        tool_results=[],
+    )
+
+    assert any(item["type"] == "stale_battle_state_closed" for item in result["applied"])
+    assert session.mode == GameMode.NARRATIVE
+    assert session.battle["active"] is False
+    assert session.battle["map_id"] == ""
+    assert session.battle["turn_entity_id"] == ""
+    assert session.battle["turn"]["active"] is False
+    assert session.battle["turn"]["phase"] == "ended"
+    assert session.battle["turn"]["turn_order"] == []
+    assert session.battle["turn"]["current_entity_id"] == ""
+    assert get_strict_map_lifecycle(session.maps, DEFAULT_STRICT_LOCAL_MAP_ID)["combat_linked"] is False
 
 
 def test_deterministic_repair_does_not_retire_actor_from_policy_completion():

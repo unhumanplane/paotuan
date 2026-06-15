@@ -3,7 +3,13 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from uuid import uuid4
 
-from astrbot_plugin_auto_trpg_dm.core.map_core import DEFAULT_STRICT_LOCAL_MAP_ID, save_active_strict_grid
+from astrbot_plugin_auto_trpg_dm.core.map_core import (
+    DEFAULT_STRICT_LOCAL_MAP_ID,
+    MAP_LIFECYCLE_ACTIVE_COMBAT_LINKED,
+    MAP_LIFECYCLE_ACTIVE_EXPLORATION,
+    get_strict_map_lifecycle,
+    save_active_strict_grid,
+)
 from astrbot_plugin_auto_trpg_dm.core.models import Character, GameMode, GameSession
 from astrbot_plugin_auto_trpg_dm.core.control_authority import (
     CONTROL_STATUS_HOSTED_BY_SYSTEM,
@@ -86,6 +92,47 @@ def test_non_owner_cannot_skip_current_player_turn():
     session = repo.load_session("group")
     assert session.battle["turn"]["current_entity_id"] == "pc_owner"
     assert session.battle["turn"]["actions_this_round"] == {}
+
+
+
+
+def test_end_encounter_syncs_strict_map_and_clears_stale_turn_order():
+    repo = _repo_with_player_turn()
+    session = repo.load_session("group")
+    session.maps["active_strict_map_id"] = DEFAULT_STRICT_LOCAL_MAP_ID
+    save_active_strict_grid(
+        session.maps,
+        session.battle["grid"],
+        map_id=DEFAULT_STRICT_LOCAL_MAP_ID,
+        title="Cold Room",
+        lifecycle=MAP_LIFECYCLE_ACTIVE_COMBAT_LINKED,
+    )
+    session.battle["map_id"] = DEFAULT_STRICT_LOCAL_MAP_ID
+    session.battle["turn"]["phase"] = "scene_resolution"
+    session.battle["turn"]["turn_order"] = ["pc_owner", "npc_b3_2"]
+    session.battle["turn"]["current_entity_id"] = "npc_b3_2"
+    session.battle["turn_entity_id"] = "npc_b3_2"
+    repo.save_session(session)
+
+    result = asyncio.run(
+        TurnTools(repo, "group").turn_control(
+            action="end_encounter",
+            summary="残敌已肃清，队伍撤离冷库。",
+            reason="无剩余活敌，切回探索。",
+        )
+    )
+
+    assert result["ok"] is True
+    saved = repo.load_session("group")
+    assert saved.mode == GameMode.NARRATIVE
+    assert saved.battle["active"] is False
+    assert saved.battle["map_id"] == ""
+    assert saved.battle["turn_entity_id"] == ""
+    assert saved.battle["turn"]["active"] is False
+    assert saved.battle["turn"]["phase"] == "ended"
+    assert saved.battle["turn"]["turn_order"] == []
+    assert saved.battle["turn"]["current_entity_id"] == ""
+    assert get_strict_map_lifecycle(saved.maps, DEFAULT_STRICT_LOCAL_MAP_ID)["lifecycle"] == MAP_LIFECYCLE_ACTIVE_EXPLORATION
 
 
 def test_non_owner_advance_turn_error_includes_auto_act_hint():

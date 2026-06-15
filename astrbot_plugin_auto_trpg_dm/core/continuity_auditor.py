@@ -4,6 +4,8 @@ import json
 import re
 from typing import Any, Awaitable, Callable
 
+from .combat_lifecycle import close_combat_lifecycle
+from .map_core import MAP_LIFECYCLE_ACTIVE_COMBAT_LINKED, get_strict_map_lifecycle
 from .models import Character, GameMode, GameSession, infer_tag_layer, utc_now_iso
 from .timeline import timeline_view
 
@@ -368,6 +370,10 @@ def apply_deterministic_continuity_repairs(
     if active_result.get("changed"):
         result["applied"].append(active_result)
 
+    battle_result = close_stale_battle_state_if_scene_moved_on(session)
+    if battle_result.get("changed"):
+        result["applied"].append(battle_result)
+
     stale_result = normalize_resolved_combat_continuity(session)
     if stale_result.get("changed"):
         result["applied"].append(stale_result)
@@ -529,11 +535,74 @@ def apply_continuity_audit_patches(
     if active_result.get("changed"):
         result["applied"].append(active_result)
 
+    battle_result = close_stale_battle_state_if_scene_moved_on(session)
+    if battle_result.get("changed"):
+        result["applied"].append(battle_result)
+
     stale_result = normalize_resolved_combat_continuity(session)
     if stale_result.get("changed"):
         result["applied"].append(stale_result)
     return result
 
+
+
+def close_stale_battle_state_if_scene_moved_on(session: GameSession) -> dict[str, Any]:
+    battle = session.battle if isinstance(session.battle, dict) else {}
+    turn = battle.get("turn") if isinstance(battle.get("turn"), dict) else {}
+    if not (battle.get("active") is True or turn.get("active") is True):
+        return {"type": "stale_battle_state_closed", "changed": False}
+
+    map_id = str(battle.get("map_id") or session.maps.get("active_strict_map_id") or "").strip()
+    lifecycle = get_strict_map_lifecycle(session.maps, map_id) if map_id else {"combat_linked": False}
+    if lifecycle.get("lifecycle") == MAP_LIFECYCLE_ACTIVE_COMBAT_LINKED or lifecycle.get("combat_linked"):
+        return {"type": "stale_battle_state_closed", "changed": False}
+
+    authoritative = _flatten_text(
+        [
+            session.scene.get("last_resolution"),
+            session.scene.get("summary"),
+            session.scene.get("current_conflict"),
+            session.scene.get("current_objective"),
+            session.scene.get("scene_threads"),
+            session.scene.get("_recent_narrative_events"),
+        ]
+    )
+    if not _stale_battle_scene_moved_on(authoritative):
+        return {"type": "stale_battle_state_closed", "changed": False}
+
+    closed = close_combat_lifecycle(
+        session,
+        summary="deterministic continuity repair closed stale battle state",
+        reason="strict map is no longer combat-linked and scene has moved on",
+        source="continuity_repair_stale_battle",
+    )
+    return {
+        "type": "stale_battle_state_closed",
+        "changed": True,
+        "map_id": closed.get("map_id", map_id),
+        "reason": "scene_moved_on_after_combat",
+    }
+
+
+def _stale_battle_scene_moved_on(text: str) -> bool:
+    if not text:
+        return False
+    resolved = _contains_any(text, COMBAT_RESOLUTION_TERMS + ("战斗结束", "结束战斗", "无剩余活敌", "残敌已肃清"))
+    moved_on = _contains_any(
+        text,
+        (
+            "撤离",
+            "离开",
+            "驶离",
+            "转场",
+            "继续探索",
+            "抵达",
+            "进入",
+            "北向隧道",
+            "轨道作业车",
+        ),
+    )
+    return resolved and moved_on
 
 def normalize_resolved_combat_continuity(session: GameSession) -> dict[str, Any]:
     """Suppress stale local-combat hooks after newer state says that fight is over."""
