@@ -164,6 +164,33 @@ def test_cycle_control_timeout_policy_advances_with_safe_afk_player_defaulted():
     assert repo.audit_records[-1]["timeline_result"]["afk_defaulted_player_ids"] == ["p2"]
 
 
+def test_cycle_control_timeout_policy_defaults_failed_forward_afk_player():
+    repo = FakeRepository()
+    repo.session.participants = {"p1": {}, "p2": {}}
+    repo.session.player_character_map = {"p1": "pc-1", "p2": "pc-2"}
+    repo.session.scene["scene_threads"] = {
+        "character:pc-2": {
+            "summary": "pc-2's locked-door route failed forward into the party route.",
+            "participants": ["pc-2"],
+            "active_character_id": "pc-2",
+            "status": "failed_forward",
+        },
+    }
+
+    result = asyncio.run(
+        CycleTools(repo, "group", actor={"player_id": "p1"}).cycle_control(
+            "end_cycle",
+            reason="大家休息到第二天清晨",
+            timeline_patch={"day": 2, "time_of_day": "morning"},
+            sync_policy="timeout",
+        )
+    )
+
+    assert result["ok"] is True
+    assert result["timeline_result"]["afk_defaulted_player_ids"] == ["p2"]
+    assert repo.session.timeline["day"] == 2
+
+
 def test_cycle_control_timeout_policy_rejects_unsafe_afk_player():
     repo = FakeRepository()
     repo.session.participants = {"p1": {}, "p2": {}}

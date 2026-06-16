@@ -12,6 +12,15 @@ from .entity_anchors import (
     text_contradicts_entity_anchor,
 )
 from .models import Character, GameMode, GameSession, infer_tag_layer, utc_now_iso
+from .scene_threads import (
+    THREAD_CLOSED_STATUSES,
+    THREAD_REOPEN_STATUSES,
+    THREAD_SOFT_EXIT_STATUSES,
+    THREAD_TERMINAL_STATUSES,
+    normalize_thread_status,
+    thread_can_leave_focus,
+    thread_is_closed,
+)
 from .timeline import timeline_view
 
 
@@ -52,7 +61,7 @@ CONTINUITY_AUDITOR_SYSTEM_PROMPT = """你是独立上下文的跑团连续性审
       {
         "thread_id": "已有 thread id",
         "patch": {
-          "status": "closed|archived|resolved|retired|active|空字符串",
+          "status": "closed|archived|resolved|failed_forward|blocked|deferred|retired|active|空字符串",
           "summary": "可选；只能改写为已由证据支持的收束事实",
           "current_objective": "可选；只能改写为已由证据支持的收束事实"
         }
@@ -88,7 +97,11 @@ CONTINUITY_AUDITOR_SYSTEM_PROMPT = """你是独立上下文的跑团连续性审
 """
 
 
-CLOSED_THREAD_STATUSES = {"archived", "closed", "resolved", "retired"}
+CLOSED_THREAD_STATUSES = THREAD_CLOSED_STATUSES
+SOFT_EXIT_THREAD_STATUSES = THREAD_SOFT_EXIT_STATUSES
+TERMINAL_THREAD_STATUSES = THREAD_TERMINAL_STATUSES
+THREAD_LIFECYCLE_STATUSES = THREAD_CLOSED_STATUSES | THREAD_SOFT_EXIT_STATUSES
+ORDINARY_THREAD_EXIT_STATUSES = THREAD_LIFECYCLE_STATUSES - THREAD_TERMINAL_STATUSES - {"closed"}
 TERMINAL_STATUS_TAG_KEYS = (
     "退场状态",
     "离场状态",
@@ -685,7 +698,7 @@ def normalize_active_scene_thread(session: GameSession) -> dict[str, Any]:
     closed_thread_ids: list[str] = []
     active_id = str(scene.get("active_scene_thread_id") or "").strip()
     active = threads.get(active_id) if active_id else None
-    if isinstance(active, dict) and not _scene_thread_is_closed(active):
+    if isinstance(active, dict) and not thread_can_leave_focus(active):
         return {
             "type": "active_scene_thread_normalized",
             "changed": bool(alias_changed or closed_thread_ids),
@@ -998,8 +1011,8 @@ def _apply_safe_scene_thread_patch(
     thread = threads.get(thread_id)
     if not isinstance(thread, dict):
         return {"ok": False, "type": "scene_thread", "thread_id": thread_id, "reason": "missing_thread"}
-    status = str(patch.get("status") or "").strip().lower()
-    if status in {"active", "open", "reopened"}:
+    status = normalize_thread_status(patch.get("status"))
+    if status in THREAD_REOPEN_STATUSES:
         if not _reactivation_evidence_for_thread(
             session,
             thread_id,
@@ -1018,7 +1031,7 @@ def _apply_safe_scene_thread_patch(
         thread["updated_at"] = utc_now_iso()
         return {"ok": True, "type": "scene_thread", "thread_id": thread_id, "patch": {"status": "active"}}
     if not status and any(key in patch for key in ("status", "summary", "current_objective", "current_conflict", "location")):
-        if _scene_thread_is_closed(thread):
+        if thread_can_leave_focus(thread):
             if not _reactivation_evidence_for_thread(
                 session,
                 thread_id,
@@ -1047,9 +1060,9 @@ def _apply_safe_scene_thread_patch(
         if mirror_result.get("ok"):
             return mirror_result
         return mirror_result
-    if status and status not in CLOSED_THREAD_STATUSES:
+    if status and status not in THREAD_LIFECYCLE_STATUSES:
         return {"ok": False, "type": "scene_thread", "thread_id": thread_id, "reason": "unsupported_status"}
-    if status in CLOSED_THREAD_STATUSES:
+    if status in THREAD_TERMINAL_STATUSES or status == "closed":
         if not _llm_terminal_evidence_for_thread(
             terminal_evidence or {},
             session,
@@ -1059,6 +1072,35 @@ def _apply_safe_scene_thread_patch(
             return {"ok": False, "type": "scene_thread", "thread_id": thread_id, "reason": "missing_terminal_evidence"}
         thread["status"] = status
         for key in ("summary", "current_objective", "current_conflict"):
+            value = patch.get(key)
+            if isinstance(value, str) and value.strip():
+                thread[key] = _short_text(value, 700 if key == "summary" else 360)
+        thread["updated_at"] = utc_now_iso()
+        return {"ok": True, "type": "scene_thread", "thread_id": thread_id, "patch": {"status": status}}
+    if status in ORDINARY_THREAD_EXIT_STATUSES:
+        if not _llm_scene_thread_exit_evidence_for_thread(
+            terminal_evidence or {},
+            session,
+            thread_id,
+            thread,
+            patch,
+            actor=actor,
+            player_message=player_message,
+            completion=completion,
+            tool_results=tool_results,
+        ):
+            return {"ok": False, "type": "scene_thread", "thread_id": thread_id, "reason": "missing_closure_evidence"}
+        thread["status"] = status
+        for key in (
+            "summary",
+            "current_objective",
+            "current_conflict",
+            "location",
+            "close_reason",
+            "failure_forward",
+            "next_thread_id",
+            "next_objective",
+        ):
             value = patch.get(key)
             if isinstance(value, str) and value.strip():
                 thread[key] = _short_text(value, 700 if key == "summary" else 360)
@@ -1272,6 +1314,55 @@ def _llm_terminal_evidence_for_thread(
     for participant in thread.get("participants") or []:
         participant_id = str(participant or "")
         if participant_id and _llm_terminal_evidence_for_character(evidence_map, session, participant_id):
+            return True
+    return False
+
+
+def _llm_scene_thread_exit_evidence_for_thread(
+    evidence_map: dict[str, Any],
+    session: GameSession,
+    thread_id: str,
+    thread: dict[str, Any],
+    patch: dict[str, Any],
+    *,
+    actor: dict[str, Any],
+    player_message: str,
+    completion: str,
+    tool_results: list[dict[str, Any]],
+) -> bool:
+    status = normalize_thread_status(patch.get("status"))
+    if status in THREAD_TERMINAL_STATUSES or status == "closed":
+        return _llm_terminal_evidence_for_thread(evidence_map, session, thread_id, thread)
+    if evidence_map.get("by_thread", {}).get(thread_id):
+        return True
+    active_character_id = str(thread.get("active_character_id") or "")
+    if not active_character_id and thread_id.startswith("character:"):
+        active_character_id = thread_id.split(":", 1)[1]
+    if active_character_id and _llm_terminal_evidence_for_character(evidence_map, session, active_character_id):
+        return True
+    for participant in thread.get("participants") or []:
+        participant_id = str(participant or "")
+        if participant_id and _llm_terminal_evidence_for_character(evidence_map, session, participant_id):
+            return True
+    source_text = _terminal_source_text(
+        session,
+        actor=actor,
+        player_message=player_message,
+        completion=completion,
+        tool_results=tool_results,
+    )
+    for key in (
+        "summary",
+        "current_objective",
+        "current_conflict",
+        "location",
+        "close_reason",
+        "failure_forward",
+        "next_thread_id",
+        "next_objective",
+    ):
+        value = patch.get(key)
+        if isinstance(value, str) and value.strip() and _external_audit_evidence_supported(value, source_text):
             return True
     return False
 
@@ -1953,7 +2044,7 @@ def _merge_scene_thread_alias_records(legacy: dict[str, Any], current: dict[str,
 
 
 def _scene_thread_is_closed(thread: dict[str, Any]) -> bool:
-    return str((thread or {}).get("status") or "").strip().lower() in CLOSED_THREAD_STATUSES
+    return thread_is_closed(thread)
 
 
 def _find_replacement_scene_thread_id(scene: dict[str, Any], *, exclude_thread_id: str) -> str:
@@ -1961,7 +2052,7 @@ def _find_replacement_scene_thread_id(scene: dict[str, Any], *, exclude_thread_i
     for candidate_id, thread in _scene_threads(scene).items():
         if candidate_id == exclude_thread_id or not isinstance(thread, dict):
             continue
-        if _scene_thread_is_closed(thread):
+        if thread_can_leave_focus(thread):
             continue
         candidates.append((str(thread.get("updated_at") or ""), str(candidate_id)))
     if not candidates:

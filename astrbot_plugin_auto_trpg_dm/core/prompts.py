@@ -22,6 +22,7 @@ from .models import (
     project_public_relation_state,
 )
 from .prompt_projection import project_ra_summary_for_dm_prompt
+from .scene_threads import THREAD_OBSOLETE_STATUSES, thread_is_obsolete
 from .scene_hooks import project_visible_scene_value
 from .timeline import active_player_ids, timeline_advance_requires_sync
 from .entity_anchors import (
@@ -452,19 +453,7 @@ SCENE_LIVE_HISTORICAL_DROP_KEYS = {
     "_player_guidance",
     "initial_hook",
 }
-OBSOLETE_SCENE_STATUSES = {
-    "resolved",
-    "closed",
-    "archived",
-    "superseded",
-    "retired",
-    "inactive",
-    "completed",
-    "complete",
-    "done",
-    "cancelled",
-    "canceled",
-}
+OBSOLETE_SCENE_STATUSES = THREAD_OBSOLETE_STATUSES
 
 
 def _should_demote_legacy_scene_anchor(
@@ -829,7 +818,7 @@ def _project_scene_thread(
 
 
 def _scene_thread_is_closed(thread: dict[str, Any]) -> bool:
-    return str((thread or {}).get("status") or "").strip().lower() in OBSOLETE_SCENE_STATUSES
+    return thread_is_obsolete(thread)
 
 
 def _effective_active_scene_thread_id(threads: Any, active_thread_id: str) -> str:

@@ -309,6 +309,63 @@ def test_llm_audit_patch_can_mark_terminal_without_player_consent():
     assert session.scene["scene_threads"]["character:pc_zhagu"]["status"] == "closed"
 
 
+def test_audit_patch_can_fail_forward_scene_thread_without_terminal_evidence():
+    session = GameSession.new("group")
+    session.mode = GameMode.NARRATIVE
+    session.scene["_game_started"] = True
+    session.characters["pc_yaka"] = Character(id="pc_yaka", name="Yaka", player_id="p1")
+    session.player_character_map = {"p1": "pc_yaka"}
+    session.scene["active_scene_thread_id"] = "thread:gate"
+    session.scene["scene_threads"] = {
+        "thread:gate": {
+            "summary": "Yaka tries to force the service gate.",
+            "current_objective": "Open the service gate.",
+            "participants": ["pc_yaka"],
+            "updated_at": "2026-06-16T01:00:00+00:00",
+        }
+    }
+    payload = {
+        "issues": [
+            {
+                "severity": "medium",
+                "problem": "The gate route failed, but the maintenance shaft route is now available.",
+                "evidence": ["The lock jams and the patrol arrives; a maintenance shaft opens beside the gate."],
+                "repair": "Mark the gate thread failed-forward instead of keeping it active.",
+            }
+        ],
+        "safe_patches": {
+            "scene_threads": [
+                {
+                    "thread_id": "thread:gate",
+                    "patch": {
+                        "status": "failed_forward",
+                        "summary": "The gate route fails when the lock jams and the patrol arrives.",
+                        "failure_forward": "A maintenance shaft opens beside the gate.",
+                        "next_objective": "Enter through the maintenance shaft.",
+                    },
+                }
+            ]
+        },
+    }
+
+    result = apply_continuity_audit_patches(
+        session,
+        payload,
+        actor={"player_id": "p1"},
+        player_message="I force the service gate.",
+        completion="The lock jams and the patrol arrives; a maintenance shaft opens beside the gate.",
+        tool_results=[],
+    )
+
+    assert any(item.get("type") == "scene_thread" for item in result["applied"])
+    assert not any(item.get("reason") == "missing_terminal_evidence" for item in result["rejected"])
+    thread = session.scene["scene_threads"]["thread:gate"]
+    assert thread["status"] == "failed_forward"
+    assert thread["failure_forward"] == "A maintenance shaft opens beside the gate."
+    assert session.scene.get("active_scene_thread_id", "") == ""
+    assert session.characters["pc_yaka"].tags == []
+
+
 def test_llm_audit_patch_rejects_terminal_self_attestation():
     session = GameSession.new("group")
     session.mode = GameMode.NARRATIVE

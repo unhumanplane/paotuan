@@ -64,6 +64,35 @@ def test_story_forge_turn_archives_raw_turn_but_projects_only_safe_brief():
     assert "Saltwater stains" in rendered
 
 
+def test_story_forge_brief_filters_failed_forward_open_threads():
+    repo = _repo("story-forge-failed-forward-thread")
+    session = GameSession.new("group")
+    session.scene[STORY_FORGE_ARCHIVE_KEY] = {
+        "open_threads": [
+            {"id": "gate", "text": "Open the service gate.", "status": "failed_forward"},
+            {"id": "shaft", "text": "Use the maintenance shaft.", "status": "open"},
+        ]
+    }
+    session.scene["current_objective"] = "Use the maintenance shaft."
+    repo.save_session(session)
+
+    result = apply_story_forge_turn(
+        repo,
+        "group",
+        actor={"player_id": "p1", "display_name": "Ada"},
+        player_message="I enter the shaft.",
+        dm_response="You crawl into the maintenance shaft.",
+        config=StoryForgeRuntimeConfig(),
+    )
+
+    saved = repo.load_session("group")
+    brief = saved.scene[STORY_FORGE_BRIEF_KEY]
+    thread_ids = {item["id"] for item in brief["open_threads"]}
+    assert result["ok"] is True
+    assert "gate" not in thread_ids
+    assert "shaft" in thread_ids
+
+
 def test_normalize_convergence_action_recovers_nested_scene_goal_map_seed():
     action = normalize_convergence_action(
         {

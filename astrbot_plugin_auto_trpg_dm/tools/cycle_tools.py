@@ -12,6 +12,7 @@ from ..core.timeline import (
     validate_global_timeline_advance,
 )
 from ..core.models import CycleState, utc_now_iso
+from ..core.scene_threads import thread_is_closed
 from ..storage.json_repository import JsonGameRepository
 
 
@@ -250,8 +251,7 @@ def _player_is_safe_to_afk_default(session: Any, player_id: str) -> bool:
     thread = _latest_thread_for_character(session, character_id)
     if not thread:
         return True
-    status = str(thread.get("status") or "").strip().lower()
-    if status in {"archived", "closed", "resolved", "retired"}:
+    if thread_is_closed(thread):
         return True
     text = _flatten_text(thread).lower()
     if thread.get("afk_default_safe") is True:

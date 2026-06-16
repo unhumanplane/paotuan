@@ -38,6 +38,14 @@ from ..core.scene_hooks import (
     project_visible_scene_value,
 )
 from ..core.entity_anchors import merge_entity_fact_preserving_anchors
+from ..core.scene_threads import (
+    THREAD_CLOSED_STATUSES,
+    THREAD_REOPEN_STATUSES,
+    THREAD_SOFT_EXIT_STATUSES,
+    normalize_thread_status,
+    thread_can_leave_focus,
+    thread_is_closed,
+)
 from ..core.session_titles import ensure_session_title
 from ..storage.json_repository import JsonGameRepository
 
@@ -78,8 +86,9 @@ class UpdateSceneArgs(BaseModel):
             "current_access_state,npcs,current_objective,open_hooks,clues,mysteries,stakes,"
             "pressure_clock。涉及移动载具/站台/门锁/队伍分离时，必须用结构化字段明确"
             "停稳、即将启动、正在行驶、已驶离、门已锁/可通行等当前事实。clues/open_hooks/mysteries "
-            "建议使用可见小对象：{id,text,status,visibility}; status 可为 open, discovered, "
-            "suspected, resolved, false_lead, blocked。不要写入未被角色确认的幕后真相。"
+            "建议使用可见小对象：{id,text,status,visibility}; clue/open_hook/mystery status 可为 open, discovered, "
+            "suspected, resolved, false_lead, blocked；scene thread status 可为 open, resolved, failed_forward, "
+            "blocked, deferred, archived。不要写入未被角色确认的幕后真相。"
         ),
     )
 
@@ -166,7 +175,8 @@ SCENE_THREAD_MIRROR_KEYS = {
     "factions",
     "relations",
 }
-SCENE_THREAD_CLOSED_STATUSES = {"archived", "closed", "resolved", "retired"}
+SCENE_THREAD_CLOSED_STATUSES = THREAD_CLOSED_STATUSES
+SCENE_THREAD_SOFT_EXIT_STATUSES = THREAD_SOFT_EXIT_STATUSES
 class UpdateWorldTagsArgs(BaseModel):
     patch: Dict[str, Any] = Field(default_factory=dict, description="世界设定 Tag 补丁，例如 genre,tone,factions,mysteries")
 
@@ -4863,7 +4873,7 @@ def _merge_scene_thread(
     merged = dict(current or {})
     merged.update(patch)
     if _scene_thread_patch_is_terminal(merged, patch):
-        merged["status"] = "closed"
+        merged["status"] = normalize_thread_status(patch.get("status"), default="closed")
     elif _scene_thread_is_closed(merged) and _scene_thread_patch_reopens_terminal(merged, patch, character_id):
         merged.pop("status", None)
     merged["updated_at"] = utc_now_iso()
@@ -4912,7 +4922,7 @@ def _write_scene_mirror(
     scene_thread: Dict[str, Any],
     patch: Dict[str, Any],
 ) -> None:
-    if _scene_thread_is_closed(scene_thread):
+    if thread_can_leave_focus(scene_thread):
         if scene.get("active_scene_thread_id") == thread_id:
             replacement_id = _find_replacement_scene_thread_id(scene, exclude_thread_id=thread_id)
             if replacement_id:
@@ -4937,8 +4947,7 @@ def _mirror_scene_thread_fields(scene: Dict[str, Any], scene_thread: Dict[str, A
 
 
 def _scene_thread_is_closed(thread: Dict[str, Any]) -> bool:
-    status = str((thread or {}).get("status") or "").strip().lower()
-    return status in SCENE_THREAD_CLOSED_STATUSES
+    return thread_is_closed(thread)
 
 
 def _scene_thread_is_inactive(thread: Dict[str, Any]) -> bool:
@@ -4946,17 +4955,17 @@ def _scene_thread_is_inactive(thread: Dict[str, Any]) -> bool:
 
 
 def _scene_thread_patch_is_terminal(thread: Dict[str, Any], patch: Dict[str, Any]) -> bool:
-    status = str((patch or {}).get("status") or "").strip().lower()
-    return status in SCENE_THREAD_CLOSED_STATUSES
+    status = normalize_thread_status((patch or {}).get("status"))
+    return status in SCENE_THREAD_CLOSED_STATUSES or status in SCENE_THREAD_SOFT_EXIT_STATUSES
 
 
 def _scene_thread_patch_reopens_terminal(thread: Dict[str, Any], patch: Dict[str, Any], character_id: str) -> bool:
     if not isinstance(patch, dict) or not patch:
         return False
-    status = str(patch.get("status") or "").strip().lower()
-    if status in SCENE_THREAD_CLOSED_STATUSES:
+    status = normalize_thread_status(patch.get("status"))
+    if status in SCENE_THREAD_CLOSED_STATUSES or status in SCENE_THREAD_SOFT_EXIT_STATUSES:
         return False
-    if status in {"active", "open", "reopened"}:
+    if status in THREAD_REOPEN_STATUSES:
         return True
     if _scene_thread_patch_is_terminal(thread, patch):
         return False
@@ -4991,7 +5000,7 @@ def _find_replacement_scene_thread_id(scene: Dict[str, Any], *, exclude_thread_i
     for candidate_id, thread in threads.items():
         if candidate_id == exclude_thread_id or not isinstance(thread, dict):
             continue
-        if _scene_thread_is_closed(thread):
+        if thread_can_leave_focus(thread):
             continue
         candidates.append((str(thread.get("updated_at") or ""), str(candidate_id)))
     if not candidates:

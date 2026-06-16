@@ -17,6 +17,7 @@ from .map_delivery_cadence import (
 )
 from .map_core import MAP_VIEW_PLAYER
 from .models import GameSession, utc_now_iso
+from .scene_threads import thread_is_obsolete
 from .scene_hooks import project_visible_scene_value
 
 
@@ -1359,7 +1360,7 @@ def _merge_open_threads(value: Any, visible_tracking: dict[str, Any], *, limit: 
         for record in _list_of_dicts(visible_tracking.get(key)):
             status = str(record.get("status") or "open").lower()
             thread_id = _safe_id(record.get("id") or _stable_hash(record.get("text")))
-            if status in {"resolved", "closed", "archived", "retired"}:
+            if thread_is_obsolete({"status": status}):
                 by_id.pop(thread_id, None)
                 continue
             by_id[thread_id] = {
@@ -1381,7 +1382,7 @@ def _filter_open_threads_for_current_scene(value: Any, scene: dict[str, Any], *,
     scored: list[tuple[int, int, dict[str, Any]]] = []
     for index, record in enumerate(records):
         status = str(record.get("status") or "open").strip().lower()
-        if status in {"resolved", "closed", "archived", "retired", "inactive", "completed", "complete", "done", "cancelled", "canceled"}:
+        if thread_is_obsolete({"status": status}):
             continue
         thread_id = str(record.get("id") or record.get("thread_id") or "")
         text = _safe_text(record.get("text") or record.get("summary"), 500)
@@ -1427,7 +1428,7 @@ def _active_thread_ids(scene: dict[str, Any]) -> set[str]:
             if not isinstance(thread, dict):
                 continue
             status = str(thread.get("status") or "active").strip().lower()
-            if status not in {"resolved", "closed", "archived", "retired", "inactive", "completed", "complete", "done"}:
+            if not thread_is_obsolete({"status": status}):
                 ids.add(str(thread_id))
     return {item for item in ids if item}
 
