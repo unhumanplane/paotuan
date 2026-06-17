@@ -685,6 +685,7 @@ def test_fact_check_detector_covers_log_correction_terms():
     assert looks_like_fact_check_request("不是，DM前面记错了") is True
     assert looks_like_fact_check_request("我刚才翻看了一下我们之间的对话，统计的收获不一致") is True
     assert looks_like_fact_check_request("你还是搞错我的名字，我的角色名字是布洛斯诺·温迪") is True
+    assert looks_like_fact_check_request("猎人中心是每城必有设施，不是你刚说的那样") is True
     assert looks_like_fact_check_request("此前创建角色的时候已经确认我的角色名称，请查看游戏日志") is True
     assert looks_like_fact_check_request("我不是这个角色") is False
     assert looks_like_fact_check_request("看一下日志和token消耗") is False
