@@ -2451,30 +2451,30 @@ class IntentRouter:
         if not text:
             return text
         if _wants_full_status_output(raw_player_message) or _wants_expanded_detail_output(raw_player_message):
-            limit = 3600
+            limit = 4800
             if len(text) <= limit:
                 return text
             return text[:limit].rstrip()
         if _wants_opening_output(raw_player_message):
-            limit = 2400
+            limit = 3600
             if len(text) <= limit:
                 return text
             return text[:limit].rstrip()
-        limit = 700
+        limit = 2400
         combat_or_turn_output = _wants_combat_or_turn_output(raw_player_message)
         try:
             turn = ((session.battle or {}).get("turn") or {})
             if turn.get("active") and turn.get("output_limit_chars"):
-                limit = int(turn.get("output_limit_chars"))
+                limit = max(limit, int(turn.get("output_limit_chars")))
             else:
                 style = session.world_tags.get("response_style", {})
                 if isinstance(style, dict) and style.get("hard_limit_chars"):
                     limit = int(style.get("hard_limit_chars"))
         except Exception:
-            limit = 700
+            limit = 2400
         if combat_or_turn_output:
-            limit = max(limit, 360)
-        limit = max(360, min(2400, limit))
+            limit = max(limit, 2400)
+        limit = max(360, min(4800, limit))
         if len(text) <= limit:
             return text
         cutoff = limit - 1

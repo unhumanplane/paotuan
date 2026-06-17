@@ -115,6 +115,25 @@ def test_diagnostic_request_excludes_fact_check_corrections():
     assert _is_diagnostic_request("看一下日志和token消耗") is True
 
 
+def test_limit_completion_keeps_long_regular_turn_output_above_old_cap():
+    repository = InMemoryRepository()
+    session = repository.load_session("group-1")
+    session.battle = {
+        "turn": {
+            "active": True,
+            "output_limit_chars": 1440,
+        }
+    }
+    session.world_tags["response_style"] = {"hard_limit_chars": 1800}
+    router = IntentRouter.__new__(IntentRouter)
+
+    text = "段落" * 2000
+    limited = router._limit_completion(text, session, raw_player_message="我继续行动")
+
+    assert len(limited) > 1440
+    assert len(limited) <= 2400
+    assert limited.endswith("…")
+
 def test_router_uses_detected_mode_for_routing_without_persisting_keyword_mode():
     repository = InMemoryRepository()
     session = repository.load_session("group-1")
