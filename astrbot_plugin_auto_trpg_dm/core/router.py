@@ -1077,7 +1077,20 @@ class IntentRouter:
                             raw_player_message=message,
                         )
                         completion = self._sanitize_completion_text(completion)
-                    if continuity_apply_result.get("applied"):
+                    repair_required = (
+                        _mark_continuity_repair_required(
+                            latest_session,
+                            reason="rejected_safe_patches",
+                            actor=actor,
+                            player_message=message,
+                            completion=completion,
+                            payload=payload,
+                            apply_result=continuity_apply_result,
+                        )
+                        if continuity_apply_result.get("rejected")
+                        else {}
+                    )
+                    if continuity_apply_result.get("applied") or repair_required:
                         self.repository.save_session(latest_session)
                     self.repository.append_audit(
                         session_id,
@@ -1087,6 +1100,7 @@ class IntentRouter:
                             "player_message": message,
                             "payload": payload,
                             "apply_result": continuity_apply_result,
+                            "repair_required": repair_required,
                             "prompt_chars": continuity_audit_result.get("prompt_chars", 0),
                             "output_chars": continuity_audit_result.get("output_chars", 0),
                         },
@@ -1103,8 +1117,22 @@ class IntentRouter:
                             "ok": True,
                             "issues": len(payload.get("issues", [])) if isinstance(payload, dict) else 0,
                             "applied": len((continuity_apply_result or {}).get("applied", [])),
+                            "rejected": len((continuity_apply_result or {}).get("rejected", [])),
+                            "repair_required": bool(repair_required),
                         })
                 else:
+                    repair_required = _mark_continuity_repair_required(
+                        latest_session,
+                        reason="audit_failed",
+                        actor=actor,
+                        player_message=message,
+                        completion=completion,
+                        audit_error=continuity_audit_result.get("error", "continuity_audit_failed"),
+                        audit_message=continuity_audit_result.get("message", ""),
+                        output_excerpt=continuity_audit_result.get("output_excerpt", ""),
+                    )
+                    if repair_required:
+                        self.repository.save_session(latest_session)
                     self.repository.append_audit(
                         session_id,
                         {
@@ -1114,12 +1142,14 @@ class IntentRouter:
                             "error": continuity_audit_result.get("error", "continuity_audit_failed"),
                             "message": continuity_audit_result.get("message", ""),
                             "output_excerpt": continuity_audit_result.get("output_excerpt", ""),
+                            "repair_required": repair_required,
                         },
                     )
                     if collector:
                         collector.record_post_processing(continuity_audit={
                             "ok": False,
                             "error": continuity_audit_result.get("error", "continuity_audit_failed"),
+                            "repair_required": bool(repair_required),
                         })
             trace_record = self._persist_narrative_trace(
                 latest_session,
@@ -1864,6 +1894,25 @@ class IntentRouter:
                 audit_record["reason"],
             )
 
+        async def append_tool_failure_final_reply_guard_audit(guard_result: dict[str, Any]) -> None:
+            audit_record = {
+                "type": "tool_failure_final_reply_guard",
+                "reason": guard_result.get("reason", ""),
+                "errors": guard_result.get("errors", []),
+                "failed_tools": guard_result.get("failed_tools", []),
+            }
+            if audit_lock is None:
+                self.repository.append_audit(session_id, audit_record)
+            else:
+                async with audit_lock:
+                    self.repository.append_audit(session_id, audit_record)
+            get_plugin_logger().warning(
+                "tool_failure_final_reply_guard session=%s errors=%s tools=%s",
+                session_id,
+                ",".join(str(item) for item in guard_result.get("errors", [])),
+                ",".join(str(item) for item in guard_result.get("failed_tools", [])),
+            )
+
         def adjudication_completion_guard_for(completion_text: str) -> dict[str, Any]:
             try:
                 guard_session = self.repository.load_session(session_id)
@@ -1892,6 +1941,10 @@ class IntentRouter:
             if reset_confirmation_guard:
                 await append_reset_confirmation_guard_audit(completion_text)
                 completion_text = reset_confirmation_guard
+            tool_failure_guard = _tool_failure_final_reply_guard(completion_text, all_tool_results)
+            if tool_failure_guard:
+                await append_tool_failure_final_reply_guard_audit(tool_failure_guard)
+                completion_text = str(tool_failure_guard.get("reply") or "").strip() or completion_text
             character_card_guard = _character_card_final_reply_guard(
                 raw_player_message,
                 completion_text,
@@ -5395,6 +5448,188 @@ def _final_response_reply(tool_results: list[dict[str, Any]]) -> str | None:
             if text:
                 return text
     return None
+
+
+HARD_FINAL_REPLY_FAILURE_ERRORS = {
+    "character_card_power_mismatch",
+    "character_card_locked_after_start",
+    "character_owner_conflict",
+    "timeline_patch_required",
+    "turn_not_timed_out",
+    "end_encounter_requires_scene_resolution",
+    "entity_already_acted_this_round",
+    "adjudication_guard_blocked_state_write",
+    "post_start_world_fact_overreach",
+}
+
+
+def _tool_failure_final_reply_guard(completion: str, tool_results: list[dict[str, Any]]) -> dict[str, Any]:
+    failures: list[dict[str, str]] = []
+    for item in tool_results or []:
+        if not isinstance(item, dict):
+            continue
+        tool_name = str(item.get("tool") or "").strip()
+        if tool_name == "final_response":
+            continue
+        result = item.get("result")
+        if not isinstance(result, dict) or result.get("ok") is not False:
+            continue
+        error = str(result.get("error") or result.get("error_code") or "").strip()
+        if error not in HARD_FINAL_REPLY_FAILURE_ERRORS:
+            continue
+        failures.append(
+            {
+                "tool": tool_name,
+                "error": error,
+                "message": _short_inferred_text(str(result.get("message") or result.get("reason") or ""), 220),
+                "suggestion": _short_inferred_text(str(result.get("suggestion") or result.get("next_tool_hint") or ""), 180),
+            }
+        )
+    if not failures:
+        return {}
+    if _completion_acknowledges_hard_tool_failure(completion):
+        return {}
+    errors = list(dict.fromkeys(item["error"] for item in failures if item.get("error")))
+    failed_tools = list(dict.fromkeys(item["tool"] for item in failures if item.get("tool")))
+    primary = failures[-1]
+    message = primary.get("message") or primary.get("error") or "工具拒绝了这次写入"
+    suggestion = primary.get("suggestion") or "请把角色、装备或行动降到当前场景可支持的范围，再继续。"
+    reply = (
+        "这轮没有把刚才那个结果写进存档；工具层已经拒绝了这次写入。"
+        f"原因：{message}。"
+        f"{suggestion}"
+    )
+    return {
+        "reason": "hard_tool_failure_not_acknowledged",
+        "errors": errors,
+        "failed_tools": failed_tools,
+        "reply": reply,
+    }
+
+
+def _completion_acknowledges_hard_tool_failure(completion: str) -> bool:
+    lowered = str(completion or "").strip().lower()
+    if not lowered:
+        return False
+    failure_terms = (
+        "未写入",
+        "没有写入",
+        "不能写入",
+        "没有把",
+        "不能直接",
+        "无法直接",
+        "没结算",
+        "还没结算",
+        "未结算",
+        "尚未结算",
+        "先确认",
+        "做检定",
+        "需要检定",
+        "不能判成成功",
+        "工具拒绝",
+        "被拒绝",
+        "存档未改动",
+        "not resolved",
+        "cannot resolve",
+        "not saved",
+        "not been saved",
+        "cannot be saved",
+        "rejected",
+        "failed",
+    )
+    return any(term in lowered for term in failure_terms)
+
+
+def _mark_continuity_repair_required(
+    session: Any,
+    *,
+    reason: str,
+    actor: dict[str, Any],
+    player_message: str,
+    completion: str,
+    payload: dict[str, Any] | None = None,
+    apply_result: dict[str, Any] | None = None,
+    audit_error: str = "",
+    audit_message: str = "",
+    output_excerpt: str = "",
+) -> dict[str, Any]:
+    scene = getattr(session, "scene", None)
+    if not isinstance(scene, dict):
+        return {}
+    marker: dict[str, Any] = {
+        "source": "continuity_auditor",
+        "reason": str(reason or "repair_required"),
+        "created_at": utc_now_iso(),
+        "actor_player_id": str((actor or {}).get("player_id") or ""),
+        "player_message_excerpt": _short_inferred_text(str(player_message or ""), 240),
+        "completion_hash": _short_hash(completion),
+        "status": "needs_review",
+    }
+    rejected = _compact_repair_entries((apply_result or {}).get("rejected") or [])
+    if rejected:
+        marker["rejected"] = rejected
+    issues = _compact_continuity_issues(payload or {})
+    if issues:
+        marker["issues"] = issues
+    if audit_error:
+        marker["audit_error"] = _short_inferred_text(str(audit_error), 120)
+    if audit_message:
+        marker["audit_message"] = _short_inferred_text(str(audit_message), 240)
+    if output_excerpt:
+        marker["output_excerpt"] = _short_inferred_text(str(output_excerpt), 500)
+    scene["_repair_required"] = marker
+    log = scene.get("_repair_required_log")
+    if not isinstance(log, list):
+        log = []
+    log.append(marker)
+    scene["_repair_required_log"] = log[-10:]
+    return marker
+
+
+def _compact_repair_entries(entries: Any, limit: int = 8) -> list[dict[str, str]]:
+    compact: list[dict[str, str]] = []
+    if not isinstance(entries, list):
+        return compact
+    for entry in entries[:limit]:
+        if isinstance(entry, dict):
+            compact.append(
+                {
+                    str(key): _short_inferred_text(_compact_repair_value(value), 220)
+                    for key, value in entry.items()
+                    if str(key)
+                }
+            )
+        else:
+            compact.append({"value": _short_inferred_text(str(entry), 220)})
+    return compact
+
+
+def _compact_continuity_issues(payload: dict[str, Any], limit: int = 4) -> list[dict[str, Any]]:
+    issues = payload.get("issues") if isinstance(payload, dict) else []
+    if not isinstance(issues, list):
+        return []
+    compact: list[dict[str, Any]] = []
+    for issue in issues[:limit]:
+        if not isinstance(issue, dict):
+            compact.append({"problem": _short_inferred_text(str(issue), 240)})
+            continue
+        item: dict[str, Any] = {}
+        for key in ("severity", "problem", "repair"):
+            if issue.get(key):
+                item[key] = _short_inferred_text(str(issue.get(key)), 240)
+        evidence = issue.get("evidence")
+        if isinstance(evidence, list):
+            item["evidence"] = [_short_inferred_text(str(value), 200) for value in evidence[:3]]
+        elif evidence:
+            item["evidence"] = [_short_inferred_text(str(evidence), 200)]
+        compact.append(item)
+    return compact
+
+
+def _compact_repair_value(value: Any) -> str:
+    if isinstance(value, (dict, list)):
+        return json.dumps(value, ensure_ascii=False, default=str)
+    return str(value)
 
 
 def _encounter_contract_completion_guard(

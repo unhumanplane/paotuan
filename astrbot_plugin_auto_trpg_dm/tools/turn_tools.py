@@ -7,7 +7,12 @@ from pydantic import BaseModel, Field
 
 from ..core.control_authority import owner_player_id_for_entity, resolve_control_authority
 from ..core.hosted_action_policy import evaluate_hosted_action_policy
-from ..core.map_core import load_active_strict_grid_entities
+from ..core.map_core import (
+    MAP_LIFECYCLE_ARCHIVED,
+    load_active_strict_grid,
+    load_active_strict_grid_entities,
+    set_strict_map_lifecycle,
+)
 from ..core.models import GameMode, GameSession, utc_now_iso
 from ..core.turn_labels import public_turn_entity_label, turn_actor_kind, turn_entity_owner_id
 from ..spatial.entity_state import entity_can_take_turn
@@ -287,8 +292,11 @@ class TurnTools:
                 _clear_stale_turn_timeout_pause(session.scene)
                 if summary:
                     self._append_turn_log(session, "encounter_end", summary, reason)
+                exit_record = _resolve_encounter_exit_state(session, turn, summary=summary, reason=reason)
                 self.repository.save_session(session)
                 result = self._status(session)
+                if exit_record:
+                    result["encounter_exit"] = exit_record
         else:
             result = {
                 "ok": False,
@@ -1531,6 +1539,83 @@ def _looks_like_terminal_encounter_end(summary: str, reason: str, session: GameS
         "no hostile actors remain",
     )
     return any(term in lowered for term in terminal_terms)
+
+
+def _resolve_encounter_exit_state(
+    session: GameSession,
+    turn: Dict[str, Any],
+    *,
+    summary: str = "",
+    reason: str = "",
+) -> dict[str, Any]:
+    active_grid = load_active_strict_grid(session.maps, session.battle)
+    map_id = str(active_grid.get("map_id") or session.battle.get("map_id") or session.battle.get("active_map_id") or "")
+    entities = active_grid.get("entities") if isinstance(active_grid, dict) else {}
+    if not isinstance(entities, dict):
+        grid = active_grid.get("grid") if isinstance(active_grid, dict) else {}
+        entities = grid.get("entities") if isinstance(grid, dict) else {}
+    removed: list[str] = []
+    if isinstance(entities, dict):
+        order = [str(entity_id) for entity_id in turn.get("turn_order") or [] if str(entity_id)]
+        removed = [entity_id for entity_id in order if _turn_exit_entity_is_corpse(entities.get(entity_id))]
+        if removed:
+            removed_set = set(removed)
+            turn["turn_order"] = [entity_id for entity_id in order if entity_id not in removed_set]
+            actions = turn.get("actions_this_round")
+            if isinstance(actions, dict):
+                for entity_id in removed_set:
+                    actions.pop(entity_id, None)
+    archived = False
+    if map_id:
+        try:
+            archived = bool(
+                set_strict_map_lifecycle(
+                    session.maps,
+                    map_id,
+                    MAP_LIFECYCLE_ARCHIVED,
+                    source="turn_control:end_encounter",
+                )
+            )
+        except Exception:
+            archived = False
+    session.battle.pop("map_id", None)
+    session.battle.pop("grid", None)
+    scene = session.scene if isinstance(session.scene, dict) else {}
+    session.scene = scene
+    record = {
+        "map_id": map_id,
+        "archived": archived,
+        "removed_from_turn_order": removed,
+        "summary": _short_turn_text(summary),
+        "reason": _short_turn_text(reason),
+        "ended_at": utc_now_iso(),
+    }
+    scene["_last_resolved_encounter"] = record
+    return record
+
+
+def _turn_exit_entity_is_corpse(entity: Any) -> bool:
+    if not isinstance(entity, dict):
+        return False
+    text_parts: list[str] = []
+    for key in ("life_state", "state", "status", "condition"):
+        value = entity.get(key)
+        if value:
+            text_parts.append(str(value))
+    tags = entity.get("tags")
+    if isinstance(tags, dict):
+        text_parts.extend(str(value) for value in tags.values() if value)
+    elif isinstance(tags, list):
+        text_parts.extend(str(value) for value in tags if value)
+    text = " ".join(text_parts).lower()
+    return any(term in text for term in ("corpse", "dead", "downed", "killed", "阵亡", "尸体", "死亡"))
+
+
+def _short_turn_text(value: Any, limit: int = 240) -> str:
+    text = str(value or "").strip()
+    if len(text) <= limit:
+        return text
+    return text[: max(0, limit - 1)].rstrip() + "…"
 
 
 def _clear_stale_turn_timeout_pause(scene: dict[str, Any]) -> bool:

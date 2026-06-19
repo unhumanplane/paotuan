@@ -393,6 +393,18 @@ def apply_deterministic_continuity_repairs(
     if active_result.get("changed"):
         result["applied"].append(active_result)
 
+    fact_revision_result = _apply_player_fact_revision_correction(
+        session,
+        player_message=player_message,
+        completion=completion,
+    )
+    if fact_revision_result.get("changed"):
+        result["applied"].append(fact_revision_result)
+
+    time_result = _normalize_scene_time_against_timeline(session)
+    if time_result.get("changed"):
+        result["applied"].append(time_result)
+
     stale_result = normalize_resolved_combat_continuity(session)
     if stale_result.get("changed"):
         result["applied"].append(stale_result)
@@ -564,6 +576,190 @@ def apply_continuity_audit_patches(
     if anchor_result.get("changed"):
         result["applied"].append(anchor_result)
     return result
+
+
+def _apply_player_fact_revision_correction(
+    session: GameSession,
+    *,
+    player_message: str,
+    completion: str,
+) -> dict[str, Any]:
+    correction = _detect_player_fact_revision(player_message, completion)
+    if not correction:
+        return {"type": "fact_revision", "changed": False}
+    scene = session.scene if isinstance(session.scene, dict) else {}
+    session.scene = scene
+    replacements = list(correction.get("replacements") or [])
+    if not replacements:
+        return {"type": "fact_revision", "changed": False}
+
+    changed = False
+    for key in tuple(scene.keys()):
+        if key == "_correction_ledger":
+            continue
+        next_value, value_changed = _replace_terms_recursive(scene.get(key), replacements)
+        if value_changed:
+            scene[key] = next_value
+            changed = True
+
+    for character in session.characters.values():
+        char_changed = False
+        summary, summary_changed = _replace_terms_in_text(character.summary, replacements)
+        if summary_changed:
+            character.summary = summary
+            char_changed = True
+        for tag in character.tags:
+            if isinstance(tag.value, str):
+                value, tag_changed = _replace_terms_in_text(tag.value, replacements)
+                if tag_changed:
+                    tag.value = value
+                    char_changed = True
+        changed = changed or char_changed
+
+    ledger = scene.get("_correction_ledger")
+    if not isinstance(ledger, list):
+        ledger = []
+    entry = {
+        "type": "player_fact_revision",
+        "supersedes": list(correction.get("supersedes") or []),
+        "replacement": str(correction.get("replacement") or ""),
+        "replacements": replacements,
+        "player_message": _short_text(player_message, 500),
+        "created_at": utc_now_iso(),
+    }
+    ledger.append(entry)
+    scene["_correction_ledger"] = ledger[-20:]
+    return {
+        "type": "fact_revision",
+        "changed": changed,
+        "supersedes": entry["supersedes"],
+        "replacement": entry["replacement"],
+        "updated_surfaces": ["scene", "characters"] if changed else ["correction_ledger"],
+    }
+
+
+def _detect_player_fact_revision(player_message: str, completion: str) -> dict[str, Any]:
+    source = f"{player_message}\n{completion}"
+    lowered = source.lower()
+    correction_terms = ("correction", "correct", "not ", " no ", "没有", "不是", "没那玩意", "纠正", "修正")
+    if not any(term in lowered for term in correction_terms):
+        return {}
+    replacements: list[dict[str, str]] = []
+    supersedes: list[str] = []
+    replacement = ""
+    if "bar" in lowered and ("m249" in lowered or "m60" in lowered):
+        replacement = "BAR"
+        for old, new in (
+            ("M249", "BAR"),
+            ("M60", "BAR"),
+            ("BearCat", "period SWAT armored transport"),
+            ("drum AKs", "period-appropriate robber long guns"),
+            ("drum AK", "period-appropriate robber long gun"),
+            ("弹鼓AK", "时代合适的长枪"),
+            ("弹鼓 AK", "时代合适的长枪"),
+            ("AK47", "时代合适的长枪"),
+        ):
+            replacements.append({"old": old, "new": new})
+            supersedes.append(old)
+    elif "1997" in lowered and ("80" in lowered or "eighties" in lowered) and ("北好莱坞" in source or "north hollywood" in lowered):
+        replacement = "period-appropriate 1980s police and robber equipment"
+        for old, new in (
+            ("BearCat", "period SWAT armored transport"),
+            ("M249", "period-appropriate support weapon"),
+            ("M60", "period-appropriate support weapon"),
+            ("弹鼓AK", "时代合适的长枪"),
+            ("弹鼓 AK", "时代合适的长枪"),
+            ("AK47", "时代合适的长枪"),
+        ):
+            replacements.append({"old": old, "new": new})
+            supersedes.append(old)
+    if not replacements:
+        return {}
+    return {
+        "supersedes": list(dict.fromkeys(supersedes)),
+        "replacement": replacement,
+        "replacements": replacements,
+    }
+
+
+def _replace_terms_recursive(value: Any, replacements: list[dict[str, str]]) -> tuple[Any, bool]:
+    if isinstance(value, str):
+        return _replace_terms_in_text(value, replacements)
+    if isinstance(value, list):
+        changed = False
+        next_items = []
+        for item in value:
+            next_item, item_changed = _replace_terms_recursive(item, replacements)
+            next_items.append(next_item)
+            changed = changed or item_changed
+        return next_items, changed
+    if isinstance(value, dict):
+        changed = False
+        next_dict: dict[str, Any] = {}
+        for key, item in value.items():
+            if str(key) == "_correction_ledger":
+                next_dict[key] = item
+                continue
+            next_item, item_changed = _replace_terms_recursive(item, replacements)
+            next_dict[key] = next_item
+            changed = changed or item_changed
+        return next_dict, changed
+    return value, False
+
+
+def _replace_terms_in_text(text: str, replacements: list[dict[str, str]]) -> tuple[str, bool]:
+    next_text = str(text or "")
+    changed = False
+    for item in replacements:
+        old = str(item.get("old") or "")
+        new = str(item.get("new") or "")
+        if old and old in next_text:
+            next_text = next_text.replace(old, new)
+            changed = True
+    return next_text, changed
+
+
+def _normalize_scene_time_against_timeline(session: GameSession) -> dict[str, Any]:
+    scene = session.scene if isinstance(session.scene, dict) else {}
+    session.scene = scene
+    view = timeline_view(session.timeline)
+    label = str(view.get("label") or "").strip()
+    time_of_day = str(view.get("time_of_day") or "").strip().lower()
+    if not label:
+        return {"type": "timeline_scene_sync", "changed": False}
+    morning = time_of_day in {"morning", "早晨", "上午", "清晨"} or any(term in label.lower() for term in ("morning", "早晨", "上午", "清晨"))
+    if not morning:
+        return {"type": "timeline_scene_sync", "changed": False}
+    replacements = [
+        {"old": "凌晨", "new": label},
+        {"old": "深夜", "new": label},
+        {"old": "半夜", "new": label},
+        {"old": "midnight", "new": label},
+    ]
+    changed = False
+    touched: list[str] = []
+    for key in ("summary", "current_objective", "current_conflict", "scene_time_label", "scene_time_of_day"):
+        value = scene.get(key)
+        if isinstance(value, str):
+            next_value, value_changed = _replace_terms_in_text(value, replacements)
+            if value_changed:
+                scene[key] = next_value
+                changed = True
+                touched.append(key)
+    summary = str(scene.get("summary") or "")
+    if summary and label not in summary and any(term in summary.lower() for term in ("morning", "早晨", "上午", "清晨")):
+        scene["summary"] = f"{label}. {summary}"
+        changed = True
+        touched.append("summary")
+    if changed:
+        scene["scene_time_label"] = label
+        scene["scene_time_of_day"] = str(view.get("time_of_day") or "")
+    return {
+        "type": "timeline_scene_sync",
+        "changed": changed,
+        "timeline_label": label,
+        "updated_fields": list(dict.fromkeys(touched)),
+    }
 
 
 def normalize_resolved_combat_continuity(session: GameSession) -> dict[str, Any]:

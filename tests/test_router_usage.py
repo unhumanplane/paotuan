@@ -1,4 +1,5 @@
 import asyncio
+import json
 import sys
 import types
 from datetime import datetime, timedelta, timezone
@@ -430,6 +431,53 @@ def test_router_semantic_judge_keeps_necessary_clarification():
         for item in records
     )
     assert any(item.get("type") == "continuity_audit_reviewed" for item in records)
+
+
+def test_router_marks_repair_required_when_continuity_patch_rejected():
+    repository = InMemoryRepository()
+    session = repository.load_session("group-1")
+    session.scene["_game_started"] = True
+    audit_payload = {
+        "ok": True,
+        "needs_repair": True,
+        "issues": [
+            {
+                "severity": "high",
+                "problem": "Audit found an unsupported retirement fact.",
+                "evidence": ["The player says Kade is still present."],
+                "repair": "Do not retire Kade without an existing character record.",
+            }
+        ],
+        "safe_patches": {
+            "character_tags": [
+                {
+                    "character_id": "missing-kade",
+                    "tags": [{"key": "退场状态", "value": "已退场", "layer": "status"}],
+                }
+            ]
+        },
+        "player_correction": "",
+    }
+    astr_context = FakeAstrContext(
+        "Kade has permanently left the current story.",
+        json.dumps(audit_payload, ensure_ascii=False),
+    )
+    router = IntentRouter(
+        astr_context=astr_context,
+        repository=repository,
+        tool_registry=FakeToolRegistry(),
+    )
+
+    reply = asyncio.run(router.handle_message(FakeEvent("你又记错了，Kade 还没有退场")))
+    saved = repository.load_session("group-1")
+    records = repository.last_audit_records("group-1", limit=30)
+    reviewed = [item for item in records if item.get("type") == "continuity_audit_reviewed"]
+
+    assert "Kade has permanently left" in reply
+    assert saved.scene["_repair_required"]["source"] == "continuity_auditor"
+    assert saved.scene["_repair_required"]["reason"] == "rejected_safe_patches"
+    assert saved.scene["_repair_required"]["rejected"][0]["reason"] == "missing_character"
+    assert reviewed[-1]["repair_required"]["reason"] == "rejected_safe_patches"
 
 
 def test_router_projects_tool_results_before_returning_to_dm_context():
@@ -1260,6 +1308,75 @@ def test_router_replaces_unverified_character_final_response_tool():
     assert "已潜伏" not in result.completion_text
     assert guard_records[-1]["reason"] == "character_card_final_reply_unverified"
     assert "character_card_power_mismatch" in guard_records[-1]["errors"]
+
+
+def test_router_replaces_final_response_after_explicit_tool_failure():
+    class CreateCharacterCall:
+        completion_text = ""
+        tools_call_name = ["create_character"]
+        tools_call_args = [{"name": "Kade", "summary": "elite SWAT gunner with M249 on a BearCat"}]
+        tool_calls = []
+
+    class FinalToolCallResponse:
+        completion_text = ""
+        tools_call_name = ["final_response"]
+        tools_call_args = [{"reply": "Kade is now established on the BearCat with an M249."}]
+        tool_calls = []
+
+    class FakeLoopLlm:
+        def __init__(self):
+            self.calls = 0
+
+        async def __call__(self, **kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                return CreateCharacterCall()
+            return FinalToolCallResponse()
+
+    class RecordingExecutor:
+        def __init__(self):
+            self.calls = []
+
+        async def execute(self, tool_name, args):
+            self.calls.append((tool_name, args))
+            if tool_name == "create_character":
+                return {
+                    "ok": False,
+                    "error": "character_card_power_mismatch",
+                    "message": "character is too strong for this party",
+                    "suggestion": "tone down the loadout",
+                }
+            if tool_name == "final_response":
+                return {"ok": True, "reply": args["reply"]}
+            raise AssertionError(f"unexpected tool: {tool_name}")
+
+    async def run_case():
+        repository = InMemoryRepository()
+        router = IntentRouter.__new__(IntentRouter)
+        router.max_steps = 3
+        router._llm_generate = FakeLoopLlm()
+        router.repository = repository
+        executor = RecordingExecutor()
+
+        result = await router._run_llm_tool_loop(
+            chat_provider_id="fake-provider",
+            system_prompt="system",
+            initial_prompt="player action",
+            toolset=object(),
+            tool_executor=executor,
+            session_id="group-1",
+            raw_player_message="join as an elite SWAT gunner with M249 and BearCat",
+            available_tool_names=["create_character", "final_response"],
+        )
+        return result, executor, repository.last_audit_records("group-1", limit=20)
+
+    result, executor, records = asyncio.run(run_case())
+
+    assert [name for name, _args in executor.calls] == ["create_character", "final_response"]
+    assert "M249" not in result.completion_text
+    assert "BearCat" not in result.completion_text
+    assert "character_card_power_mismatch" in records[-1]["errors"]
+    assert records[-1]["type"] == "tool_failure_final_reply_guard"
 
 
 def test_terminal_request_wording_does_not_close_battle_turn_locally():

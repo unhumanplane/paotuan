@@ -34,6 +34,10 @@ class CycleControlArgs(BaseModel):
             "不能按玩家或角色分叉。"
         ),
     )
+    scene_patch: Dict[str, Any] = Field(
+        default_factory=dict,
+        description="可选的场景同步补丁，用于在结束周期时一并更新 summary/current_objective 等场景字段。",
+    )
 
 
 class CycleTools:
@@ -53,6 +57,7 @@ class CycleTools:
         action: str,
         reason: str = "",
         timeline_patch: Optional[Dict[str, Any]] = None,
+        scene_patch: Optional[Dict[str, Any]] = None,
         sync_policy: str = "strict",
     ) -> dict[str, Any]:
         normalized = str(action or "").strip().lower().replace("-", "_")
@@ -66,6 +71,7 @@ class CycleTools:
 
         session = self.repository.load_session(self.session_id)
         requested_timeline_patch = dict(timeline_patch or {})
+        requested_scene_patch = dict(scene_patch or {})
         normalized_sync_policy = _normalize_sync_policy(sync_policy)
         timeline_result: dict[str, Any] = {"timeline_advanced": False}
         if requested_timeline_patch or timeline_advance_requires_sync(reason):
@@ -138,6 +144,11 @@ class CycleTools:
                     "timeline": timeline_view(session.timeline),
                     **validation,
                 }
+        scene_patch_result = (
+            _apply_cycle_scene_patch(session, requested_scene_patch)
+            if requested_scene_patch
+            else {"applied": False}
+        )
         previous_state = session.cycle_state
         if previous_state != CycleState.CYCLE_RESOLVING:
             try:
@@ -166,6 +177,7 @@ class CycleTools:
                 "cycle_id": session.current_cycle_id,
                 "timeline": timeline_view(session.timeline),
                 "timeline_result": timeline_result,
+                "scene_patch_result": scene_patch_result,
             },
         )
         return {
@@ -176,8 +188,84 @@ class CycleTools:
             "to_state": session.cycle_state.value,
             "timeline": timeline_view(session.timeline),
             "timeline_result": timeline_result,
+            "scene_patch_result": scene_patch_result,
             "message": "当前叙事周期已标记为结束，等待周期结算。",
         }
+
+
+CYCLE_SCENE_PATCH_KEYS = {
+    "summary",
+    "location",
+    "_location",
+    "scene_time_label",
+    "scene_time_of_day",
+    "current_conflict",
+    "current_objective",
+    "open_hooks",
+    "clues",
+    "stakes",
+    "pressure_clock",
+    "npcs",
+}
+
+CYCLE_THREAD_PATCH_KEYS = {
+    "summary",
+    "location",
+    "_location",
+    "scene_time_label",
+    "scene_time_of_day",
+    "current_conflict",
+    "current_objective",
+    "open_hooks",
+    "clues",
+    "stakes",
+    "pressure_clock",
+    "npcs",
+}
+
+
+def _apply_cycle_scene_patch(session: Any, patch: dict[str, Any]) -> dict[str, Any]:
+    if not patch:
+        return {"applied": False}
+    scene = getattr(session, "scene", None)
+    if not isinstance(scene, dict):
+        scene = {}
+        session.scene = scene
+    safe_patch = {key: value for key, value in patch.items() if key in CYCLE_SCENE_PATCH_KEYS}
+    if not safe_patch:
+        return {
+            "applied": False,
+            "rejected_keys": sorted(str(key) for key in patch.keys()),
+        }
+    scene.update(safe_patch)
+    thread_patch = {key: value for key, value in safe_patch.items() if key in CYCLE_THREAD_PATCH_KEYS}
+    thread_ids: list[str] = []
+    threads = scene.get("scene_threads")
+    if isinstance(threads, dict) and thread_patch:
+        target_threads = _cycle_scene_patch_target_threads(threads)
+        now = utc_now_iso()
+        for thread_id, thread in target_threads:
+            thread.update(thread_patch)
+            thread["updated_at"] = now
+            thread_ids.append(thread_id)
+    return {
+        "applied": True,
+        "patch_keys": sorted(safe_patch.keys()),
+        "thread_ids": sorted(thread_ids),
+    }
+
+
+def _cycle_scene_patch_target_threads(threads: dict[str, Any]) -> list[tuple[str, dict[str, Any]]]:
+    dict_threads = [(str(thread_id), thread) for thread_id, thread in threads.items() if isinstance(thread, dict)]
+    if len(dict_threads) == 1:
+        return dict_threads
+    target_statuses = {"", "active", "open", "ongoing", "in_progress"}
+    targets: list[tuple[str, dict[str, Any]]] = []
+    for thread_id, thread in dict_threads:
+        status = str(thread.get("status") or "").strip().lower()
+        if thread.get("active") is True or status in target_statuses:
+            targets.append((thread_id, thread))
+    return targets
 
 
 def _normalize_sync_policy(value: str) -> str:

@@ -98,6 +98,67 @@ def test_deterministic_repair_does_not_retire_actor_from_policy_completion():
     assert not session.characters["pc_yaka"].tags
 
 
+def test_deterministic_repair_applies_player_fact_correction_across_scene_surfaces():
+    session = GameSession.new("group")
+    session.mode = GameMode.NARRATIVE
+    session.scene["_game_started"] = True
+    session.scene["summary"] = "Kade brings an M249 beside a BearCat while robbers carry drum AKs."
+    session.scene["current_objective"] = "Use the M60 to pin the robbers."
+    session.scene["scene_threads"] = {
+        "main": {
+            "summary": "Kade checks the M249 at the BearCat.",
+            "current_objective": "Cover the door with the M60.",
+        }
+    }
+    session.characters["pc_kade"] = Character(
+        id="pc_kade",
+        name="Kade",
+        player_id="p1",
+        summary="Kade was issued an M249.",
+    )
+
+    result = apply_deterministic_continuity_repairs(
+        session,
+        actor={"player_id": "p1"},
+        player_message="不是 M249，也不是 M60。没有那玩意，支援武器是 BAR。",
+        completion="Kade still has the M249.",
+        tool_results=[],
+    )
+
+    visible_scene = json.dumps(
+        {key: value for key, value in session.scene.items() if key != "_correction_ledger"},
+        ensure_ascii=False,
+    )
+    assert any(item["type"] == "fact_revision" for item in result["applied"])
+    assert "M249" not in visible_scene
+    assert "M60" not in visible_scene
+    assert "BAR" in visible_scene
+    assert session.scene["_correction_ledger"][-1]["replacement"] == "BAR"
+    assert "M249" in session.scene["_correction_ledger"][-1]["supersedes"]
+
+
+def test_deterministic_repair_syncs_stale_scene_time_to_timeline_label():
+    session = GameSession.new("group")
+    session.mode = GameMode.NARRATIVE
+    session.scene["_game_started"] = True
+    session.timeline.update({"day": 1, "time_of_day": "morning", "label": "Day 1, morning 8"})
+    session.scene["summary"] = "凌晨，Alice is still waiting in the corridor."
+    session.scene["current_objective"] = "凌晨继续等同伴醒来。"
+
+    result = apply_deterministic_continuity_repairs(
+        session,
+        actor={"player_id": "p1"},
+        player_message="继续",
+        completion="Morning arrives.",
+        tool_results=[],
+    )
+
+    assert any(item["type"] == "timeline_scene_sync" for item in result["applied"])
+    assert "凌晨" not in session.scene["summary"]
+    assert "凌晨" not in session.scene["current_objective"]
+    assert "Day 1, morning 8" in session.scene["summary"]
+
+
 def test_deterministic_repair_does_not_retire_actor_from_retirement_backstory():
     session = GameSession.new("group")
     session.mode = GameMode.NARRATIVE

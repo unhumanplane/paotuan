@@ -3,7 +3,11 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from uuid import uuid4
 
-from astrbot_plugin_auto_trpg_dm.core.map_core import DEFAULT_STRICT_LOCAL_MAP_ID, save_active_strict_grid
+from astrbot_plugin_auto_trpg_dm.core.map_core import (
+    DEFAULT_STRICT_LOCAL_MAP_ID,
+    load_active_strict_grid,
+    save_active_strict_grid,
+)
 from astrbot_plugin_auto_trpg_dm.core.models import Character, GameMode, GameSession
 from astrbot_plugin_auto_trpg_dm.core.control_authority import (
     CONTROL_STATUS_HOSTED_BY_SYSTEM,
@@ -594,6 +598,66 @@ def test_end_encounter_clears_stale_timeout_pause():
     assert "_dm_pause_reason" not in saved.scene
     assert saved.scene["_dm_pause_cleared_by"] == "encounter_end"
     assert saved.battle["turn"]["active"] is False
+
+
+def test_end_encounter_archives_active_grid_and_removes_corpses_from_turn_order():
+    repo = _runtime_repo("end_encounter_archives_grid")
+    session = GameSession.new("group")
+    session.mode = GameMode.TACTICAL
+    session.battle = {
+        "active": True,
+        "map_id": DEFAULT_STRICT_LOCAL_MAP_ID,
+        "turn_entity_id": "pc_kaide",
+        "turn": {
+            "active": True,
+            "round": 3,
+            "phase": "scene_resolution",
+            "turn_order": ["pc_kaide", "npc_dead", "npc_live"],
+            "current_index": -1,
+            "current_entity_id": "",
+            "actions_this_round": {"pc_kaide": {"summary": "suppression"}},
+            "turn_log": [],
+        },
+    }
+    save_active_strict_grid(
+        session.maps,
+        {
+            "width": 5,
+            "height": 5,
+            "cells": [],
+            "entities": {
+                "pc_kaide": {"id": "pc_kaide", "name": "Kade", "x": 1, "y": 1, "faction": "party"},
+                "npc_dead": {
+                    "id": "npc_dead",
+                    "name": "Downed robber",
+                    "x": 2,
+                    "y": 1,
+                    "faction": "hostile",
+                    "life_state": "corpse",
+                },
+                "npc_live": {"id": "npc_live", "name": "Routed robber", "x": 4, "y": 4, "faction": "hostile"},
+            },
+        },
+        map_id=DEFAULT_STRICT_LOCAL_MAP_ID,
+    )
+    repo.save_session(session)
+
+    result = asyncio.run(
+        TurnTools(repo, "group").turn_control(
+            action="end_encounter",
+            summary="encounter resolved; hostile pressure becomes a later hook",
+            reason="scene resolution completed",
+        )
+    )
+
+    saved = repo.load_session("group")
+    assert result["ok"] is True
+    assert saved.mode == GameMode.NARRATIVE
+    assert saved.battle["active"] is False
+    assert saved.battle["turn"]["active"] is False
+    assert "npc_dead" not in saved.battle["turn"]["turn_order"]
+    assert load_active_strict_grid(saved.maps, saved.battle)["ok"] is False
+    assert saved.scene["_last_resolved_encounter"]["map_id"] == DEFAULT_STRICT_LOCAL_MAP_ID
 
 
 def test_turn_status_uses_public_label_for_unmapped_numbered_enemy_slug():

@@ -127,6 +127,37 @@ def test_cycle_control_advances_global_timeline_when_players_synced():
     assert repo.session.timeline["time_of_day"] == "morning"
 
 
+def test_cycle_control_applies_scene_patch_atomically_with_timeline_advance():
+    repo = FakeRepository()
+    repo.session.scene["summary"] = "It is still 凌晨."
+    repo.session.scene["current_objective"] = "Wait until morning."
+    repo.session.scene["scene_threads"] = {
+        "character:pc_alice": {
+            "summary": "Alice is asleep.",
+            "current_objective": "Wake up.",
+        }
+    }
+
+    result = asyncio.run(
+        CycleTools(repo, "group", actor={"player_id": "p1"}).cycle_control(
+            "end_cycle",
+            reason="advance to the next morning",
+            timeline_patch={"day": 2, "time_of_day": "morning", "label": "Day 2 morning"},
+            scene_patch={
+                "summary": "Day 2 morning. Alice wakes up at the desk.",
+                "current_objective": "Check the note under the door.",
+            },
+        )
+    )
+
+    assert result["ok"] is True
+    assert result["timeline_result"]["timeline_advanced"] is True
+    assert result["scene_patch_result"]["applied"] is True
+    assert repo.session.timeline["label"] == "Day 2 morning"
+    assert repo.session.scene["summary"].startswith("Day 2 morning")
+    assert repo.session.scene["current_objective"] == "Check the note under the door."
+
+
 def test_cycle_control_timeout_policy_advances_with_safe_afk_player_defaulted():
     repo = FakeRepository()
     repo.session.participants = {"p1": {}, "p2": {}}
